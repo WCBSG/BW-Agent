@@ -739,6 +739,7 @@ async function loadView(name) {
     assets: renderAssetsView,
     eval: renderEvalView,
     rules: renderRulesView,
+    config: renderConfigView,
   };
   const fn = map[name];
   if (!fn) return;
@@ -756,7 +757,126 @@ function switchView(name) {
   document.querySelectorAll('.view').forEach((v) => v.classList.toggle('active', v.id === 'view-' + name));
 }
 
-/* 报告导出：前端按当前报告 + 发现清单拼 Markdown（后端只提供数据，导出格式不写死后端） */
+/* ============ 配置编辑 ============ */
+/* 支持编辑:rules.json(检测口径)、mcp.json(MCP 服务器)、skills\*.md(技能)、tools\*.json(外部工具)。
+   安全边界在后端:只有这些白名单文件可写,JSON 必须先校验通过,写前自动留 .bak。 */
+const CFG = { files: [], current: null, dirty: false };
+
+async function renderConfigView() {
+  const r = await api('/api/config/list');
+  CFG.files = r.files || [];
+  const box = $('cfg-list');
+  box.innerHTML = '';
+  const groups = {};
+  for (const f of CFG.files) {
+    const g = f.group || '其它';
+    (groups[g] = groups[g] || []).push(f);
+  }
+  for (const g of Object.keys(groups)) {
+    box.appendChild(el('div', 'filegroup', g));
+    for (const f of groups[g]) {
+      const row = el('button', 'fileitem' + (CFG.current === f.name ? ' active' : ''));
+      row.appendChild(el('span', 'fname', f.name.replace(/\\/g, ' / ')));
+      row.appendChild(el('span', 'fmeta', f.exists ? (f.size + ' B') : '不存在'));
+      row.onclick = () => loadConfigFile(f.name);
+      box.appendChild(row);
+    }
+  }
+  if (!CFG.current && CFG.files.length) await loadConfigFile('rules.json');
+  else if (CFG.current) markActiveFile();
+}
+
+function markActiveFile() {
+  document.querySelectorAll('.fileitem').forEach((n) => {
+    const t = n.querySelector('.fname');
+    n.classList.toggle('active', t && t.textContent.replace(/\s*\/\s*/g, '\\') === CFG.current);
+  });
+}
+
+async function loadConfigFile(name) {
+  if (CFG.dirty && !confirm('有未保存的改动，放弃吗？')) return;
+  const r = await api('/api/config?name=' + encodeURIComponent(name));
+  CFG.current = name;
+  CFG.dirty = false;
+  $('cfg-name').textContent = name;
+  $('cfg-text').value = r.content || '';
+  $('cfg-meta').textContent = r.exists ? ('已存在 · ' + (r.size || 0) + ' B') : '新文件（保存后创建）';
+  $('cfg-msg').textContent = '';
+  $('cfg-msg').className = 'note';
+  $('cfg-tip').textContent = /\.json$/.test(name)
+    ? 'JSON 必须合法才能保存（后端会先校验）'
+    : 'Markdown 技能：开头 front-matter 写 name/title/when/purpose/tools';
+  markActiveFile();
+}
+
+async function saveConfigFile() {
+  if (!CFG.current) return;
+  const msg = $('cfg-msg');
+  msg.className = 'note';
+  msg.textContent = '保存中…';
+  try {
+    const r = await api('/api/config', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: CFG.current, content: $('cfg-text').value }),
+    });
+    CFG.dirty = false;
+    msg.className = 'note ok';
+    msg.textContent = '已保存（' + r.size + ' B，' + (r.backup || '') + '）'
+      + (/rules\.json$/.test(CFG.current) ? ' —— 可点「让规则生效」立即应用' : ' —— 技能/工具/MCP 需重启程序生效');
+    await renderConfigView();
+  } catch (e) {
+    msg.className = 'note bad';
+    msg.textContent = '保存被拒绝：' + e.message;
+  }
+}
+
+async function reloadRules() {
+  const msg = $('cfg-msg');
+  try {
+    const r = await api('/api/reload', { method: 'POST' });
+    msg.className = 'note ok';
+    msg.textContent = '规则已重新载入：' + r.rulesSource;
+    await refreshAll();
+  } catch (e) {
+    msg.className = 'note bad';
+    msg.textContent = '重新载入失败：' + e.message;
+  }
+}
+
+function newConfigFile() {
+  const kind = prompt('新建哪一类？输入 1 = 技能包（skills\\我的技能.md），2 = 外部工具（tools\\我的工具.json）', '1');
+  if (!kind) return;
+  let name;
+  let tpl;
+  if (kind.trim() === '2') {
+    name = prompt('工具名（英文，不含空格）', 'my_tool');
+    if (!name) return;
+    name = 'tools\\' + name.replace(/[^\w\-]/g, '_') + '.json';
+    tpl = '{\n  "name": "' + name.replace(/^tools\\|\.json$/g, '') + '",\n'
+        + '  "description": "这个工具做什么（模型据此决定用不用）",\n'
+        + '  "schema": {"type":"object","properties":{"target":{"type":"string"}},"required":["target"]},\n'
+        + '  "command": "curl -sS -o NUL -w \\"HTTP %{http_code}\\" --max-time 15 $target",\n'
+        + '  "timeout_ms": 20000,\n'
+        + '  "allow": false\n}\n';
+  } else {
+    name = prompt('技能名（英文，不含空格）', 'skill_我的技能');
+    if (!name) return;
+    name = 'skills\\' + name.replace(/[^\w\u4e00-\u9fa5\-]/g, '_') + '.md';
+    tpl = '---\nname: ' + name.replace(/^skills\\|\.md$/g, '') + '\n'
+        + 'title: 我的技能\nwhen: 用户说「…」时用\npurpose: 解决什么问题\ntools: site_crawl\nallow: false\n---\n\n'
+        + '步骤（没有 command 时，这份文本作为方法论交给模型执行）：\n\n1. 先…\n2. 再…\n3. 结论分级汇总；取不到内容要如实说明「没结论」。\n';
+  }
+  CFG.current = name;
+  CFG.dirty = true;
+  $('cfg-name').textContent = name;
+  $('cfg-text').value = tpl;
+  $('cfg-meta').textContent = '新文件（保存后创建）';
+  $('cfg-msg').className = 'note';
+  $('cfg-msg').textContent = '模板已就绪 —— 改完点「保存」';
+}
+
+/* ============ 报告导出：前端按当前报告 + 发现清单拼 Markdown（后端只提供数据，导出格式不写死后端） ============ */
 function exportMarkdown() {
   const findings = (state.cache['findings:200'] || {}).items || [];
   const reports = (state.cache['reports:1'] || {}).items || [];
@@ -845,6 +965,17 @@ $('btn-refresh').addEventListener('click', async () => {
 });
 
 $('btn-export').addEventListener('click', exportMarkdown);
+
+/* 配置编辑页的按钮 */
+$('cfg-save').addEventListener('click', saveConfigFile);
+$('cfg-reload-file').addEventListener('click', () => { if (CFG.current) loadConfigFile(CFG.current); });
+$('cfg-reload-rules').addEventListener('click', reloadRules);
+$('cfg-new').addEventListener('click', newConfigFile);
+$('cfg-text').addEventListener('input', () => {
+  CFG.dirty = true;
+  $('cfg-msg').className = 'note';
+  $('cfg-msg').textContent = '有未保存的改动';
+});
 
 /* 授权弹窗：这是合规的第一道闸，前端也必须拦一次 */
 $('btn-scope').addEventListener('click', () => $('modal').classList.remove('hidden'));

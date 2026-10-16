@@ -290,3 +290,34 @@ button.ghost.active{background:var(--bg-active);color:var(--accent);border-color
   #view-loop .grid{grid-template-columns:1fr;grid-template-rows:minmax(0,1fr) auto}
   .report-cols{grid-template-columns:1fr}
 }
+
+/* ===== 配置编辑页 ===== */
+.market-bar{display:flex;flex-wrap:wrap;align-items:center;gap:9px;margin:2px 0 14px;font-size:12.5px}
+.market-link{text-decoration:none;display:inline-flex;align-items:center;gap:5px}
+.market-bar code{padding:1px 5px;border-radius:5px;background:var(--chip,rgba(127,127,127,.14))}
+.config-grid{display:grid;grid-template-columns:260px minmax(0,1fr);gap:14px;min-height:420px}
+.config-side{border:1px solid var(--line);border-radius:11px;overflow:hidden;display:flex;flex-direction:column}
+.config-side-head{display:flex;align-items:center;justify-content:space-between;gap:8px;
+  padding:9px 11px;border-bottom:1px solid var(--line);font-size:12.5px;color:var(--muted)}
+.filelist{overflow:auto;max-height:520px}
+.filegroup{padding:7px 11px 3px;font-size:11.5px;color:var(--muted);letter-spacing:.4px}
+.fileitem{display:flex;width:100%;align-items:center;justify-content:space-between;gap:8px;
+  padding:7px 11px;background:none;border:0;border-left:2px solid transparent;color:var(--text);
+  font:inherit;font-size:12.5px;text-align:left;cursor:pointer}
+.fileitem:hover{background:var(--hover,rgba(127,127,127,.08))}
+.fileitem.active{border-left-color:var(--accent);background:var(--accent-soft)}
+.fileitem .fname{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.fileitem .fmeta{color:var(--muted);font-size:11.5px;flex:none}
+.config-main{display:flex;flex-direction:column;gap:9px;min-width:0}
+.config-main-head{display:flex;align-items:center;gap:9px;flex-wrap:wrap;font-size:12.5px}
+.config-main-head code{padding:2px 7px;border-radius:6px;background:var(--chip,rgba(127,127,127,.14))}
+.grow{flex:1}
+#cfg-text{width:100%;min-height:380px;resize:vertical;border:1px solid var(--line);border-radius:11px;
+  padding:12px 13px;font:12.5px/1.6 ui-monospace,Consolas,'Cascadia Mono',monospace;
+  color:var(--text);background:var(--panel,rgba(127,127,127,.05));outline:none}
+#cfg-text:focus{border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-soft)}
+.config-foot{display:flex;justify-content:space-between;gap:12px;font-size:12px;flex-wrap:wrap}
+.note.ok{color:var(--ok,#2f9e44)}
+.note.bad{color:var(--bad)}
+.ghost.tiny{padding:3px 8px;font-size:11.5px}
+@media (max-width:1080px){ .config-grid{grid-template-columns:1fr} .filelist{max-height:200px} }

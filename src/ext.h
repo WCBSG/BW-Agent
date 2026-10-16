@@ -24,6 +24,10 @@
 
 /* 载入三类扩展(数据目录下);返回成功登记的外部能力个数 */
 int  ext_load_all(void);
+
+/* 列出某目录下指定后缀的文件(供界面"配置编辑"用):
+   返回文件个数,out 里是完整路径(xstrdup 出来的,用 str_free_list 释放)。 */
+int  ext_list_files(const char *dir, const char *ext, char ***out);
 /* 把已载入的外部能力挂到工具表与技能表上(必须在 tools_init/skills_init 之后调用) */
 void ext_register_all(void);
 /* 进程退出时收掉我们拉起来的 MCP 子进程 */

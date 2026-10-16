@@ -104,6 +104,11 @@ void rules_init(const char *base_dir) {
   }
 }
 
+/* ---------- 字符串数组(借出,懒加载缓存) ---------- */
+typedef struct { char *key; char **items; int count; } list_cache_t;
+static list_cache_t g_lists[8];
+static int g_list_n = 0;
+
 void rules_shutdown(void) {
   json_free(g_root);
   g_root = NULL;
@@ -111,6 +116,17 @@ void rules_shutdown(void) {
   g_factory = NULL;
   free(g_factory_text);
   g_factory_text = NULL;
+  /* 数组缓存也要清:否则热加载后会继续用"旧规则"的缓存 */
+  for (int i = 0; i < g_list_n; i++) {
+    free(g_lists[i].key);
+    g_lists[i].key = NULL;
+    str_free_list(g_lists[i].items, g_lists[i].count);
+    g_lists[i].items = NULL;
+    g_lists[i].count = 0;
+  }
+  g_list_n = 0;
+  g_source[0] = 0;
+  g_from_file = 0;
 }
 
 const char *rules_source(void) { return g_source; }
@@ -129,10 +145,6 @@ static json_t *rules_lookup(const char *path) {
 }
 
 /* ---------- 字符串数组(借出,懒加载缓存) ---------- */
-typedef struct { char *key; char **items; int count; } list_cache_t;
-static list_cache_t g_lists[8];
-static int g_list_n = 0;
-
 const char **rules_str_list(const char *key, int *count) {
   if (count) *count = 0;
   if (!key) return NULL;

@@ -1002,6 +1002,11 @@ void ext_bootstrap(void) {
 
 
 /* ================= 对外接口 ================= */
+/* 列目录:给界面"配置编辑"复用同一套宽字符实现(中文文件名不能走 ANSI) */
+int ext_list_files(const char *dir, const char *ext, char ***out) {
+  return list_files(dir, ext, out);
+}
+
 int ext_load_all(void) {
   char dir[MAX_PATH * 2];
   int n = 0;

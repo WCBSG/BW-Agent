@@ -36,6 +36,7 @@
     <button class="vtab" data-view="eval">效果评测</button>
     <button class="vtab" data-view="rules">生效规则</button>
     <button class="vtab" data-view="caps">能力清单</button>
+    <button class="vtab" data-view="config">配置编辑</button>
   </nav>
 
   <main class="main">
@@ -182,6 +183,50 @@
         </div>
         <div class="tabpane" id="pane-skills"></div>
         <div class="tabpane hidden" id="pane-tools"></div>
+      </section>
+    </section>
+
+    <!-- ===== 配置编辑 ===== -->
+    <section class="view" id="view-config">
+      <section class="panel">
+        <div class="panel-head">
+          <h2>配置编辑</h2>
+          <span class="hint">改判定口径、加技能、加外部工具、接 MCP —— 都在这里改，不用开记事本</span>
+        </div>
+        <div class="market-bar">
+          <span class="muted">找现成的能力：</span>
+          <a class="ghost market-link" href="https://skillsmp.com/zh" target="_blank" rel="noopener noreferrer">
+            Skill 市场（SkillsMP）↗
+          </a>
+          <a class="ghost market-link" href="https://gc.das-ai.com/marketplace/tools/mcp" target="_blank" rel="noopener noreferrer">
+            官方 MCP 市场（恒脑）↗
+          </a>
+          <span class="muted">技能包放 <code>skills\</code>，MCP 写进 <code>mcp.json</code>，工具放 <code>tools\</code></span>
+        </div>
+        <div class="config-grid">
+          <div class="config-side">
+            <div class="config-side-head">
+              <span>可编辑文件</span>
+              <button class="ghost tiny" id="cfg-new">＋ 新建</button>
+            </div>
+            <div class="filelist" id="cfg-list"></div>
+          </div>
+          <div class="config-main">
+            <div class="config-main-head">
+              <code id="cfg-name">（未选择文件）</code>
+              <span class="muted" id="cfg-meta"></span>
+              <span class="grow"></span>
+              <button class="ghost" id="cfg-reload-file">重新载入</button>
+              <button class="ghost" id="cfg-reload-rules">让规则生效</button>
+              <button id="cfg-save">保存</button>
+            </div>
+            <textarea id="cfg-text" spellcheck="false" rows="22" placeholder="从左侧选一个文件开始编辑…"></textarea>
+            <div class="config-foot">
+              <span class="note" id="cfg-msg"></span>
+              <span class="muted" id="cfg-tip"></span>
+            </div>
+          </div>
+        </div>
       </section>
     </section>
 
