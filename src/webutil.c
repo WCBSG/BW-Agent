@@ -4,6 +4,8 @@
 #include <bcrypt.h>
 #include <ctype.h>
 
+#include "rules.h"      /* 判定用的标记串来自规则文件(markers.*) */
+
 /* ================= 指纹 ================= */
 int sha256_hex(const char *data, size_t len, char *out, size_t cap) {
   if (!out || cap < 65) return -1;
@@ -280,20 +282,16 @@ json_t *web_headers_json(const char *raw_headers) {
 }
 
 /* ================= 网页结构判断 ================= */
-static const char *DIR_LIST_MARKS[] = {
-    "index of /",              /* Apache / nginx / lighttpd 自动索引 */
-    "<title>index of",
-    "directory listing for",   /* Python http.server */
-    "[to parent directory]",   /* IIS 目录浏览 */
-    "parent directory</a>",
-    ">index of /",
-};
-
+/* 判定用的标记串来自规则文件(markers.dir_listing / markers.login_password_field):
+   不同的服务器/网关长得不一样,单位可以自己加,不用改代码。 */
 int web_is_dir_listing(const char *body) {
   if (!body) return 0;
+  int n = rules_arr_count("markers.dir_listing");
   int marker = 0;
-  for (size_t i = 0; i < sizeof(DIR_LIST_MARKS) / sizeof(DIR_LIST_MARKS[0]); i++) {
-    if (str_icase_find(body, DIR_LIST_MARKS[i])) { marker = 1; break; }
+  for (int i = 0; i < n; i++) {
+    const char *m = rules_arr_str("markers.dir_listing", i, "", "");
+    if (!m[0]) m = rules_arr_str("markers.dir_listing", i, "mark", "");
+    if (m[0] && str_icase_find(body, m)) { marker = 1; break; }
   }
   if (!marker) return 0;
   /* 光有一句话不算:必须真的列出了可点的条目 */
@@ -326,6 +324,10 @@ void web_dir_listing_entries(const char *body, json_t *out, int max) {
 
 int web_has_password_form(const char *body) {
   if (!body) return 0;
+  /* 口令字段名同样在规则里(markers.login_password_field),默认 password */
+  char field[64];
+  snprintf(field, sizeof(field), "%s",
+           rules_arr_str("markers", 0, "login_password_field", "password"));
   const char *p = body;
   while ((p = str_icase_find(p, "type=")) != NULL) {
     p += 5;
@@ -338,11 +340,11 @@ int web_has_password_form(const char *body) {
       if (n >= sizeof(val)) n = sizeof(val) - 1;
       memcpy(val, p + 1, n);
       val[n] = 0;
-      if (str_icase_find(val, "password")) return 1;
+      if (str_icase_find(val, field)) return 1;
       p = end;
       continue;
     }
-    if (str_icase_find(p, "password")) return 1;
+    if (str_icase_find(p, field)) return 1;
   }
   return 0;
 }

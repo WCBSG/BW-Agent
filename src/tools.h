@@ -25,6 +25,10 @@ struct tool_ctx {
 /* 注册表 */
 void        tools_init(void);
 int         tools_count(void);
+
+/* 正则验枪口:把一条自定义正则拿去试(供 `agent.exe regextest` 用)。
+   命中返回 1 并给出偏移/长度 —— 规则是数据,自定义正则必须能当场验证。 */
+int         tools_regex_first(const char *pattern, const char *text, int *off, int *len);
 tool_t     *tools_get(int index);
 tool_t     *tools_find(const char *name);
 /* 追加一个外部工具(用户在数据目录里定义的 / MCP 服务器提供的)。

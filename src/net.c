@@ -52,6 +52,17 @@ static void net_lock_init(void) {
   }
 }
 
+/* ---------- 连接计数(实测用) ----------
+   说明:一开始这里做过"连接句柄缓存复用",但 A/B 实测(见 netbench)显示
+   WinHTTP 会话本身已经维护连接池,缓存句柄在回环与真实站点上都没有可测量的收益,
+   所以**没有采纳** —— 只留下计数与基准命令,让"有没有变慢/变快"随时能测。
+   真正起作用的是上面的自动解压(检出正确性)与限速/重试策略。 */
+static volatile LONG g_conn_created = 0;
+
+int  net_conn_created(void) { return (int)g_conn_created; }
+void net_reset_counters(void) { InterlockedExchange(&g_conn_created, 0); }
+
+
 void net_init(void) {
   net_lock_init();
   if (!g_session) {
@@ -60,6 +71,12 @@ void net_init(void) {
                             WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
     if (!g_session) {
       log_error("WinHTTP 会话创建失败 (err=%lu)", GetLastError());
+    } else {
+      /* 自动解压:站点开了 gzip/br 时正文是压缩流,不解压就"看不见内容",
+         内容特征判定会大面积漏检 —— 这不是性能优化,是检出正确性。 */
+      DWORD decompress = WINHTTP_DECOMPRESSION_FLAG_ALL;
+      WinHttpSetOption(g_session, WINHTTP_OPTION_DECOMPRESSION, &decompress,
+                       sizeof(decompress));
     }
   }
 }
@@ -324,6 +341,7 @@ void net_request(const char *url, const char *method, const char *content_type,
   parse_url(url, whost, 256, wpath, 2048, &https, &port);
 
   HINTERNET conn = WinHttpConnect(g_session, whost, port, 0);
+  InterlockedIncrement(&g_conn_created);
   if (!conn) {
     buf_t e;
     buf_init(&e);
@@ -440,6 +458,38 @@ void http_resp_free(http_resp_t *r) {
   r->headers = NULL;
   r->body = NULL;
   r->error = NULL;
+}
+
+/* 基准:同一个 URL 连打 n 次,返回平均耗时(ms)。
+   为什么单独做一个命令:连接复用这类优化的收益必须能当场量出来,
+   否则"优化过了"只是说法。它临时把限速放开(只读 GET,只对自己的授权目标用)。 */
+int net_bench(const char *url, int n, int *out_conns, int *out_requests) {
+  if (n <= 0) n = 10;
+  double saved_qps = g_qps;
+  g_qps = 100000.0;                     /* 基准期间不限速 */
+  net_reset_counters();
+  int before_calls = g_http_calls;
+  long long t0 = now_ms();
+  int ok = 0;
+  for (int i = 0; i < n; i++) {
+    http_resp_t resp;
+    memset(&resp, 0, sizeof(resp));
+    net_request(url, "GET", NULL, NULL, 0, &resp);
+    if (!resp.error && resp.status > 0) ok++;
+    http_resp_free(&resp);
+  }  long long dt = now_ms() - t0;
+  int conns = (int)g_conn_created;
+  int reqs = g_http_calls - before_calls;
+  g_qps = saved_qps;
+  if (out_conns) *out_conns = conns;
+  if (out_requests) *out_requests = reqs;
+  if (ok == 0) {
+    printf("一次都没成功:目标不可达或未授权(%s)\n", url);
+    return -1;
+  }
+  printf("  请求 %d 次(成功 %d),实际建连 %d 条,总耗时 %lld ms,平均 %.0f ms/次\n",
+         reqs, ok, conns, dt, reqs > 0 ? (double)dt / reqs : 0.0);
+  return (int)(dt / (reqs > 0 ? reqs : 1));
 }
 
 /* ================= 模型端点专用 POST =================

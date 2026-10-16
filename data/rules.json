@@ -1,6 +1,59 @@
 {
   "version": "1",
-  "note": "站点知识全在这里:常见误发布路径、内容特征、期望的安全响应头、错误回显特征。",
+  "note": "站点知识全在这里:误发布落点、内容特征、期望的安全响应头、敏感信息正则、弱口令表、验证载荷、目录索引标记、等级与告警策略。改这个文件就能适配新单位,不用改代码、不用重编译;缺哪一项就自动用出厂值(同一个文件的内置副本)。",
+
+  "severity_levels": [
+    {"name": "严重", "rank": 4},
+    {"name": "高",   "rank": 3},
+    {"name": "中",   "rank": 2},
+    {"name": "低",   "rank": 1},
+    {"name": "信息", "rank": 0}
+  ],
+
+  "alerts": {
+    "min_rank": 2,
+    "immediate_rank": 3,
+    "channel_immediate": "邮件",
+    "channel_normal": "站内",
+    "note": "达到 immediate_rank 的发现走 channel_immediate,其余走 channel_normal;低于 min_rank 的不进告警(只进报告)"
+  },
+
+  "patterns": {
+    "note": "敏感信息识别用的正则(极简方言:字符类/量词/锚点/非捕获组/前后否定;(?i) 表示忽略大小写)。按本单位口径增删即可。",
+    "sensitive": [
+      {"kind": "身份证", "pattern": "(?<![0-9])[0-9]{17}[0-9Xx]", "severity": "严重"},
+      {"kind": "私钥",   "pattern": "-----BEGIN [A-Z ]*PRIVATE KEY-----", "severity": "严重"},
+      {"kind": "凭据",   "pattern": "(?i)[A-Za-z0-9_]*(password|passwd|pwd|secret|token|api[_-]?key)[ \t]*[:=][ \t]*[^ \t\r\n]+", "severity": "高"},
+      {"kind": "手机号", "pattern": "(?<![0-9])1[3-9][0-9]{9}(?![0-9])", "severity": "高"},
+      {"kind": "邮箱",   "pattern": "[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}", "severity": "中"},
+      {"kind": "IP地址", "pattern": "(?<![0-9])([0-9]{1,3}\\.){3}[0-9]{1,3}(?![0-9])", "severity": "中"}
+    ]
+  },
+
+  "markers": {
+    "note": "页面结构判定用的标记串:目录索引页长什么样、口令字段叫什么。",
+    "dir_listing": ["index of /", "<title>index of", "directory listing for",
+                    "[to parent directory]", "parent directory</a>", ">index of /"],
+    "login_password_field": "password"
+  },
+
+  "payloads": {
+    "note": "布尔差分验证用的载荷族(恒真/恒假成对)。不同数据库与框架的引号、括号、注释规则不同,按需增族。",
+    "boolean_diff": [
+      {"context": "数字",   "true": "1 AND 1=1",     "false": "1 AND 1=2"},
+      {"context": "单引号", "true": "1' AND '1'='1", "false": "1' AND '1'='2"},
+      {"context": "双引号", "true": "1\" AND \"1\"=\"1", "false": "1\" AND \"1\"=\"2"},
+      {"context": "括号",   "true": "1) AND (1=1",   "false": "1) AND (1=2"}
+    ]
+  },
+
+  "weak_passwords": [
+    "123456", "12345678", "123456789", "111111", "888888", "666666", "password",
+    "qwerty", "abc123", "admin", "admin123", "root", "letmein", "iloveyou",
+    "welcome", "123qwe", "a123456", "p@ssw0rd", "test123", "123123", "5201314",
+    "woaini", "dbapp", "hengnao", "88888888", "000000", "1234567890"
+  ],
+
   "probing": {
     "max_paths": 40,
     "max_dirs": 40,

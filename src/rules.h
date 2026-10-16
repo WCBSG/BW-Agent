@@ -31,12 +31,24 @@ void rules_shutdown(void);
 const char *rules_source(void);
 int  rules_from_file(void);
 
-/* 借出字符串数组(如 sensitive_paths / dir_candidates / error_signatures) */
+/* 借出字符串数组(如 sensitive_paths / dir_candidates / error_signatures / weak_passwords) */
 const char **rules_str_list(const char *key, int *count);
+
+/* ---------- 通用数组读法(结构化的那几段配置) ----------
+   例:patterns.sensitive / payloads.boolean_diff / severity_levels / markers.dir_listing
+   都是"数组里放对象"的形状,用这一组读。
+   双层查找:生效规则里没有这一项,自动用出厂规则的对应项顶上。 */
+int  rules_arr_count(const char *path);
+const char *rules_arr_str(const char *path, int index, const char *field, const char *def);
+double rules_arr_num(const char *path, int index, const char *field, double def);
+/* 等级名 → 排序号(等级表本身也在规则里,severity_levels) */
+int  rules_severity_rank(const char *name, int def);
 
 /* 单值(如 max_probe_per_run),取不到用 fallback */
 double rules_number(const char *key, double fallback);
 int    rules_flag(const char *key, int fallback);
+/* 取字符串配置项(点号路径,如 alerts.channel_immediate) */
+const char *rules_text(const char *path, const char *def);
 
 /* 内容特征匹配:命中 0 并填充 out,未命中 -1 */
 int rules_sig_match(const char *path, const char *body, rules_sig_t *out);
@@ -48,7 +60,7 @@ int rules_weak_header_num(int index, const char *field, int fallback);
 
 /* 原始规则 JSON(界面/报告要展示"用的是哪套规则") */
 json_t *rules_root(void);
-/* 内置默认规则的 JSON 文本(可以导出成文件让人照着改) */
+/* 出厂规则的 JSON 文本(内置数据,可导出成文件让人照着改) */
 const char *rules_default_json(void);
 
 #endif /* AGENT_RULES_H */

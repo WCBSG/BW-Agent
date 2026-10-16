@@ -47,6 +47,12 @@ void net_audit(const char *action, const char *target, int allowed, const char *
 /* 已发起的请求计数(限流与报告用) */
 int  net_http_calls(void);
 
+/* ---------- 网络层实测工具 ----------
+   连接句柄缓存复用这条路我们试过,但 A/B 实测显示 WinHTTP 会话已有连接池,
+   缓存句柄没有可测量收益,所以没有采纳。下面这个基准命令保留下来:
+   "优化到底有没有用"必须能当场量,而不是靠说法。 */
+int  net_bench(const char *url, int n, int *out_conns, int *out_requests);
+
 /* 模型端点专用 POST:带 appKey/sign 自定义头(见 net.c 说明) */
 void hn_http_post(const char *url, const char *app_key, const char *sign,
                   const char *body, http_resp_t *resp);

@@ -11,6 +11,7 @@
  */
 #include "serve.h"
 
+#include <bcrypt.h>
 #include <signal.h>
 
 #include "agent.h"
@@ -37,6 +38,12 @@ static char g_task[64] = "WEB-TASK";
 static char g_domain[256] = "";
 static int g_turn_seq = 0;
 static char g_data_dir[512];
+/* 每次启动生成的接口令牌:只给本程序打开的界面用。
+   为什么必须有它:本地 HTTP 服务只绑回环,但用户浏览器里的**任何网页**都能
+   向 127.0.0.1 发简单请求(form/text-plain 的 POST 不触发预检),那样别人的页面
+   就能改我们的授权目标、甚至借我们的手去扫第三方。令牌 + Host/Origin 校验把这条路堵掉。 */
+static char g_token[64] = "";
+static int g_port = 0;
 
 /* ---------- SSE 直播上下文 ---------- */
 typedef struct {
@@ -383,6 +390,84 @@ static char *status_snapshot(void) {
   return j;
 }
 
+/* 每次启动换一把随机令牌(32 位十六进制)—— 换了进程就作废旧页面里的那把 */
+static void make_token(char *out, size_t cap) {
+  unsigned char raw[16];
+  if (BCryptGenRandom(NULL, raw, (ULONG)sizeof(raw),
+                      BCRYPT_USE_SYSTEM_PREFERRED_RNG) != 0) {
+    /* 极端情况下退到时间+计数:令牌不完美也好过没有 */
+    DWORD t = GetTickCount();
+    for (size_t i = 0; i < sizeof(raw); i++) raw[i] = (unsigned char)((t >> ((i % 4) * 8)) ^ (i * 31));
+  }
+  size_t o = 0;
+  for (size_t i = 0; i < sizeof(raw) && o + 2 < cap; i++) {
+    o += (size_t)snprintf(out + o, cap - o, "%02x", raw[i]);
+  }
+  out[o < cap ? o : cap - 1] = 0;
+}
+
+/* Host 头是不是本机:只认 127.0.0.1 / localhost[/::1] 且端口一致 */
+static int host_ok(const http_req_t *req) {
+  if (!req->host[0]) return 1;                 /* HTTP/1.0 或本地测试客户端没带 Host */
+  const char *h = req->host;
+  int loopback = (strncmp(h, "127.0.0.1", 9) == 0) ||
+                 (strncmp(h, "localhost", 9) == 0) ||
+                 (strncmp(h, "[::1]", 5) == 0);
+  if (!loopback) return 0;
+  const char *colon = strrchr(h, ':');
+  if (colon && g_port > 0) {
+    int p = atoi(colon + 1);
+    if (p != g_port) return 0;                 /* 端口不对:多半是被别的服务/别的端口映射 */
+  }
+  return 1;
+}
+
+/* Origin 只在跨站请求时才有;有就必须是本站 */
+static int origin_ok(const http_req_t *req) {
+  if (!req->origin[0]) return 1;
+  char expect1[64], expect2[64];
+  snprintf(expect1, sizeof(expect1), "http://127.0.0.1:%d", g_port);
+  snprintf(expect2, sizeof(expect2), "http://localhost:%d", g_port);
+  return str_ieq(req->origin, expect1) || str_ieq(req->origin, expect2);
+}
+
+static int token_ok(const http_req_t *req) {
+  if (!g_token[0]) return 1;                   /* 理论上不会发生 */
+  if (req->token[0] && strcmp(req->token, g_token) == 0) return 1;
+  /* EventSource 不能自定义请求头,所以查询串里带一把也算 */
+  char t[sizeof(g_token)];
+  http_query(req, "t", t, sizeof(t), "");
+  return t[0] && strcmp(t, g_token) == 0;
+}
+
+/* /api/* 的统一门禁:Host → Origin → 令牌 → POST 只收 JSON */
+static int api_guard(const http_req_t *req, http_res_t *res) {
+  if (!host_ok(req)) {
+    log_warn("[接口] 拒绝请求:Host=%s 不是本机", req->host);
+    http_res_text(res, 403, "application/json; charset=utf-8",
+                  "{\"ok\":false,\"error\":\"只接受来自本机地址的请求\"}");
+    return 0;
+  }
+  if (!origin_ok(req)) {
+    log_warn("[接口] 拒绝请求:Origin=%s 不是本站", req->origin);
+    http_res_text(res, 403, "application/json; charset=utf-8",
+                  "{\"ok\":false,\"error\":\"跨站来源被拒绝\"}");
+    return 0;
+  }
+  if (!token_ok(req)) {
+    http_res_text(res, 401, "application/json; charset=utf-8",
+                  "{\"ok\":false,\"error\":\"缺少或错误的接口令牌(请从本程序打开的界面操作)\"}");
+    return 0;
+  }
+  if (strcmp(req->method, "POST") == 0 && req->body_len > 0 &&
+      !str_icontains(req->content_type, "application/json")) {
+    http_res_text(res, 415, "application/json; charset=utf-8",
+                  "{\"ok\":false,\"error\":\"只接受 application/json\"}");
+    return 0;
+  }
+  return 1;
+}
+
 /* ================= 静态界面资源 ================= */
 
 typedef struct {
@@ -426,9 +511,38 @@ static void serve_asset(const char *name, http_res_t *res) {
   }
   if (strcmp(ctype, "image/x-icon") == 0 || strcmp(ctype, "image/png") == 0) {
     http_res_bytes(res, 200, ctype, data, len);      /* 图标是二进制,不能当字符串发 */
-  } else {
-    http_res_text(res, 200, ctype, data);
+    free(data);
+    return;
   }
+  if (strcmp(name, "index.html") == 0) {
+    /* 把本次的接口令牌注入页面(head 里加一个 meta),界面脚本从这里取。
+       注入发生在"发送时",所以磁盘替换的界面同样适用,不需要改 ui\ 里的文件。 */
+    buf_t b;
+    buf_init(&b);
+    const char *tag = "<meta name=\"bw-token\"";
+    const char *at = strstr(data, tag);
+    if (at) {
+      /* 界面自己写了占位 meta:把 content 填进去 */
+      size_t head = (size_t)(at - data);
+      buf_putn(&b, data, head);
+      buf_puts(&b, "<meta name=\"bw-token\" content=\"");
+      buf_puts(&b, g_token);
+      buf_puts(&b, "\">");
+      const char *gt = strchr(at, '>');
+      buf_puts(&b, gt ? gt + 1 : "");
+    } else {
+      const char *head_end = strstr(data, "</head>");
+      size_t head = head_end ? (size_t)(head_end - data) : len;
+      buf_putn(&b, data, head);
+      buf_printf(&b, "<meta name=\"bw-token\" content=\"%s\">", g_token);
+      buf_puts(&b, data + head);
+    }
+    http_res_text(res, 200, ctype, b.data);
+    buf_free(&b);
+    free(data);
+    return;
+  }
+  http_res_text(res, 200, ctype, data);
   free(data);
 }
 
@@ -634,13 +748,24 @@ static void router(const http_req_t *req, http_res_t *res, void *ud) {
     serve_asset(p + 4, res);
     return;
   }
-  if (!strcmp(p, "/api/health")) { h_health(req, res); return; }
-  if (!strcmp(p, "/api/manifest")) { h_manifest(req, res); return; }
-  if (!strcmp(p, "/api/status")) { h_status(req, res); return; }
-  if (!strcmp(p, "/api/rules")) { h_rules(req, res); return; }
-  if (!strcmp(p, "/api/data")) { h_collection(req, res); return; }
-  if (!strcmp(p, "/api/scope")) { h_scope(req, res); return; }
-  if (!strcmp(p, "/api/chat")) { h_chat(req, res); return; }
+  /* 接口一律先过门禁:Host / Origin / 令牌 / 内容类型 */
+  if (str_startswith(p, "/api/")) {
+    if (!api_guard(req, res)) return;
+    if (!strcmp(p, "/api/health")) { h_health(req, res); return; }
+    if (!strcmp(p, "/api/manifest")) { h_manifest(req, res); return; }
+    if (!strcmp(p, "/api/status")) { h_status(req, res); return; }
+    if (!strcmp(p, "/api/rules")) { h_rules(req, res); return; }
+    if (!strcmp(p, "/api/data")) { h_collection(req, res); return; }
+    if (!strcmp(p, "/api/scope")) { h_scope(req, res); return; }
+    if (!strcmp(p, "/api/chat")) { h_chat(req, res); return; }
+    http_res_404(res);
+    return;
+  }
+  /* 其它静态资源(css/js/图标)不带令牌也能取:它们是页面自己的一部分 */
+  if (asset_type(p[0] == '/' ? p + 1 : p)) {
+    serve_asset(p[0] == '/' ? p + 1 : p, res);
+    return;
+  }
   http_res_404(res);
 }
 
@@ -683,6 +808,9 @@ int serve_run(const char *domain, int port, int open_ui) {
 
   InitializeCriticalSection(&g_lock);
   InitializeCriticalSection(&g_status_lock);
+  /* 本次运行的接口令牌与端口:界面页面里会带上它,跨站请求拿不到 */
+  g_port = port;
+  make_token(g_token, sizeof(g_token));
   g_agent = agent_create(g_session);
   agent_set_store(g_agent, g_store, "");
   agent_set_hooks(g_agent, &g_hooks);

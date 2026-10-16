@@ -53,8 +53,13 @@ function scrollBottom(force) {
   if (force || atBottom()) stream.scrollTop = stream.scrollHeight;
 }
 
+/* 接口令牌:由后端在发送 index.html 时注入 meta —— 用来挡住"别的网页借我们的手扫别人" */
+const BW_TOKEN = (document.querySelector('meta[name="bw-token"]') || {}).content || '';
+
 async function api(path, opts) {
-  const r = await fetch(path, opts);
+  const o = Object.assign({}, opts);
+  o.headers = Object.assign({ 'X-BW-Token': BW_TOKEN }, (opts && opts.headers) || {});
+  const r = await fetch(path, o);
   const j = await r.json().catch(() => null);
   if (!r.ok) throw new Error((j && j.error) || ('HTTP ' + r.status));
   return j;
@@ -319,7 +324,9 @@ function send(text) {
   trace.textContent = '';
   if (stepsBox) stepsBox.innerHTML = '<div class="muted">执行后这里按步列出「为什么这么做」。</div>';
 
-  const es = new EventSource('/api/chat?q=' + encodeURIComponent(q));
+  /* EventSource 不能自定义请求头,所以令牌走查询串 */
+  const es = new EventSource('/api/chat?q=' + encodeURIComponent(q) +
+                             (BW_TOKEN ? '&t=' + encodeURIComponent(BW_TOKEN) : ''));
   let closed = false;
 
   es.onmessage = (ev) => {

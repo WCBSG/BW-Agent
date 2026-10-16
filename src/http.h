@@ -32,6 +32,11 @@ typedef struct {
   char *body;          /* 可能为 NULL */
   size_t body_len;
   int keep_alive;
+  /* 下面几个是安全校验要看的头(本地 API 需要令牌 + 来源校验,见 serve.c) */
+  char host[256];         /* Host */
+  char origin[256];       /* Origin(可能为空) */
+  char content_type[128]; /* Content-Type(可能为空) */
+  char token[160];        /* X-BW-Token(可能为空) */
 } http_req_t;
 
 /* 应答通道。send_header 之后状态码/头就定死了。 */
@@ -40,10 +45,14 @@ typedef struct {
   int header_sent;
   int status;
   int aborted;         /* 对端断开 */
+  int no_reuse;        /* 这条连接不能再复用(SSE/长流式应答) */
 } http_res_t;
 
 /* 路由处理函数 */
 typedef void (*http_handler_t)(const http_req_t *req, http_res_t *res, void *ud);
+
+/* 请求体上限:本地界面传的都是小 JSON,超过就是这个连接有问题 */
+#define HTTP_MAX_BODY (1024 * 1024)
 
 /* ---------- 请求参数 ---------- */
 /* 取查询参数(自动 URL 解码);没找到返回 def 的副本 */

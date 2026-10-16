@@ -288,12 +288,11 @@ static int s_retest(tool_ctx_t *ctx, json_t *args, skill_result_t *out) {
 }
 
 /* ================= 报告 + 告警 ================= */
+/* 等级排序与"什么等级要立即推送"都来自规则(severity_levels / alerts.immediate_rank),
+   单位改了自己的等级命名或推送策略,这里跟着变,不用改代码。 */
 static int severity_rank(const char *sev) {
-  if (strcmp(sev, "严重") == 0) return 4;
-  if (strcmp(sev, "高") == 0) return 3;
-  if (strcmp(sev, "中") == 0) return 2;
-  if (strcmp(sev, "低") == 0) return 1;
-  return 0;
+  int r = rules_severity_rank(sev, -1);
+  return r >= 0 ? r : 0;
 }
 
 static int s_report(tool_ctx_t *ctx, json_t *args, skill_result_t *out) {
@@ -378,15 +377,20 @@ static int s_report(tool_ctx_t *ctx, json_t *args, skill_result_t *out) {
   j_set_str(report, "rules_source", rules_source());
   store_save(st, "reports", report);
 
-  /* 告警按等级走不同渠道:严重的进邮件队列,中低走站内 —— 这是"通知渠道"这条业务规则。
-     同一个发现只推一次:报告可以反复生成,告警不该反复轰炸。 */
+  /* 告警按等级走不同渠道 —— 阈值与渠道名都在规则里(alerts.min_rank / immediate_rank /
+     channel_immediate / channel_normal)。同一个发现只推一次:报告可以反复生成,
+     告警不该反复轰炸。 */
+  int alert_min_rank = (int)rules_number("alerts.min_rank", 2);
+  int alert_now_rank = (int)rules_number("alerts.immediate_rank", 3);
+  const char *ch_now = rules_text("alerts.channel_immediate", "邮件");
+  const char *ch_normal = rules_text("alerts.channel_normal", "站内");
   json_t *alerts = j_arr();
   json_t *existing_alerts = store_all(st, "alerts");
   for (int i = 0; i < j_len(findings); i++) {
     json_t *f = j_at(findings, i);
     if (strcmp(j_s(f, "status", "new"), "false_positive") == 0) continue;
     int rank = severity_rank(j_s(f, "severity", "信息"));
-    if (rank < 2) continue;                        /* 低与信息不进告警,避免噪音 */
+    if (rank < alert_min_rank) continue;           /* 低于阈值的进报告不进告警,避免噪音 */
     const char *fid = j_s(f, "id", "");
     int already = 0;
     for (int k = 0; k < j_len(existing_alerts); k++) {
@@ -398,14 +402,14 @@ static int s_report(tool_ctx_t *ctx, json_t *args, skill_result_t *out) {
     j_set_str(a, "id", aid);
     j_set_str(a, "finding_id", j_s(f, "id", ""));
     j_set_str(a, "task_id", ctx->task_id ? ctx->task_id : "");
-    j_set_str(a, "channel", rank >= 3 ? "邮件" : "站内");
+    j_set_str(a, "channel", rank >= alert_now_rank ? ch_now : ch_normal);
     j_set_str(a, "triggered_by", "手动");
     j_set_str(a, "title", j_s(f, "title", ""));
     j_set_str(a, "target", j_s(f, "target", ""));
     j_set_str(a, "severity", j_s(f, "severity", ""));
     j_set_str(a, "status", "pending");
     j_set_str(a, "created_at", ts);
-    j_set_str(a, "note", rank >= 3 ? "高等级发现立即推送" : "中等级发现站内提示");
+    j_set_str(a, "note", rank >= alert_now_rank ? "高等级发现立即推送" : "中等级发现站内提示");
     store_append(st, "alerts", a);
     json_t *row = j_obj();
     j_set_str(row, "id", aid);

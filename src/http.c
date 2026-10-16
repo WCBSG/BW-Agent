@@ -83,24 +83,37 @@ static const char *status_text(int code) {
     case 200: return "OK";
     case 204: return "No Content";
     case 400: return "Bad Request";
+    case 401: return "Unauthorized";
+    case 403: return "Forbidden";
     case 404: return "Not Found";
     case 405: return "Method Not Allowed";
+    case 413: return "Payload Too Large";
+    case 415: return "Unsupported Media Type";
+    case 429: return "Too Many Requests";
     case 500: return "Internal Server Error";
+    case 503: return "Service Unavailable";
     default:  return "OK";
   }
 }
 
 static void send_head(http_res_t *res, int status, const char *ctype, long len) {
   if (res->header_sent) return;
-  char h[512];
+  char h[1024];
   int n = snprintf(h, sizeof(h),
                    "HTTP/1.1 %d %s\r\n"
                    "Content-Type: %s\r\n"
                    "Content-Length: %ld\r\n"
                    "Cache-Control: no-store\r\n"
-                   "Connection: close\r\n"
+                   /* 本地界面只允许同源脚本/样式,且不允许被当成别的类型嗅探 */
+                   "X-Content-Type-Options: nosniff\r\n"
+                   "Referrer-Policy: no-referrer\r\n"
+                   "Content-Security-Policy: default-src 'self'; img-src 'self' data:; "
+                   "style-src 'self' 'unsafe-inline'; script-src 'self'; "
+                   "connect-src 'self'; frame-ancestors 'none'; base-uri 'none'\r\n"
+                   "Connection: %s\r\n"
                    "\r\n",
-                   status, status_text(status), ctype, len);
+                   status, status_text(status), ctype, len,
+                   res->no_reuse ? "close" : "keep-alive");
   if (!send_all(res->sock, h, (size_t)n)) res->aborted = 1;
   res->header_sent = 1;
   res->status = status;
@@ -131,12 +144,15 @@ void http_res_404(http_res_t *res) {
 
 int http_sse_begin(http_res_t *res) {
   if (res->header_sent) return !res->aborted;
+  /* SSE 是一条长流:这条连接用完就不能再复用了(否则下一轮请求会读到场事故) */
+  res->no_reuse = 1;
   const char *h =
       "HTTP/1.1 200 OK\r\n"
       "Content-Type: text/event-stream; charset=utf-8\r\n"
       "Cache-Control: no-cache, no-transform\r\n"
       "Connection: keep-alive\r\n"
       "X-Accel-Buffering: no\r\n"
+      "X-Content-Type-Options: nosniff\r\n"
       "\r\n";
   if (!send_str(res->sock, h)) {
     res->aborted = 1;
@@ -214,16 +230,28 @@ static int parse_request(SOCKET s, http_req_t *req) {
   for (;;) {
     if (recv_line(s, line, sizeof(line)) < 0) return 0;
     if (!line[0]) break;   /* 空行 = 头结束 */
-    if (str_icontains(line, "content-length:")) {
-      const char *v = strchr(line, ':');
-      if (v) content_len = strtol(v + 1, NULL, 10);
-    } else if (str_icontains(line, "connection: close")) {
-      req->keep_alive = 0;
+    char *colon = strchr(line, ':');
+    if (!colon) continue;
+    *colon = 0;
+    char *k = str_trim(line);
+    char *v = str_trim(colon + 1);
+    if (str_ieq(k, "content-length")) {
+      content_len = strtol(v, NULL, 10);
+    } else if (str_ieq(k, "connection")) {
+      if (str_icontains(v, "close")) req->keep_alive = 0;
+    } else if (str_ieq(k, "host")) {
+      snprintf(req->host, sizeof(req->host), "%s", v);
+    } else if (str_ieq(k, "origin")) {
+      snprintf(req->origin, sizeof(req->origin), "%s", v);
+    } else if (str_ieq(k, "content-type")) {
+      snprintf(req->content_type, sizeof(req->content_type), "%s", v);
+    } else if (str_ieq(k, "x-bw-token")) {
+      snprintf(req->token, sizeof(req->token), "%s", v);
     }
   }
 
   if (content_len > 0) {
-    if (content_len > 4 * 1024 * 1024) return 0;   /* 本地界面用不到这么大的体 */
+    if (content_len > HTTP_MAX_BODY) return 0;     /* 本地界面用不到这么大的体 */
     req->body = (char *)xmalloc((size_t)content_len + 1);
     size_t got = 0;
     while (got < (size_t)content_len) {
@@ -243,6 +271,12 @@ static int parse_request(SOCKET s, http_req_t *req) {
 
 /* ================= 连接处理 ================= */
 
+/* 上限:本地界面用不了这么多;设成上限是为了"本地网页洪泛"打不垮程序 */
+#define HTTP_MAX_CONN 32
+#define HTTP_IDLE_TIMEOUT_MS 15000
+
+static volatile LONG g_conns = 0;
+
 typedef struct {
   SOCKET sock;
   http_handler_t handler;
@@ -256,24 +290,45 @@ static DWORD WINAPI conn_thread(LPVOID param) {
   void *ud = ctx->ud;
   free(ctx);
 
-  DWORD tv = 30000;
+  DWORD tv = HTTP_IDLE_TIMEOUT_MS;
   setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, (const char *)&tv, sizeof(tv));
   int one = 1;
   setsockopt(s, IPPROTO_TCP, TCP_NODELAY, (const char *)&one, sizeof(one));
 
-  http_req_t req;
-  if (parse_request(s, &req)) {
+  /* keep-alive:同一连接上顺序处理多条请求(界面一次加载要十几个资源),
+     直到对端说 close、超时、或者应答声明不能复用(SSE)为止 */
+  for (int served = 0; served < 200; served++) {
+    http_req_t req;
+    if (!parse_request(s, &req)) break;
+
     http_res_t res;
     memset(&res, 0, sizeof(res));
     res.sock = s;
     handler(&req, &res, ud);
+    int reuse = req.keep_alive && !res.no_reuse && !res.aborted;
     if (req.body) free(req.body);
+    if (!reuse) break;
   }
 
   /* 关掉发送方向,让对端立刻知道结束了(SSE 尤其重要) */
   shutdown(s, SD_SEND);
   closesocket(s);
+  InterlockedDecrement(&g_conns);
   return 0;
+}
+
+/* 连接太多时给一句人话,而不是让对端干等 */
+static void reject_conn(SOCKET s) {
+  const char *body = "{\"ok\":false,\"error\":\"本地服务连接数已达上限,请稍后重试\"}";
+  char h[384];
+  int n = snprintf(h, sizeof(h),
+                   "HTTP/1.1 503 Service Unavailable\r\n"
+                   "Content-Type: application/json; charset=utf-8\r\n"
+                   "Content-Length: %d\r\n"
+                   "Retry-After: 1\r\n"
+                   "Connection: close\r\n\r\n%s",
+                   (int)strlen(body), body);
+  send_all(s, h, (size_t)n);
 }
 
 /* ================= 服务 ================= */
@@ -365,10 +420,19 @@ int http_serve(const char *bind_ip, int port, http_handler_t handler, void *ud) 
     ctx->sock = c;
     ctx->handler = handler;
     ctx->ud = ud;
+    if (InterlockedIncrement(&g_conns) > HTTP_MAX_CONN) {
+      InterlockedDecrement(&g_conns);
+      reject_conn(c);
+      shutdown(c, SD_SEND);
+      closesocket(c);
+      free(ctx);
+      continue;
+    }
     HANDLE th = CreateThread(NULL, 0, conn_thread, ctx, 0, NULL);
     if (th) {
       CloseHandle(th);
     } else {
+      InterlockedDecrement(&g_conns);
       closesocket(c);
       free(ctx);
     }

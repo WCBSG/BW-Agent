@@ -8,6 +8,7 @@
  *   2. 目标必须过授权校验(由 net.c 的合规层兜底,工具自己也再查一次)。
  */
 #include "tools.h"
+#include "regex.h"
 
 #include "net.h"
 #include "rules.h"
@@ -315,198 +316,11 @@ static int do_fetch(tool_ctx_t *ctx, const char *url, const char *method,
 /* ================= 工具实现 ================= */
 
 /* ---- 1. 文本敏感信息扫描 ---- */
-typedef struct { const char *kind; const char *pattern; const char *severity; } sens_rule_t;
-
-static const sens_rule_t SENS_RULES[] = {
-    {"身份证", "(?<![0-9])[0-9]{17}[0-9Xx]", "严重"},
-    {"私钥",   "-----BEGIN [A-Z ]*PRIVATE KEY-----", "严重"},
-    {"凭据",   "(?i)[A-Za-z0-9_]*(password|passwd|pwd|secret|token|api[_-]?key)[ \t]*[:=][ \t]*[^ \t\r\n]+", "高"},
-    {"手机号", "(?<![0-9])1[3-9][0-9]{9}(?<![0-9])", "高"},
-    {"邮箱",   "[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}", "中"},
-    {"IP地址", "(?<![0-9])([0-9]{1,3}\\.){3}[0-9]{1,3}(?![0-9])", "中"},
-};
-
-/* 极简正则:只支持我们需要的几种形状(字符类、量词、锚点、非捕获组、大小写开关)。
-   自己写是为零依赖;规则集是我们控制的,不需要通用正则引擎。 */
-static int re_match_at(const char *p, const char *s, int icase, int *len);
-
-static int cls_match(const char **pp, char c) {
-  const char *p = *pp;
-  int neg = 0;
-  if (*p == '^') { neg = 1; p++; }
-  int hit = 0;
-  while (*p && *p != ']') {
-    if (p[1] == '-' && p[2] && p[2] != ']') {
-      if ((unsigned char)c >= (unsigned char)p[0] && (unsigned char)c <= (unsigned char)p[2]) hit = 1;
-      p += 3;
-    } else {
-      if (c == *p) hit = 1;
-      p++;
-    }
-  }
-  if (*p == ']') p++;
-  *pp = p;
-  return neg ? !hit : hit;
-}
-
-/* 匹配一个"原子"(字符类 / 字面量 / 分组),返回匹配长度,-1 不匹配 */
-static int atom_len(const char **pp, const char *s, int icase) {
-  const char *p = *pp;
-  int n = -1;
-  if (*p == '[') {
-    p++;
-    if (*s && cls_match(&p, *s)) n = 1;
-  } else if (*p == '(') {
-    p++;
-    if (str_startswith(p, "?<!")) {                    /* 负向后顾:(?<!X) */
-      const char *q = p + 4;
-      const char *save = q;
-      (void)q; (void)save;
-      /* 我们的负向后顾只用于"前面不是数字",直接跳过语法(在调用处已用 ^ 语义处理) */
-      int depth = 1;
-      while (*p && depth) {
-        if (*p == '(') depth++;
-        else if (*p == ')') depth--;
-        p++;
-      }
-      *pp = p;
-      return 0;                                        /* 零宽,吞掉 */
-    }
-    if (str_startswith(p, "?i)")) { p += 3; *pp = p; return 0; }   /* 已在外层处理 */
-    if (str_startswith(p, "?:")) p += 2;
-    /* 分组里我们只用"或"(a|b) */
-    const char *end = p;
-    int depth = 1;
-    while (*end && depth) {
-      if (*end == '(') depth++;
-      else if (*end == ')') depth--;
-      else if (*end == '\\') end++;
-      if (depth) end++;
-    }
-    char *body = xstrndup(p, (size_t)(end - p));
-    char *bar = strchr(body, '|');
-    n = -1;
-    if (bar) {
-      *bar = 0;
-      const char *alt = body;
-      while (alt) {
-        int alen = -1;
-        const char *ap = alt;
-        while (*ap && alen < 0) {
-          int l = atom_len(&ap, s, icase);
-          if (l < 0) break;
-          alen = (alen < 0 ? 0 : alen) + l;
-          if (l == 0) break;
-        }
-        if (alen >= 0) { n = alen; break; }
-        alt = strchr(alt, '|');
-        if (alt) alt++;
-        else break;
-      }
-    } else {
-      const char *bp = body;
-      int total = 0;
-      while (*bp) {
-        int l = atom_len(&bp, s + total, icase);
-        if (l < 0) { total = -1; break; }
-        total += l;
-      }
-      if (total >= 0) n = total;
-    }
-    free(body);
-    p = (*end == ')') ? end + 1 : end;
-  } else if (*p == '\\') {
-    p++;
-    char e = *p++;
-    switch (e) {
-      case 'd': if (isdigit((unsigned char)*s)) n = 1; break;
-      case 'w': if (isalnum((unsigned char)*s) || *s == '_') n = 1; break;
-      case 's': if (*s == ' ' || *s == '\t') n = 1; break;
-      case '.': if (*s) n = 1; break;
-      default:  if (icase ? tolower((unsigned char)*s) == tolower((unsigned char)e)
-                         : *s == e) n = 1; break;
-    }
-  } else if (*p && *p != '*' && *p != '+' && *p != '?' && *p != '{') {
-    char c = *p++;
-    if (icase ? tolower((unsigned char)*s) == tolower((unsigned char)c) : *s == c) n = 1;
-  }
-  *pp = p;
-
-  /* 量词 */
-  int min = 1, max = 1;
-  if (*p == '*' || *p == '+' || *p == '?' || *p == '{') {
-    char q = *p;
-    if (q == '*') { min = 0; max = 1 << 20; p++; }
-    else if (q == '+') { min = 1; max = 1 << 20; p++; }
-    else if (q == '?') { min = 0; max = 1; p++; }
-    else {
-      p++;
-      min = atoi(p);
-      max = min;
-      while (*p && *p != '}') {
-        if (*p == ',') { max = atoi(p + 1); if (!max) max = 1 << 20; }
-        p++;
-      }
-      if (*p == '}') p++;
-    }
-    if (n >= 0) {
-      int count = n;
-      while (count < max) {
-        int l = atom_len(&p, s + count, icase);   /* 注意:这里不能再递归量词 */
-        if (l <= 0) break;
-        count += l;
-      }
-      if (count < min) n = -1;
-      else n = count;
-      /* 量词已消费,避免外层重复处理 */
-      *pp = p;
-      return n;
-    }
-    *pp = p;
-    return -1;
-  }
-  return n;
-}
-
-static int regex_match(const char *pattern, const char *text, int icase,
-                       int *out_off, int *out_len) {
-  for (const char *start = text; ; start++) {
-    const char *p = pattern;
-    int ic = icase;
-    if (str_startswith(p, "(?i)")) { ic = 1; p += 4; }
-    if (str_startswith(p, "(?<![0-9])")) {           /* 只用于"前面不是数字" */
-      if (start > text && isdigit((unsigned char)start[-1])) {
-        if (!*start) break;
-        continue;
-      }
-      p += 10;
-    }
-    /* 逐原子匹配 */
-    const char *q = p;
-    int total = 0;
-    const char *save = q;
-    while (*q) {
-      int l = atom_len(&q, start + total, ic);
-      if (l < 0) { total = -1; break; }
-      total += l;
-      save = q;
-    }
-    if (total >= 0) {
-      /* 处理 (?![0-9]) 这类尾部负向前瞻 */
-      if (str_startswith(save, "(?![0-9])") &&
-          isdigit((unsigned char)start[total])) {
-        total = -1;
-      }
-      if (total >= 0 && total > 0) {
-        *out_off = (int)(start - text);
-        *out_len = total;
-        return 1;
-      }
-    }
-    if (!*start) break;
-  }
-  return 0;
-}
+/* 判定用的正则全部来自规则文件(patterns.sensitive),代码里不写死任何一条:
+/* 判定用的正则来自规则文件(patterns.sensitive),匹配交给 src\regex.c 的极简引擎:
+   支持字面量、字符类、分组与分支、* + ? {n,m}、^ $、(?i) 与两种 [0-9] 断言,
+   带完整回溯 —— 邮箱/私钥头这种"先贪婪后回退"的形状才能正确匹配。
+   规则写超范围时,`agent.exe regextest` 会直接告诉你原因。 */
 
 /* 脱敏:保留头尾,中间星号(报告可能外传,不能留明文) */
 static void mask_into(buf_t *out, const char *s, int len) {
@@ -516,23 +330,42 @@ static void mask_into(buf_t *out, const char *s, int len) {
   buf_putn(out, s + len - 2, 2);
 }
 
+/* 给"自己写规则"的人用:先拿一条正则试一下它到底匹配什么(见 agent.exe regextest)。
+   规则是数据,数据写错了不该靠猜 —— 这个口子让自定义正则当场可验。 */
+int tools_regex_first(const char *pattern, const char *text, int *off, int *len) {
+  if (!pattern || !text) return 0;
+  char err[128];
+  return rx_find(pattern, text, off, len, err, sizeof(err));
+}
+
 static int scan_text_into(tool_ctx_t *ctx, const char *text, json_t *hits) {
   int count = 0;
-  for (size_t r = 0; r < sizeof(SENS_RULES) / sizeof(SENS_RULES[0]); r++) {
-    const sens_rule_t *rule = &SENS_RULES[r];
+  int rules_n = rules_arr_count("patterns.sensitive");
+  for (int r = 0; r < rules_n; r++) {
+    const char *kind = rules_arr_str("patterns.sensitive", r, "kind", "");
+    const char *pattern = rules_arr_str("patterns.sensitive", r, "pattern", "");
+    const char *severity = rules_arr_str("patterns.sensitive", r, "severity", "中");
+    if (!pattern[0]) continue;                     /* 规则里没写正则就跳过 */
+    char rerr[128] = {0};
+    rx_pattern *re = rx_compile(pattern, rerr, sizeof(rerr));
+    if (!re) {
+      /* 规则写错了要如实说,而不是"当成没命中" —— 否则使用者会以为站点干净 */
+      log_warn("[规则] 敏感信息正则不合法,已跳过: %s(%s)", pattern, rerr);
+      continue;
+    }
     const char *scan = text;
     int searched = 0;
     while (searched < 200) {
       int off = 0, len = 0;
-      if (!regex_match(rule->pattern, scan, 0, &off, &len)) break;
+      if (!rx_search(re, scan, &off, &len)) break;
       buf_t masked;
       buf_init(&masked);
       mask_into(&masked, scan + off, len);
       json_t *h = j_obj();
-      j_set_str(h, "kind", rule->kind);
-      j_set_str(h, "severity", rule->severity);
+      j_set_str(h, "kind", kind[0] ? kind : pattern);
+      j_set_str(h, "severity", severity);
       j_set_str(h, "masked", masked.data);
-      j_set_str(h, "source", "内置规则");
+      j_set_str(h, "rule", pattern);
       j_add(hits, h);
       buf_free(&masked);
       count++;
@@ -540,6 +373,10 @@ static int scan_text_into(tool_ctx_t *ctx, const char *text, json_t *hits) {
       searched++;
       if (off + len <= 0) break;
     }
+    rx_free(re);
+  }
+  if (rules_n == 0) {
+    log_warn("[规则] patterns.sensitive 为空:敏感信息扫描没有可用规则");
   }
   (void)ctx;
   return count;
@@ -576,20 +413,17 @@ static int t_sensitive_scan(tool_ctx_t *ctx, json_t *args, tool_result_t *out) {
 }
 
 /* ---- 2. 口令强度 ---- */
-static const char *WEAK_PASSWORDS[] = {
-    "123456", "12345678", "123456789", "111111", "888888", "666666", "password",
-    "qwerty", "abc123", "admin", "admin123", "root", "letmein", "iloveyou",
-    "welcome", "123qwe", "a123456", "p@ssw0rd", "test123", "123123", "5201314",
-    "woaini", "dbapp", "hengnao", "88888888", "000000", "1234567890",
-};
-
+/* 弱口令表来自规则文件(weak_passwords)。表里没有就只按强度规则算分——
+   这不是"少了功能",而是"口径跟着规则走":不同单位可以放自己的历史泄露口令表。 */
 static int t_password_check(tool_ctx_t *ctx, json_t *args, tool_result_t *out) {
   (void)ctx;
   const char *pw = j_s(args, "password", "");
   int score = 100;
   json_t *issues = j_arr();
-  for (size_t i = 0; i < sizeof(WEAK_PASSWORDS) / sizeof(WEAK_PASSWORDS[0]); i++) {
-    if (str_ieq(pw, WEAK_PASSWORDS[i])) {
+  int weak_n = 0;
+  const char **weak = rules_str_list("weak_passwords", &weak_n);
+  for (int i = 0; i < weak_n; i++) {
+    if (str_ieq(pw, weak[i])) {
       j_add(issues, j_str("命中常见弱口令表"));
       score -= 60;
       break;
@@ -1751,21 +1585,22 @@ static int t_sqli_probe(tool_ctx_t *ctx, json_t *args, tool_result_t *out) {
   int confirmed = 0, inconclusive = 0;
   char evidence[512] = {0};
 
-  static const struct { const char *t; const char *f; const char *ctx; } FAMILIES[] = {
-      {"1 AND 1=1", "1 AND 1=2", "数字"},
-      {"1' AND '1'='1", "1' AND '1'='2", "单引号"},
-      {"1\" AND \"1\"=\"1", "1\" AND \"1\"=\"2", "双引号"},
-      {"1) AND (1=1", "1) AND (1=2", "括号"},
-  };
+  /* 布尔差分的载荷族来自规则文件(payloads.boolean_diff):
+     不同数据库/框架的注释与引号规则不一样,单位可以自己加族,不用重编译。 */
+  int fam_n = rules_arr_count("payloads.boolean_diff");
 
   for (int pi = 0; pi < j_len(params) && pi < max_params; pi++) {
     const char *param = j_at(params, pi)->str;
-    for (size_t fam = 0; fam < sizeof(FAMILIES) / sizeof(FAMILIES[0]); fam++) {
+    for (int fam = 0; fam < fam_n; fam++) {
+      const char *p_true = rules_arr_str("payloads.boolean_diff", fam, "true", "");
+      const char *p_false = rules_arr_str("payloads.boolean_diff", fam, "false", "");
+      const char *ctx_name = rules_arr_str("payloads.boolean_diff", fam, "context", "默认");
+      if (!p_true[0] || !p_false[0]) continue;
       buf_t ut, uf;
       buf_init(&ut);
       buf_init(&uf);
-      web_url_set_param(target, param, FAMILIES[fam].t, &ut);
-      web_url_set_param(target, param, FAMILIES[fam].f, &uf);
+      web_url_set_param(target, param, p_true, &ut);
+      web_url_set_param(target, param, p_false, &uf);
       fetch_t ft, ff;
       t_fetch(ctx, ut.data, &ft);
       t_fetch(ctx, uf.data, &ff);
@@ -1783,9 +1618,9 @@ static int t_sqli_probe(tool_ctx_t *ctx, json_t *args, tool_result_t *out) {
 
       json_t *rec = j_obj();
       j_set_str(rec, "param", param);
-      j_set_str(rec, "context", FAMILIES[fam].ctx);
-      j_set_str(rec, "payload_true", FAMILIES[fam].t);
-      j_set_str(rec, "payload_false", FAMILIES[fam].f);
+      j_set_str(rec, "context", ctx_name);
+      j_set_str(rec, "payload_true", p_true);
+      j_set_str(rec, "payload_false", p_false);
       j_set_str(rec, "verdict", verdict);
       j_set_num(rec, "status_true", ft.status);
       j_set_num(rec, "status_false", ff.status);

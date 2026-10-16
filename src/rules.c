@@ -15,199 +15,118 @@ static int g_from_file = 0;
 static char *g_default_text = NULL;      /* exe 内置规则文本(借出给 json_parse,退出时释放) */
 
 /* ---------- 内置默认规则(通用,不含任何具体站点信息) ---------- */
-static const char DEFAULT_RULES[] =
-"{\n"
-"  \"version\": \"1\",\n"
-"  \"note\": \"站点知识全在这里:常见误发布路径、内容特征、期望的安全响应头、错误回显特征。\",\n"
-"  \"probing\": {\n"
-"    \"max_paths\": 40,\n"
-"    \"max_dirs\": 40,\n"
-"    \"max_params\": 3,\n"
-"    \"timeout_ms\": 20000,\n"
-"    \"similar_bytes\": 64,\n"
-"    \"similar_ratio\": 0.06\n"
-"  },\n"
-"  \"sensitive_paths\": [\n"
-"    \"/.env\", \"/.env.bak\", \"/.env.save\", \"/config/.env\", \"/portal/.env\",\n"
-"    \"/.git/config\", \"/.git/HEAD\", \"/.svn/entries\", \"/.hg/hgrc\", \"/.DS_Store\",\n"
-"    \"/backup.sql\", \"/db.sql\", \"/dump.sql\", \"/database.sql\", \"/www.sql\",\n"
-"    \"/backup.zip\", \"/www.zip\", \"/web.zip\", \"/site.tar.gz\",\n"
-"    \"/index.php.bak\", \"/config.php.bak\", \"/web.config.bak\", \"/config.yml.bak\",\n"
-"    \"/application.yml\", \"/application.properties\", \"/config.json\", \"/.npmrc\",\n"
-"    \"/phpinfo.php\", \"/info.php\", \"/WEB-INF/web.xml\", \"/META-INF/MANIFEST.MF\",\n"
-"    \"/id_rsa\", \"/.ssh/id_rsa\", \"/private.key\", \"/error.log\", \"/debug.log\"\n"
-"  ],\n"
-"  \"dir_candidates\": [\n"
-"    \"/uploads/\", \"/upload/\", \"/files/\", \"/download/\", \"/downloads/\",\n"
-"    \"/backup/\", \"/bak/\", \"/db/\", \"/database/\", \"/data/\", \"/log/\", \"/logs/\",\n"
-"    \"/temp/\", \"/tmp/\", \"/cache/\", \"/static/\", \"/assets/\", \"/public/\",\n"
-"    \"/admin/\", \"/manage/\", \"/manager/\", \"/system/\", \"/console/\", \"/druid/\",\n"
-"    \"/phpmyadmin/\", \"/adminer.php\", \"/wp-admin/\", \"/actuator/\", \"/swagger-ui.html\"\n"
-"  ],\n"
-"  \"signatures\": [\n"
-"    {\"name\": \"配置文件泄露\", \"kind\": \"敏感信息\", \"severity\": \"严重\",\n"
-"     \"tag\": \"config-secrets\",\n"
-"     \"body_any\": [\"DB_PASSWORD=\", \"DB_HOST=\", \"DB_USER=\", \"REDIS_PASSWORD=\",\n"
-"                  \"SECRET_KEY=\", \"APP_KEY=\", \"AWS_SECRET_ACCESS_KEY\"],\n"
-"     \"body_not_any\": [\"<html\", \"<!doctype\"], \"min_bytes\": 20},\n"
-"    {\"name\": \"数据库备份文件\", \"kind\": \"敏感信息\", \"severity\": \"严重\",\n"
-"     \"tag\": \"sql-dump\",\n"
-"     \"body_any\": [\"INSERT INTO\", \"CREATE TABLE\", \"DROP TABLE\", \"MySQL dump\",\n"
-"                  \"PostgreSQL database dump\"],\n"
-"     \"body_not_any\": [\"<html\", \"<!doctype\"], \"min_bytes\": 64},\n"
-"    {\"name\": \"私钥文件\", \"kind\": \"敏感信息\", \"severity\": \"严重\",\n"
-"     \"tag\": \"private-key\",\n"
-"     \"body_any\": [\"BEGIN RSA PRIVATE KEY\", \"BEGIN PRIVATE KEY\",\n"
-"                  \"BEGIN OPENSSH PRIVATE KEY\", \"BEGIN EC PRIVATE KEY\"]},\n"
-"    {\"name\": \"版本库元数据\", \"kind\": \"敏感信息\", \"severity\": \"高\",\n"
-"     \"tag\": \"vcs-metadata\",\n"
-"     \"body_any\": [\"[core]\", \"repositoryformatversion\", \"ref: refs/\",\n"
-"                  \"svn:wc:\", \"<wc-entries\"]},\n"
-"    {\"name\": \"数据库连接配置\", \"kind\": \"敏感信息\", \"severity\": \"高\",\n"
-"     \"tag\": \"db-uri\",\n"
-"     \"body_any\": [\"jdbc:mysql\", \"jdbc:postgresql\", \"mongodb://\", \"redis://\",\n"
-"                  \"mysql://\", \"postgres://\"],\n"
-"     \"body_not_any\": [\"<html\", \"<!doctype\"], \"min_bytes\": 16},\n"
-"    {\"name\": \"源码备份\", \"kind\": \"敏感信息\", \"severity\": \"高\", \"tag\": \"source-backup\",\n"
-"     \"path_suffix_any\": [\".bak\", \".old\", \".orig\", \".save\", \".swp\", \".tmp\", \"~\"],\n"
-"     \"body_any\": [\"<?php\", \"#include\", \"package \", \"<configuration\", \"function \"],\n"
-"     \"min_bytes\": 64},\n"
-"    {\"name\": \"归档文件\", \"kind\": \"敏感信息\", \"severity\": \"中\", \"tag\": \"archive\",\n"
-"     \"body_prefix_any\": [\"PK\"], \"min_bytes\": 512},\n"
-"    {\"name\": \"环境信息页\", \"kind\": \"敏感信息\", \"severity\": \"中\", \"tag\": \"phpinfo\",\n"
-"     \"body_any\": [\"PHP Version =>\", \"<title>phpinfo()</title>\"]},\n"
-"    {\"name\": \"日志文件\", \"kind\": \"敏感信息\", \"severity\": \"中\", \"tag\": \"log-file\",\n"
-"     \"path_suffix_any\": [\".log\"],\n"
-"     \"body_any\": [\"ERROR\", \"WARN\", \"Exception\", \"INFO \"], \"min_bytes\": 512},\n"
-"    {\"name\": \"Java 应用配置清单\", \"kind\": \"敏感信息\", \"severity\": \"中\",\n"
-"     \"tag\": \"java-web-config\", \"path_suffix_any\": [\"web.xml\", \"MANIFEST.MF\"],\n"
-"     \"body_any\": [\"<web-app\", \"Manifest-Version\"]}\n"
-"  ],\n"
-"  \"weak_headers\": [\n"
-"    {\"name\": \"strict-transport-security\", \"title\": \"未启用 HSTS\", \"severity\": \"中\",\n"
-"     \"only_https\": 1,\n"
-"     \"impact\": \"首次访问或证书异常时容易被降级劫持\",\n"
-"     \"fix\": \"在 HTTPS 站点启用 HSTS 并设置合理的 max-age\"},\n"
-"    {\"name\": \"content-security-policy\", \"title\": \"缺少内容安全策略(CSP)\", \"severity\": \"中\",\n"
-"     \"impact\": \"对脚本注入缺少第二道拦截\",\n"
-"     \"fix\": \"按业务梳理资源白名单后逐步启用 CSP\"},\n"
-"    {\"name\": \"x-content-type-options\", \"title\": \"缺少 MIME 嗅探防护\", \"severity\": \"低\",\n"
-"     \"impact\": \"浏览器可能把非脚本内容当脚本执行\",\n"
-"     \"fix\": \"增加 X-Content-Type-Options: nosniff\"},\n"
-"    {\"name\": \"x-frame-options\", \"title\": \"缺少点击劫持防护\", \"severity\": \"低\",\n"
-"     \"impact\": \"页面可被第三方框架嵌入用于诱导点击\",\n"
-"     \"fix\": \"增加 X-Frame-Options: SAMEORIGIN 或 CSP 的 frame-ancestors\"},\n"
-"    {\"name\": \"referrer-policy\", \"title\": \"缺少引用来源策略\", \"severity\": \"信息\",\n"
-"     \"impact\": \"外跳时可能把内部地址带出去\",\n"
-"     \"fix\": \"增加 Referrer-Policy: strict-origin-when-cross-origin\"},\n"
-"    {\"name\": \"permissions-policy\", \"title\": \"缺少浏览器特性策略\", \"severity\": \"信息\",\n"
-"     \"impact\": \"摄像头、定位等浏览器特性未被约束\",\n"
-"     \"fix\": \"按需增加 Permissions-Policy\"}\n"
-"  ],\n"
-"  \"profile_keywords\": [\"身份证\", \"内部文件\", \"测试账号\", \"数据库口令\"],\n"
-"  \"profile_file_types\": [\".env\", \".sql\", \".bak\", \".zip\", \".log\", \".config\", \".yml\"],\n"
-"  \"server_header_keys\": [\"server\", \"x-powered-by\", \"x-aspnet-version\",\n"
-"                          \"x-aspnetmvc-version\", \"x-generator\", \"x-runtime\", \"via\"],\n"
-"  \"error_signatures\": [\"sql syntax\", \"you have an error in your sql\",\n"
-"                        \"warning: mysql\", \"mysqli_\", \"pg_query\", \"postgresql query failed\",\n"
-"                        \"ora-0\", \"oracle error\", \"sqlite3_\", \"unclosed quotation mark\",\n"
-"                        \"odbc sql server driver\", \"system.data.sqlclient\", \"jdbc.exception\",\n"
-"                        \"traceback (most recent call last)\", \"fatal error:\", \"notice: undefined\",\n"
-"                        \"warning: include\", \"microsoft ole db provider\"],\n"
-"  \"dangerous_methods\": [\"PUT\", \"DELETE\", \"TRACE\", \"PATCH\", \"CONNECT\", \"COPY\", \"MOVE\"],\n"
-"  \"suspicious_tlds\": [\".xyz\", \".top\", \".cc\", \".biz\", \".click\", \".work\", \".win\",\n"
-"                       \".bid\", \".loan\", \".review\", \".gq\", \".cf\", \".tk\", \".ml\", \".su\"],\n"
-"  \"tamper\": {\"report_external_hosts\": 8}\n"
-"}\n";
+/* 出厂规则不再写死在 C 里 —— 它就是 data\rules.json(构建时被 mkres 编进 exe)。
+ * 这样做的好处:
+ *   · 内置规则与外部规则**同一份文件、同一套 schema**,不存在两套逻辑;
+ *   · 出厂值改一行 JSON 就行(改完 build.bat 重新编),不需要动 C 代码;
+ *   · 生效规则里缺哪一项,就自动回落到出厂值(见 rules_lookup 的双层查找)。 */
 
 /* ---------- 载入 ---------- */
 /* 规则查找顺序(前面的优先):
      ① 数据目录里的 rules.json   —— 用户在 ~\.bw_agent\rules.json 里改,最直观
      ② exe 目录及其上级的 data\rules.json —— 源码仓库/绿色目录的放法
      ③ exe 内置的那一份          —— 单文件交付时的兜底
-     ④ 编译进代码的默认规则      —— 最后兜底 */
+   另外,**出厂规则始终会被加载成第二层**(见 rules_lookup):
+   生效规则里缺哪一项,就自动用出厂值顶上 —— 用户只写自己关心的那几段也行,
+   不需要把整份规则抄一遍;代码里也就不必再写任何"默认值常量"。 */
 static const char *CANDIDATES_REL[] = {"data\\rules.json", "..\\data\\rules.json",
                                        "..\\..\\data\\rules.json"};
+
+static json_t *g_factory = NULL;        /* 出厂规则(内置数据,双层查找的第二层) */
+static char *g_factory_text = NULL;
+
+static json_t *try_parse_rules(const char *path, int *is_file) {
+  size_t len = 0;
+  char *text = file_read_all(path, &len);
+  if (!text) return NULL;
+  /* 记事本/PowerShell 存 UTF-8 会带 BOM,而 JSON 解析器不认它 ——
+     用户改完规则却被当成"文件坏了"是最气人的一种失败,这里统一剥掉。 */
+  char *body = text;
+  if (len >= 3 && (unsigned char)body[0] == 0xEF && (unsigned char)body[1] == 0xBB &&
+      (unsigned char)body[2] == 0xBF) {
+    body += 3;
+  }
+  json_t *j = json_parse(body);
+  free(text);
+  if (!j) {
+    log_warn("[规则] %s 不是合法 JSON,跳过", path);
+    return NULL;
+  }
+  if (!j_get(j, "signatures")) {
+    /* 允许"只写要覆盖的那几段":没有 signatures 也不再当成坏文件 */
+    log_info("[规则] %s 只覆盖了部分配置(没有 signatures 段,按增量规则处理)", path);
+  }
+  if (is_file) *is_file = 1;
+  return j;
+}
 
 void rules_init(const char *base_dir) {
   if (g_root) return;
   const char *base = (base_dir && *base_dir) ? base_dir : "";
 
+  /* 出厂规则:永远是内置数据(data/rules.json 由 mkres 编进 exe) */
+  if (!g_factory && res_load_text("data/rules.json", &g_factory_text, NULL)) {
+    g_factory = json_parse(g_factory_text);
+    if (g_factory) {
+      log_debug("[规则] 出厂规则已载入(%d 字节)", (int)strlen(g_factory_text));
+    }
+  }
+
   /* ① 数据目录 */
   char user_rules[MAX_PATH * 2];
   app_data_path(user_rules, sizeof(user_rules), "rules.json");
-  {
-    size_t len = 0;
-    char *text = file_read_all(user_rules, &len);
-    if (text) {
-      json_t *j = json_parse(text);
-      if (j && j_get(j, "signatures")) {
-        g_root = j;
-        g_from_file = 1;
-        snprintf(g_source, sizeof(g_source), "%s", user_rules);
-        log_info("[规则] 已载入 %s", user_rules);
-        free(text);
-        return;
-      }
-      json_free(j);
-      log_warn("[规则] %s 解析失败或缺 signatures,继续找下一个", user_rules);
-      free(text);
-    }
+  g_root = try_parse_rules(user_rules, &g_from_file);
+  if (g_root) {
+    snprintf(g_source, sizeof(g_source), "%s", user_rules);
+    log_info("[规则] 已载入 %s", user_rules);
+    return;
   }
 
   /* ② exe 目录附近 */
   for (size_t i = 0; i < sizeof(CANDIDATES_REL) / sizeof(CANDIDATES_REL[0]) && !g_root; i++) {
     char path[MAX_PATH * 2];
     snprintf(path, sizeof(path), "%s%s", base, CANDIDATES_REL[i]);
-    size_t len = 0;
-    char *text = file_read_all(path, &len);
-    if (!text) continue;
-    json_t *j = json_parse(text);
-    if (j && j_get(j, "signatures")) {
-      g_root = j;
-      g_from_file = 1;
+    g_root = try_parse_rules(path, &g_from_file);
+    if (g_root) {
       snprintf(g_source, sizeof(g_source), "%s", path);
       log_info("[规则] 已载入 %s", path);
-    } else {
-      json_free(j);
-      log_warn("[规则] %s 解析失败或缺 signatures,继续找下一个", path);
-    }
-    free(text);
-  }
-  if (!g_root) {
-    /* 磁盘上没有规则文件时,用 exe 内置的那一份(与出厂 data\rules.json 相同),
-       这样单文件拷贝出去、旁边什么都没有,也能按完整定义工作。 */
-    if (res_load_text("data/rules.json", &g_default_text, NULL)) {
-      g_root = json_parse(g_default_text);
-      if (g_root && j_get(g_root, "signatures")) {
-        g_from_file = 0;
-        snprintf(g_source, sizeof(g_source), "exe 内置规则(自带;在数据目录放 rules.json 即可覆盖)");
-        log_info("[规则] 使用 exe 内置规则(%d 字节)", (int)strlen(g_default_text));
-      } else {
-        json_free(g_root);
-        g_root = NULL;
-      }
+      return;
     }
   }
-  if (!g_root) {
-    g_root = json_parse(DEFAULT_RULES);
+
+  /* ③ 出厂规则作为生效规则(磁盘上没有可用的规则文件时) */
+  if (g_factory) {
+    g_root = json_parse(g_factory_text);     /* 生效的那份要是独立副本,免得被改动 */
     g_from_file = 0;
-    snprintf(g_source, sizeof(g_source), "内置默认规则(未找到外部规则文件)");
-    log_info("[规则] 使用内置默认规则");
+    snprintf(g_source, sizeof(g_source),
+             "exe 内置规则(自带;在数据目录放 rules.json 即可覆盖)");
+    log_info("[规则] 使用 exe 内置规则(%d 字节)", (int)strlen(g_factory_text));
   }
 }
 
 void rules_shutdown(void) {
   json_free(g_root);
   g_root = NULL;
-  free(g_default_text);
-  g_default_text = NULL;
+  json_free(g_factory);
+  g_factory = NULL;
+  free(g_factory_text);
+  g_factory_text = NULL;
 }
 
 const char *rules_source(void) { return g_source; }
 int rules_from_file(void) { return g_from_file; }
 json_t *rules_root(void) { return g_root; }
-const char *rules_default_json(void) { return DEFAULT_RULES; }
+/* 出厂规则的 JSON 文本(导出给使用者照着改:它就是我们内置的那一份) */
+const char *rules_default_json(void) {
+  return g_factory_text ? g_factory_text : "{\"version\":\"1\"}";
+}
+
+/* ---------- 双层查找:先生效规则,再出厂规则 ---------- */
+static json_t *rules_lookup(const char *path) {
+  json_t *v = (g_root && path) ? j_path(g_root, path) : NULL;
+  if (!v && g_factory && path) v = j_path(g_factory, path);
+  return v;
+}
 
 /* ---------- 字符串数组(借出,懒加载缓存) ---------- */
 typedef struct { char *key; char **items; int count; } list_cache_t;
@@ -216,14 +135,14 @@ static int g_list_n = 0;
 
 const char **rules_str_list(const char *key, int *count) {
   if (count) *count = 0;
-  if (!g_root || !key) return NULL;
+  if (!key) return NULL;
   for (int i = 0; i < g_list_n; i++) {
     if (strcmp(g_lists[i].key, key) == 0) {
       if (count) *count = g_lists[i].count;
       return (const char **)g_lists[i].items;
     }
   }
-  json_t *arr = j_get(g_root, key);
+  json_t *arr = rules_lookup(key);
   if (!arr || arr->type != J_ARR) return NULL;
   if (g_list_n >= (int)(sizeof(g_lists) / sizeof(g_lists[0]))) return NULL;
   list_cache_t *c = &g_lists[g_list_n++];
@@ -238,12 +157,62 @@ const char **rules_str_list(const char *key, int *count) {
   return (const char **)c->items;
 }
 
+/* ---------- 通用数组读法(结构化的那几段配置) ----------
+   rules.json 里长这样:
+     "patterns": { "sensitive": [ {"kind":"身份证","pattern":"...","severity":"严重"}, ... ] }
+   用法:rules_arr_count("patterns.sensitive") / rules_arr_str(..., i, "pattern", "")
+   同样走双层查找:生效规则里没有这一项就用出厂值。 */
+int rules_arr_count(const char *path) {
+  json_t *arr = rules_lookup(path);
+  return (arr && arr->type == J_ARR) ? j_len(arr) : 0;
+}
+
+const char *rules_arr_str(const char *path, int index, const char *field, const char *def) {
+  json_t *arr = rules_lookup(path);
+  json_t *it = (arr && arr->type == J_ARR) ? j_at(arr, index) : NULL;
+  if (!it) return def;
+  if (!field || !*field) return (it->type == J_STR) ? it->str : def;
+  json_t *v = j_get(it, field);
+  return (v && v->type == J_STR) ? v->str : def;
+}
+
+double rules_arr_num(const char *path, int index, const char *field, double def) {
+  json_t *arr = rules_lookup(path);
+  json_t *it = (arr && arr->type == J_ARR) ? j_at(arr, index) : NULL;
+  if (!it) return def;
+  json_t *v = field && *field ? j_get(it, field) : it;
+  if (!v) return def;
+  if (v->type == J_NUM) return v->num;
+  if (v->type == J_BOOL) return v->b ? 1 : 0;
+  return def;
+}
+
+/* 严重度排序:等级名 → 序号(严重 4 / 高 3 …)。等级表在规则里(severity_levels),
+   所以单位可以自己改叫法或加等级,不用动代码。 */
+int rules_severity_rank(const char *name, int def) {
+  if (!name) return def;
+  int n = rules_arr_count("severity_levels");
+  for (int i = 0; i < n; i++) {
+    const char *lv = rules_arr_str("severity_levels", i, "name", "");
+    if (lv[0] && strcmp(lv, name) == 0) {
+      return (int)rules_arr_num("severity_levels", i, "rank", def);
+    }
+  }
+  return def;
+}
+
+/* 取一个字符串配置项(支持点号路径,如 alerts.channel_immediate;双层查找) */
+const char *rules_text(const char *path, const char *def) {
+  json_t *v = rules_lookup(path);
+  if (v && v->type == J_STR && v->str[0]) return v->str;
+  return def;
+}
+
 static double rules_num_raw(const char *key, double fallback) {
-  if (!g_root) return fallback;
   char path[128];
   snprintf(path, sizeof(path), "probing.%s", key);
-  json_t *v = j_path(g_root, path);
-  if (!v) v = j_get(g_root, key);
+  json_t *v = rules_lookup(path);
+  if (!v) v = rules_lookup(key);
   return (v && v->type == J_NUM) ? v->num : fallback;
 }
 
@@ -252,9 +221,7 @@ double rules_number(const char *key, double fallback) {
 }
 
 int rules_flag(const char *key, int fallback) {
-  if (!g_root) return fallback;
-  json_t *v = j_path(g_root, key);
-  if (!v) v = j_get(g_root, key);
+  json_t *v = rules_lookup(key);
   return (v && v->type == J_BOOL) ? v->b : fallback;
 }
 
@@ -309,7 +276,7 @@ static int prefix_in_list_icase(const char *s, json_t *arr, const char **matched
 
 int rules_sig_match(const char *path, const char *body, rules_sig_t *out) {
   if (!g_root) return -1;
-  json_t *sigs = j_get(g_root, "signatures");
+  json_t *sigs = rules_lookup("signatures");
   const char *text = body ? body : "";
   size_t bytes = strlen(text);
   /* "这是不是一个 HTML 页面"只取前 4KB 判断就够 */
@@ -369,13 +336,13 @@ int rules_sig_match(const char *path, const char *body, rules_sig_t *out) {
 /* ---------- 弱配置期望头 ---------- */
 int rules_weak_header_count(void) {
   if (!g_root) return 0;
-  json_t *arr = j_get(g_root, "weak_headers");
+  json_t *arr = rules_lookup("weak_headers");
   return (arr && arr->type == J_ARR) ? j_len(arr) : 0;
 }
 
 const char *rules_weak_header(int index, const char *field, const char *fallback) {
   if (!g_root) return fallback;
-  json_t *arr = j_get(g_root, "weak_headers");
+  json_t *arr = rules_lookup("weak_headers");
   json_t *it = j_at(arr, index);
   if (!it) return fallback;
   json_t *v = j_get(it, field);
@@ -387,7 +354,7 @@ const char *rules_weak_header(int index, const char *field, const char *fallback
 
 int rules_weak_header_num(int index, const char *field, int fallback) {
   if (!g_root) return fallback;
-  json_t *arr = j_get(g_root, "weak_headers");
+  json_t *arr = rules_lookup("weak_headers");
   json_t *it = j_at(arr, index);
   json_t *v = it ? j_get(it, field) : NULL;
   return (v && v->type == J_NUM) ? (int)v->num : fallback;

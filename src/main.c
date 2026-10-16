@@ -1128,6 +1128,18 @@ int app_main(int argc, char **argv) {
        用法: agent.exe tool dir_probe 127.0.0.1:8899 */
     const char *tname = (argc > 2) ? argv[2] : "sensitive_file_probe";
     const char *target = (argc > 3) ? argv[3] : "";
+    int args_start = 4;
+    /* 只给工具名、不给目标时(纯文本类工具很常见),第 3 个参数直接当参数:
+         agent.exe tool sensitive_scan '{"text":"..."}'
+         agent.exe tool password_check text=abc123 */
+    if (argc > 3) {
+      const char *p = argv[3];
+      while (*p == ' ') p++;
+      if (*p == '{' || strchr(p, '=')) {
+        target = "";
+        args_start = 3;
+      }
+    }
     const char *ddir = app_data_dir();
     ensure_dir(ddir);
     res_bootstrap_data_dir();       /* 首次运行:把可改的规则/说明/测试集落到数据目录 */
@@ -1155,7 +1167,7 @@ int app_main(int argc, char **argv) {
     ctx.domain_count = nd;
     net_set_scope(ctx.task_id, nd ? doms : NULL, nd);
 
-    json_t *args = args_from_argv(argc, argv, 4, target, tname);
+    json_t *args = args_from_argv(argc, argv, args_start, target, tname);
     tool_result_t tr;
     memset(&tr, 0, sizeof(tr));
     printf("规则来源:%s\n", rules_source());
@@ -1187,6 +1199,64 @@ int app_main(int argc, char **argv) {
     net_shutdown();
     rules_shutdown();
     return rc == 0 ? 0 : 1;
+  }
+
+  if (str_ieq(cmd, "regextest")) {
+    /* 自己写正则时的验枪口:agent.exe regextest "<正则>" "<样本文本>"
+       规则是数据,数据写错不该靠猜 —— 这里直接告诉你它匹配到了哪一段。 */
+    const char *pattern = (argc > 2) ? argv[2] : "";
+    const char *text = (argc > 3) ? argv[3] : "";
+    if (!pattern[0] || !text[0]) {
+      printf("用法: agent.exe regextest \"<正则>\" \"<样本文本>\"\n");
+      printf("      例: agent.exe regextest \"EMP[0-9]{8}\" \"工号 EMP2024001234\"\n");
+      net_shutdown();
+      rules_shutdown();
+      return 1;
+    }
+    int off = 0, len = 0;
+    printf("正则: %s\n样本: %s\n", pattern, text);
+    if (tools_regex_first(pattern, text, &off, &len)) {
+      printf("命中: 位置 %d,长度 %d → \"%.*s\"\n", off, len, len, text + off);
+    } else {
+      printf("没有命中(检查字符类/量词写法,或样本是否真的包含它)\n");
+    }
+    /* 顺手把它放进当前生效规则里比一比:确认你改的是"生效的那一份" */
+    printf("当前生效规则: %s\n", rules_source());
+    net_shutdown();
+    rules_shutdown();
+    return 0;
+  }
+
+  if (str_ieq(cmd, "netbench")) {
+    /* 连接复用/解压整改前后的对比基准:同一个 URL 连打 n 次,分别量"复用"与"不复用"。
+       用法: agent.exe netbench example.com [次数] */
+    const char *target = (argc > 2) ? argv[2] : "";
+    int n = (argc > 3) ? atoi(argv[3]) : 20;
+    if (!target[0]) {
+      printf("用法: agent.exe netbench <授权域名或URL> [次数]\n");
+      return 1;
+    }
+    char host[256];
+    net_host_port_of(target, host, sizeof(host));
+    net_align_base_from(target);
+    const char *doms[1];
+    int nd = 0;
+    if (host[0]) { doms[0] = host; nd = 1; }
+    net_set_scope("BENCH", nd ? doms : NULL, nd);
+    char url[512];
+    snprintf(url, sizeof(url), "%s", target);
+    if (!str_icontains(url, "://")) {
+      snprintf(url, sizeof(url), "http://%s/", target);
+    }
+    printf("基准目标:%s(授权域名:%s)\n\n", url, nd ? host : "(未限定)");
+    int conns = 0, reqs = 0;
+    int avg = net_bench(url, n, &conns, &reqs);
+    printf("\n提示:这一项是「网络层到底快不快」的实测口子。当前结论是 ——\n"
+           "      WinHTTP 会话本身就带连接池,手工缓存连接句柄没有可测量收益(已实测);\n"
+           "      真正影响检出与速度的是解压开关、超时与限速(rules.json 的 probing)。\n");
+    net_shutdown();
+    rules_shutdown();
+    return avg < 0 ? 1 : 0;
   }
 
   if (str_ieq(cmd, "chat")) {
