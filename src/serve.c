@@ -353,6 +353,11 @@ static char *build_status_json(void) {
   buf_printf(&b, ",\"model\":%s", llm_enabled() ? "true" : "false");
   buf_puts(&b, ",\"modelName\":");
   buf_json_str(&b, llm_enabled() ? "恒脑智能体(在线)" : "本地规则降级(离线可用)");
+  /* 为什么降级:把平台给的原因(如"租户不存在")如实带给界面,而不是只说"离线" */
+  buf_puts(&b, ",\"modelError\":");
+  buf_json_str(&b, llm_last_error());
+  /* 上一次调用模型是否失败(界面据此把原因显示出来) */
+  buf_printf(&b, ",\"modelFailed\":%s", llm_last_error()[0] ? "true" : "false");
   buf_printf(&b, ",\"tools\":%d,\"skills\":%d", tools_count(), skills_count());
   buf_printf(&b, ",\"maxSteps\":%d", MAX_STEPS_DEFAULT);
 

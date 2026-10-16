@@ -124,8 +124,14 @@ function renderStatus(s) {
     `会话 ${s.sessionId} · 任务 ${s.taskId} · 工具 ${s.tools} 个 / 技能 ${s.skills} 个 · 步数上限 ${s.maxSteps}`;
 
   const pm = $('pill-model');
-  pm.textContent = '模型 · ' + s.modelName;
+  pm.textContent = '模型 · ' + s.modelName + (s.modelFailed ? '(上次调用失败)' : '');
   pm.className = 'pill ' + (s.model ? 'on' : 'off');
+  if (s.modelFailed && s.modelError) {
+    /* 把平台给的原因挂在提示上:用户一眼知道是凭证问题还是网络问题 */
+    pm.title = '模型调用失败:' + s.modelError;
+  } else {
+    pm.removeAttribute('title');
+  }
 
   const ps = $('pill-scope');
   ps.textContent = '授权 · ' + (s.authorized ? s.domain : '未设置');

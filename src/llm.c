@@ -45,6 +45,16 @@ void llm_make_sign(const char *app_key, const char *app_secret, char *out, size_
 }
 
 /* ================= 配置 ================= */
+/* 最近一次调用模型失败的原因(界面/命令行可以据此说明"为什么降级了") */
+static char *g_last_error = NULL;
+
+void llm_set_last_error(const char *msg) {
+  free(g_last_error);
+  g_last_error = msg && *msg ? xstrdup(msg) : NULL;
+}
+
+const char *llm_last_error(void) { return g_last_error ? g_last_error : ""; }
+
 static void cfg_set(char *dst, size_t cap, const char *value) {
   strncpy_s(dst, cap, value ? value : "", _TRUNCATE);
   char *t = str_trim(dst);
@@ -342,8 +352,23 @@ static int hn_call(const char *prompt, buf_t *answer_out) {
   int rc = -1;
   if (resp.error) {
     log_warn("恒脑调用失败: %s", resp.error);
+    llm_set_last_error(resp.error);
   } else if (resp.status != 200) {
     log_warn("恒脑返回 HTTP %d", resp.status);
+    llm_set_last_error("接口返回非 200");
+  } else if (resp.body && resp.body[0] == '{') {
+    /* 平台在鉴权/参数不对时也是 HTTP 200,但在体里给错误:
+         {"msg":"请求头中缺少appKey或sign","code":-402,...}
+       这种必须原样说出来 —— 否则用户只看到「解析失败」,不知道该去填 .env。 */
+    json_t *o = json_parse(resp.body);
+    const char *msg = o ? j_s(o, "msg", NULL) : NULL;
+    if (msg && *msg) {
+      double code = o ? j_n(o, "code", 0) : 0;
+      log_warn("恒脑接口拒绝请求: %s(code=%.0f)。检查数据目录或 exe 旁的 .env 里的 "
+               "DAS_APP_KEY / DAS_APP_SECRET / DAS_AGENT_ID", msg, code);
+      llm_set_last_error(msg);
+    }
+    json_free(o);
   } else if (resp.body) {
     /* SSE:逐行取 data:{...};答案类内容(execute_result/react_answer)优先 */
     char **lines = NULL;

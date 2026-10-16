@@ -27,6 +27,11 @@ void llm_init(const char *env_dir);
 const llm_config_t *llm_config(void);
 int  llm_enabled(void);
 
+/* 最近一次调用模型失败的原因(空字符串 = 没有失败)。
+   用途:界面/命令行说明"为什么降级到本地规则",而不是只显示"离线可用"。 */
+void        llm_set_last_error(const char *msg);
+const char *llm_last_error(void);
+
 /* 决策:把"用户输入 + 可用工具/技能 + 已获得的观察"拼成提示词,问模型要决策。
    context 是循环里的观察记录(JSON 数组,可为 NULL)。
    返回 0 成功(decision 已填);非 0 表示失败,调用方应走降级。 */
