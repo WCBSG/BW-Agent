@@ -1,0 +1,221 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>网站安全巡检智能体</title>
+<link rel="icon" type="image/png" href="/ui/logo.png">
+<link rel="stylesheet" href="/ui/app.css">
+</head>
+<body>
+<div class="app">
+
+  <header class="topbar">
+    <div class="brand">
+      <span class="logo">◈</span>
+      <div>
+        <h1>网站安全巡检智能体</h1>
+        <div class="sub" id="subtitle">正在连接后端…</div>
+      </div>
+    </div>
+    <div class="topbar-right">
+      <span class="pill" id="pill-model">模型 ·</span>
+      <span class="pill" id="pill-scope">授权 ·</span>
+      <span class="pill" id="pill-count">发现 · 0</span>
+      <button class="ghost" id="btn-theme">暗色</button>
+      <button class="ghost" id="btn-refresh">刷新数据</button>
+      <button class="ghost" id="btn-scope">设置巡检目标</button>
+    </div>
+  </header>
+
+  <nav class="views" id="views">
+    <button class="vtab active" data-view="loop">决策循环</button>
+    <button class="vtab" data-view="report">报告与告警</button>
+    <button class="vtab" data-view="history">巡检历史</button>
+    <button class="vtab" data-view="assets">资产底账</button>
+    <button class="vtab" data-view="eval">效果评测</button>
+    <button class="vtab" data-view="rules">生效规则</button>
+    <button class="vtab" data-view="caps">能力清单</button>
+  </nav>
+
+  <main class="main">
+
+    <!-- ===== 决策循环 ===== -->
+    <section class="view active" id="view-loop">
+      <div class="grid">
+        <section class="panel chat-panel">
+          <div class="panel-head">
+            <h2>决策循环</h2>
+            <span class="hint">它每一步在想什么、做了什么、看到什么，都会实时出现在这里</span>
+          </div>
+          <div class="stream" id="stream">
+            <div class="empty" id="stream-empty">
+              在下面说出你要巡检的目标。智能体会自己决定先查什么、再查什么，
+              并随时根据看到的结果调整下一步 —— 中途发现目标不可达或已经问清楚了，它会主动收尾并说明原因。
+            </div>
+          </div>
+          <form class="composer" id="form">
+            <textarea id="q" rows="1" placeholder="例如：把 127.0.0.1 这个站点完整巡检一遍，重点看敏感文件泄露"></textarea>
+            <button type="submit" id="btn-send">执行</button>
+          </form>
+        </section>
+
+        <aside class="side">
+          <section class="panel">
+            <div class="panel-head"><h2>本轮留痕</h2><span class="hint" id="trace-hint"></span></div>
+            <div class="trace" id="trace"><div class="muted">还没有执行过循环。</div></div>
+          </section>
+          <section class="panel">
+            <div class="panel-head"><h2>过程要点</h2><span class="hint">每一步的决策理由</span></div>
+            <div class="steps" id="steps"><div class="muted">执行后这里按步列出「为什么这么做」。</div></div>
+          </section>
+        </aside>
+      </div>
+    </section>
+
+    <!-- ===== 报告与告警 ===== -->
+    <section class="view" id="view-report">
+      <section class="panel">
+        <div class="panel-head">
+          <h2>最新巡检报告</h2>
+          <span class="hint" id="report-hint"></span>
+          <div class="head-actions">
+            <button class="ghost" id="btn-export">导出 Markdown</button>
+          </div>
+        </div>
+        <div class="tiles" id="report-tiles"></div>
+        <div class="report-summary" id="report-summary"></div>
+        <div class="report-cols">
+          <div class="mini">
+            <h3>按等级</h3>
+            <div class="bars" id="report-sev"></div>
+          </div>
+          <div class="mini">
+            <h3>按类别</h3>
+            <div class="bars" id="report-kind"></div>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-head"><h2>发现清单</h2><span class="hint" id="findings-hint"></span></div>
+        <div class="cards" id="findings-list"></div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-head">
+          <h2>告警推送</h2><span class="hint">严重/高危走邮件，中危走站内</span>
+        </div>
+        <div class="cards" id="alerts-list"></div>
+      </section>
+    </section>
+
+    <!-- ===== 巡检历史 ===== -->
+    <section class="view" id="view-history">
+      <section class="panel">
+        <div class="panel-head"><h2>巡检任务</h2><span class="hint">授权范围 + 只读约束</span></div>
+        <div class="cards" id="tasks-list"></div>
+      </section>
+      <section class="panel">
+        <div class="panel-head"><h2>运行记录</h2><span class="hint" id="runs-hint"></span></div>
+        <div class="table-wrap"><table class="table" id="runs-table"></table></div>
+      </section>
+      <section class="panel">
+        <div class="panel-head"><h2>内容基线</h2><span class="hint">首次采集，之后每次比对差异</span></div>
+        <div class="cards" id="baselines-list"></div>
+      </section>
+    </section>
+
+    <!-- ===== 资产底账 ===== -->
+    <section class="view" id="view-assets">
+      <section class="panel">
+        <div class="panel-head"><h2>资产底账</h2><span class="hint" id="assets-hint"></span></div>
+        <div class="filters" id="asset-filters"></div>
+        <div class="table-wrap"><table class="table" id="assets-table"></table></div>
+      </section>
+    </section>
+
+    <!-- ===== 效果评测 ===== -->
+    <section class="view" id="view-eval">
+      <section class="panel">
+        <div class="panel-head"><h2>检测效果评测</h2><span class="hint" id="eval-hint"></span></div>
+        <div class="tiles" id="eval-tiles"></div>
+        <div class="formula" id="eval-formula"></div>
+      </section>
+      <section class="panel">
+        <div class="panel-head"><h2>用例对账</h2><span class="hint">命中 / 漏检 / 多检</span></div>
+        <div class="cards" id="eval-outcomes"></div>
+      </section>
+      <section class="panel">
+        <div class="panel-head"><h2>测试集</h2><span class="hint">结果类 JSONL，一行一个用例</span></div>
+        <div class="cards" id="testcases-list"></div>
+      </section>
+    </section>
+
+    <!-- ===== 生效规则 ===== -->
+    <section class="view" id="view-rules">
+      <section class="panel">
+        <div class="panel-head"><h2>本次按什么定义检查</h2><span class="hint" id="rules-source"></span></div>
+        <p class="note">
+          下面是本次巡检实际使用的判定规则与落点清单。要调整检测范围，改规则文件后重新启动即可，
+          无需改动程序；报告里每条发现都会注明命中的是哪条规则。
+        </p>
+        <div class="table-wrap"><table class="table" id="rules-table"></table></div>
+      </section>
+      <section class="panel">
+        <div class="panel-head"><h2>落点清单</h2><span class="hint" id="rules-paths-hint"></span></div>
+        <div class="chips" id="rules-paths"></div>
+      </section>
+      <section class="panel">
+        <div class="panel-head"><h2>目录清单</h2><span class="hint" id="rules-dirs-hint"></span></div>
+        <div class="chips" id="rules-dirs"></div>
+      </section>
+    </section>
+
+    <!-- ===== 能力清单 ===== -->
+    <section class="view" id="view-caps">
+      <section class="panel">
+        <div class="panel-head"><h2>能力清单</h2><span class="hint" id="cap-count"></span></div>
+        <div class="tabs">
+          <button class="tab active" data-tab="skills">技能</button>
+          <button class="tab" data-tab="tools">工具</button>
+        </div>
+        <div class="tabpane" id="pane-skills"></div>
+        <div class="tabpane hidden" id="pane-tools"></div>
+      </section>
+    </section>
+
+  </main>
+</div>
+
+<!-- 授权确认弹窗：合规第一道闸，必须显式确认 -->
+<div class="modal hidden" id="modal">
+  <div class="modal-box">
+    <h3>设置巡检目标</h3>
+    <p class="muted">
+      本工具只允许对自己<strong>已获授权</strong>的站点做巡检。
+      请填写目标域名并确认授权，智能体才会对它发起请求。
+      （未授权时智能体只回答知识性问题，不会访问任何外部目标。）
+    </p>
+    <label>目标域名 / 地址
+      <input id="scope-domain" placeholder="例如 www.example-gov.cn;非标准端口写 127.0.0.1:8899">
+    </label>
+    <p class="muted" style="margin:-6px 0 14px">
+      站点不在 80/443 端口时请把端口一起写上（例如 <code>127.0.0.1:8899</code>），
+      否则请求会打到默认端口而取不到内容。
+    </p>
+    <label class="check">
+      <input type="checkbox" id="scope-ok">
+      我确认已获得该目标的巡检授权
+    </label>
+    <div class="modal-actions">
+      <button class="ghost" id="scope-cancel">取消</button>
+      <button id="scope-save">确认并生效</button>
+    </div>
+    <div class="err" id="scope-err"></div>
+  </div>
+</div>
+
+<script src="/ui/app.js"></script>
+</body>
+</html>

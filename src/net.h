@@ -1,0 +1,71 @@
+/* net.h —— 取数通道:HTTPS 请求 + 合规三件事。
+   所有对外请求都必须从这里走,这样"授权校验 / 限速 / 审计"就不可能被绕过。 */
+#ifndef AGENT_NET_H
+#define AGENT_NET_H
+
+#include "common.h"
+#include "io.h"
+#include "json.h"
+
+typedef struct {
+  int status;          /* HTTP 状态码;0 = 没连上 */
+  char *headers;       /* 原始响应头整块(CRLF 分隔)—— 弱配置判断必需 */
+  char *body;
+  size_t body_len;
+  char *error;         /* 失败原因(网络类) */
+  int rate_limited;    /* 这次是不是被限速拖过 */
+  int ms;              /* 耗时 */
+} http_resp_t;
+
+/* 初始化(内部会初始化 WinHTTP 会话;退出时 net_shutdown) */
+void net_init(void);
+void net_shutdown(void);
+/* 只读模式开关:为 1 时只允许 GET/HEAD(非破坏性要求,工具层也有一道) */
+void net_set_readonly(int on);
+
+/* 合规配置 */
+void net_set_scope(const char *task_id, const char **domains, int count);
+void net_set_audit_path(const char *path);
+void net_set_rate_limit(double qps);
+/* 目标地址对齐:演示/评测时把巡检起点指向本地靶站(如 http://127.0.0.1:8899)。
+   只改"协议+端口",主机名不变 —— 授权校验只认域名,不受影响。
+   不设置时该功能完全不生效(生产环境就是 https://<授权域名>)。 */
+void net_set_target_base(const char *base);
+/* 把 URL 的协议/端口对齐到 target base(主机相同才动),结果写进 out */
+void net_align_url(const char *url, char *out, size_t cap);
+
+/* 一次请求。method 只接受 GET/HEAD/POST(外部站点探测只允许 GET/HEAD)。
+   失败不抛异常,把原因写进 resp->error;调用方必须判断 status/error。 */
+void net_request(const char *url, const char *method, const char *content_type,
+                 const char *body, size_t body_len, http_resp_t *resp);
+void http_resp_free(http_resp_t *r);
+
+/* 审计日志:一行一条 JSONL,只追加 */
+void net_audit(const char *action, const char *target, int allowed, const char *detail,
+               const char *run_id);
+
+/* 已发起的请求计数(限流与报告用) */
+int  net_http_calls(void);
+
+/* 模型端点专用 POST:带 appKey/sign 自定义头(见 net.c 说明) */
+void hn_http_post(const char *url, const char *app_key, const char *sign,
+                  const char *body, http_resp_t *resp);
+
+/* 兼容 tools.h 的取数回调形状 */
+void *net_io(void);
+
+/* 取数通道的实现(给工具层用):内部完成授权校验 → 限速 → 请求 → 审计 */
+tools_io_t *net_io_impl(void);
+
+/* 小工具:取主机名、判断是否同一主机 */
+void net_host_of(const char *url, char *out, size_t cap);
+int  net_same_host(const char *a, const char *b);
+
+/* 从"用户填的地址"里拆出主机与端口(host / host:port / http://host:port/x 都认)。
+   返回端口号;0 = 没写端口。 */
+int  net_host_port_of(const char *in, char *host_out, size_t hcap);
+/* 按用户填的地址设置"地址对齐基准":写了端口就对齐过去(443 用 https,其余用 http)。
+   站点不在默认端口上时,这一步是"能不能取到内容"的关键。 */
+void net_align_base_from(const char *host_or_url);
+
+#endif /* AGENT_NET_H */
