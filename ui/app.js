@@ -1946,7 +1946,313 @@ document.querySelectorAll('#export-list button').forEach((b) => {
    安全边界在后端:只有这些白名单文件可写,JSON 必须先校验通过,写前自动留 .bak。 */
 const CFG = { files: [], current: null, dirty: false };
 
+/* ============ 规则设置：把 rules.json 按类型拆成子页 ============ */
+
+const SET_SCHEMA = [
+  { id: 'basic', title: '基础', desc: '规则版本',
+    fields: [{ k: 'version', label: '规则版本', type: 'text' }] },
+  { id: 'ui', title: '界面', desc: '布局与观感（记在本机）' },
+  { id: 'severity', title: '严重等级', desc: '等级名称与排序权重',
+    fields: [{ k: 'severity_levels', label: '等级（权重越大越严重）', type: 'table',
+      cols: [{ k: 'name', label: '名称' }, { k: 'rank', label: '权重', type: 'number' }] }] },
+  { id: 'alerts', title: '告警', desc: '什么等级走什么渠道',
+    fields: [
+      { k: 'alerts.min_rank', label: '告警最低权重', type: 'number', hint: '低于它的只进报告，不进告警' },
+      { k: 'alerts.immediate_rank', label: '立即通知权重', type: 'number' },
+      { k: 'alerts.channel_immediate', label: '立即通知渠道', type: 'text' },
+      { k: 'alerts.channel_normal', label: '普通通知渠道', type: 'text' }] },
+  { id: 'patterns', title: '敏感信息', desc: '正文里出现即命中',
+    fields: [{ k: 'patterns.sensitive', label: '识别规则', type: 'table',
+      cols: [{ k: 'kind', label: '类型' }, { k: 'pattern', label: '正则（内置方言）', mono: true },
+             { k: 'severity', label: '等级' }] }] },
+  { id: 'markers', title: '页面标记', desc: '目录索引与口令字段',
+    fields: [
+      { k: 'markers.dir_listing', label: '目录索引标记（一行一个）', type: 'lines' },
+      { k: 'markers.login_password_field', label: '口令字段名', type: 'text' }] },
+  { id: 'payloads', title: '注入载荷', desc: '布尔差分成对使用',
+    fields: [{ k: 'payloads.boolean_diff', label: '载荷族', type: 'table',
+      cols: [{ k: 'context', label: '场景' }, { k: 'true', label: '恒真', mono: true },
+             { k: 'false', label: '恒假', mono: true }] }] },
+  { id: 'passwords', title: '弱口令', desc: '口令强度评估用的字典',
+    fields: [{ k: 'weak_passwords', label: '字典（一行一个）', type: 'lines' }] },
+  { id: 'probing', title: '探测参数', desc: '每轮探多少、等多久',
+    fields: [
+      { k: 'probing.max_paths', label: '最多落点', type: 'number' },
+      { k: 'probing.max_dirs', label: '最多目录', type: 'number' },
+      { k: 'probing.max_params', label: '最多参数', type: 'number' },
+      { k: 'probing.timeout_ms', label: '单请求超时（毫秒）', type: 'number' },
+      { k: 'probing.similar_bytes', label: '软 404 比对字节', type: 'number' },
+      { k: 'probing.similar_ratio', label: '相似度阈值', type: 'number', step: '0.01' }] },
+  { id: 'paths', title: '落点与目录', desc: '可能误发布的文件与目录',
+    fields: [
+      { k: 'sensitive_paths', label: '落点（一行一个）', type: 'lines' },
+      { k: 'dir_candidates', label: '目录（一行一个）', type: 'lines' }] },
+  { id: 'signatures', title: '内容特征', desc: '按正文特征判定文件性质',
+    fields: [{ k: 'signatures', label: '特征', type: 'table',
+      cols: [{ k: 'name', label: '名称' }, { k: 'kind', label: '类别' }, { k: 'severity', label: '等级' },
+             { k: 'tag', label: '指纹' }, { k: 'body_any', label: '命中任一（一行一个）', type: 'lines' },
+             { k: 'body_not_any', label: '排除（一行一个）', type: 'lines' },
+             { k: 'min_bytes', label: '最小字节', type: 'number' }] }] },
+  { id: 'headers', title: '安全响应头', desc: '缺哪一条算弱配置',
+    fields: [{ k: 'weak_headers', label: '期望头', type: 'table',
+      cols: [{ k: 'name', label: '头名' }, { k: 'title', label: '说明' }, { k: 'severity', label: '等级' },
+             { k: 'only_https', label: '仅 HTTPS', type: 'bool' },
+             { k: 'impact', label: '影响' }, { k: 'fix', label: '修复建议' }] }] },
+  { id: 'org', title: '单位口径', desc: '本单位的关键词与特征',
+    fields: [
+      { k: 'profile_keywords', label: '敏感信息关键词', type: 'lines' },
+      { k: 'profile_file_types', label: '敏感文件类型', type: 'lines' },
+      { k: 'server_header_keys', label: '版本泄露头', type: 'lines' },
+      { k: 'error_signatures', label: '错误回显特征', type: 'lines' },
+      { k: 'dangerous_methods', label: '危险方法', type: 'lines' },
+      { k: 'suspicious_tlds', label: '可疑域名后缀', type: 'lines' }] },
+  { id: 'tamper', title: '篡改判定', desc: '外链数量阈值',
+    fields: [{ k: 'tamper.report_external_hosts', label: '外链超过多少算异常', type: 'number' }] },
+  { id: 'advanced', title: '高级 · 文件', desc: '直接编辑原始文件' },
+];
+
+let RULES = null;
+let SET_CURRENT = 'basic';
+
+function getPath(obj, path) {
+  return path.split('.').reduce((o, k) => (o && typeof o === 'object' ? o[k] : undefined), obj);
+}
+function setPath(obj, path, val) {
+  const ks = path.split('.');
+  let o = obj;
+  for (let i = 0; i < ks.length - 1; i++) {
+    if (!o[ks[i]] || typeof o[ks[i]] !== 'object') o[ks[i]] = {};
+    o = o[ks[i]];
+  }
+  o[ks[ks.length - 1]] = val;
+}
+
+function setFieldEl(f) {
+  const wrap = el('div', 'set-field');
+  const head = el('div', 'set-field-head');
+  head.appendChild(el('span', 'set-label', f.label));
+  wrap.appendChild(head);
+  if (f.hint) wrap.appendChild(el('div', 'set-hint', f.hint));
+  const v = getPath(RULES || {}, f.k);
+
+  if (f.type === 'lines') {
+    const ta = el('textarea', 'set-lines');
+    ta.rows = Math.min(12, Math.max(3, (Array.isArray(v) ? v.length : 3)));
+    ta.value = Array.isArray(v) ? v.join('\n') : '';
+    ta.dataset.path = f.k;
+    wrap.appendChild(ta);
+  } else if (f.type === 'number') {
+    const inp = el('input', 'set-input');
+    inp.type = 'number';
+    inp.step = f.step || '1';
+    inp.value = (v === undefined || v === null) ? '' : v;
+    inp.dataset.path = f.k;
+    wrap.appendChild(inp);
+  } else if (f.type === 'bool') {
+    const inp = el('input');
+    inp.type = 'checkbox';
+    inp.checked = !!v;
+    inp.dataset.path = f.k;
+    wrap.appendChild(inp);
+  } else if (f.type === 'table') {
+    wrap.appendChild(setTableEl(f, v));
+  } else {
+    const inp = el('input', 'set-input');
+    inp.value = (v === undefined || v === null) ? '' : v;
+    inp.dataset.path = f.k;
+    wrap.appendChild(inp);
+  }
+  return wrap;
+}
+
+function setTableRow(f, row, idx) {
+  const tr = el('tr');
+  if (idx !== undefined && idx !== null) tr.dataset.idx = idx;
+  for (const c of f.cols) {
+    const td = el('td');
+    let ctl;
+    if (c.type === 'lines') {
+      ctl = el('textarea', 'set-cell-lines');
+      ctl.rows = 2;
+      ctl.value = Array.isArray(row[c.k]) ? row[c.k].join('\n') : '';
+      ctl.dataset.kind = 'lines';
+    } else if (c.type === 'number') {
+      ctl = el('input', 'set-cell');
+      ctl.type = 'number';
+      ctl.value = (row[c.k] === undefined || row[c.k] === null) ? '' : row[c.k];
+      ctl.dataset.kind = 'number';
+    } else if (c.type === 'bool') {
+      ctl = el('input');
+      ctl.type = 'checkbox';
+      ctl.checked = !!Number(row[c.k]);
+      ctl.dataset.kind = 'bool';
+    } else {
+      ctl = el('input', 'set-cell' + (c.mono ? ' mono' : ''));
+      ctl.value = (row[c.k] === undefined || row[c.k] === null) ? '' : row[c.k];
+      ctl.dataset.kind = 'text';
+    }
+    ctl.dataset.col = c.k;
+    td.appendChild(ctl);
+    tr.appendChild(td);
+  }
+  const td = el('td', 'set-cell-x');
+  const del = el('button', 'ghost tiny', '×');
+  del.type = 'button';
+  del.title = '删除这一行';
+  del.addEventListener('click', () => tr.remove());
+  td.appendChild(del);
+  tr.appendChild(td);
+  return tr;
+}
+
+function setTableEl(f, rows) {
+  const box = el('div', 'set-table-wrap');
+  const t = el('table', 'set-table');
+  const thead = el('thead');
+  const hr = el('tr');
+  for (const c of f.cols) hr.appendChild(el('th', null, c.label));
+  hr.appendChild(el('th', null, ''));
+  thead.appendChild(hr);
+  t.appendChild(thead);
+  const tb = el('tbody');
+  tb.dataset.path = f.k;
+  (Array.isArray(rows) ? rows : []).forEach((r, i) => tb.appendChild(setTableRow(f, r, i)));
+  t.appendChild(tb);
+  box.appendChild(t);
+  const add = el('button', 'ghost tiny', '＋ 增加一行');
+  add.type = 'button';
+  add.addEventListener('click', () => tb.appendChild(setTableRow(f, {})));
+  box.appendChild(add);
+  return box;
+}
+
+function setRenderNav() {
+  const nav = $('set-nav');
+  if (!nav) return;
+  nav.innerHTML = '';
+  for (const g of SET_SCHEMA) {
+    const b = el('button', 'set-tab' + (SET_CURRENT === g.id ? ' active' : ''), g.title);
+    b.type = 'button';
+    b.addEventListener('click', () => {
+      SET_CURRENT = g.id;
+      setRenderNav();
+      setRenderPage();
+    });
+    nav.appendChild(b);
+  }
+}
+
+function setRenderPage() {
+  const page = SET_SCHEMA.find((g) => g.id === SET_CURRENT) || SET_SCHEMA[0];
+  const form = $('set-form');
+  const adv = $('cfg-advanced');
+  const head = document.querySelector('.set-head');
+  const foot = document.querySelector('.set-foot');
+  const isAdv = page.id === 'advanced';
+  const isUi = page.id === 'ui';
+  if ($('set-title')) $('set-title').textContent = page.title;
+  if ($('set-desc')) $('set-desc').textContent = page.desc || '';
+  if (head) head.style.display = (isAdv || isUi) ? 'none' : '';
+  if (foot) foot.style.display = (isAdv || isUi) ? 'none' : '';
+  if (form) form.style.display = (isAdv || isUi) ? 'none' : '';
+  if (adv) adv.style.display = isAdv ? 'block' : 'none';
+  const uiPanel = $('ui-panel');
+  if (uiPanel) uiPanel.style.display = isUi ? 'block' : 'none';
+  if (isUi) return;
+  if (isAdv) {
+    renderConfigFiles().catch(() => {});
+    return;
+  }
+  form.innerHTML = '';
+  for (const f of page.fields || []) form.appendChild(setFieldEl(f));
+  if ($('set-msg')) $('set-msg').textContent = '';
+}
+
+function setCollect() {
+  const out = JSON.parse(JSON.stringify(RULES || {}));
+  const page = SET_SCHEMA.find((g) => g.id === SET_CURRENT);
+  for (const f of (page && page.fields) || []) {
+    if (f.type === 'table') {
+      const tb = document.querySelector(`tbody[data-path="${f.k}"]`);
+      if (!tb) continue;
+      const orig = getPath(RULES || {}, f.k);
+      const rows = [];
+      for (const tr of Array.from(tb.querySelectorAll('tr'))) {
+        /* 以原始那一行为底：schema 没覆盖到的字段原样保留，不因为"界面没画"就被删掉 */
+        const idx = tr.dataset.idx === undefined ? -1 : Number(tr.dataset.idx);
+        const base = Array.isArray(orig) && idx >= 0 && orig[idx] ? JSON.parse(JSON.stringify(orig[idx])) : {};
+        const row = base;
+        for (const c of f.cols) {
+          const ctl = tr.querySelector(`[data-col="${c.k}"]`);
+          if (!ctl) continue;
+          if (ctl.dataset.kind === 'number') row[c.k] = Number(ctl.value) || 0;
+          else if (ctl.dataset.kind === 'bool') row[c.k] = ctl.checked ? 1 : 0;
+          else if (ctl.dataset.kind === 'lines') {
+            const arr = ctl.value.split('\n').map((s) => s.trim()).filter(Boolean);
+            if (arr.length) row[c.k] = arr;
+          } else if (ctl.value !== '') row[c.k] = ctl.value;
+        }
+        if (Object.keys(row).length) rows.push(row);
+      }
+      setPath(out, f.k, rows);
+      continue;
+    }
+    const node = document.querySelector(`[data-path="${f.k}"]`);
+    if (!node) continue;
+    if (f.type === 'lines') {
+      setPath(out, f.k, node.value.split('\n').map((s) => s.trim()).filter(Boolean));
+    } else if (f.type === 'number') {
+      setPath(out, f.k, Number(node.value) || 0);
+    } else if (f.type === 'bool') {
+      setPath(out, f.k, node.checked ? 1 : 0);
+    } else {
+      setPath(out, f.k, node.value);
+    }
+  }
+  return out;
+}
+
+async function setSave() {
+  const btn = $('set-save');
+  if (btn) btn.disabled = true;
+  const msg = $('set-msg');
+  if (msg) msg.textContent = '正在保存…';
+  try {
+    const rules = setCollect();
+    const r = await api('/api/settings', { method: 'POST', body: JSON.stringify({ rules }) });
+    RULES = rules;
+    if (msg) msg.textContent = '已保存并生效 · ' + (r.source || '');
+    state.cache = {};
+  } catch (e) {
+    if (msg) msg.textContent = '保存失败：' + ((e && e.message) || e);
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+async function setLoad(force) {
+  if (RULES && !force) { setRenderNav(); setRenderPage(); return; }
+  try {
+    const r = await api('/api/settings');
+    RULES = r.rules || {};
+  } catch (e) {
+    RULES = {};
+  }
+  setRenderNav();
+  setRenderPage();
+}
+
+const setSaveBtn = $('set-save');
+if (setSaveBtn) setSaveBtn.addEventListener('click', setSave);
+const setResetBtn = $('set-reset');
+if (setResetBtn) setResetBtn.addEventListener('click', () => setLoad(true).catch(() => {}));
+
 async function renderConfigView() {
+  await setLoad(false);
+  await renderConfigFiles();
+}
+
+async function renderConfigFiles() {
   const r = await api('/api/config/list');
   CFG.files = r.files || [];
   const box = $('cfg-list');
@@ -2146,6 +2452,41 @@ function bindSplitter(id, key, min, max, invert) {
 
 bindSplitter('sp-left', 'side', 180, 420, false);
 bindSplitter('sp-right', 'rail', 240, 560, true);
+
+/* 输入区高度：拖上沿（向上=变高），双击回默认 */
+(function bindComposeGrip() {
+  const grip = $('compose-grip');
+  if (!grip) return;
+  grip.addEventListener('pointerdown', (ev) => {
+    if (ev.button !== 0) return;
+    const startY = ev.clientY;
+    const start = LAYOUT.compose;
+    grip.setPointerCapture(ev.pointerId);
+    grip.classList.add('dragging');
+    document.body.classList.add('row-resizing');
+    const onMove = (e) => {
+      LAYOUT.compose = Math.max(44, Math.min(300, Math.round(start - (e.clientY - startY))));
+      applyLayout();
+    };
+    const onUp = () => {
+      grip.classList.remove('dragging');
+      document.body.classList.remove('row-resizing');
+      grip.removeEventListener('pointermove', onMove);
+      grip.removeEventListener('pointerup', onUp);
+      grip.removeEventListener('pointercancel', onUp);
+      saveLayout();
+    };
+    grip.addEventListener('pointermove', onMove);
+    grip.addEventListener('pointerup', onUp);
+    grip.addEventListener('pointercancel', onUp);
+    ev.preventDefault();
+  });
+  grip.addEventListener('dblclick', () => {
+    LAYOUT.compose = LAYOUT_DEFAULT.compose;
+    applyLayout();
+    saveLayout();
+  });
+})();
 
 /* 设置页的三条滑杆：和拖拽共用同一份状态 */
 [['ui-side', 'side'], ['ui-rail', 'rail'], ['ui-compose', 'compose']].forEach(([id, key]) => {

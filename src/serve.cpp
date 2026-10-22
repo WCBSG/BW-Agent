@@ -2335,6 +2335,60 @@ static void h_cancel(const http_req_t *req, http_res_t *res) {
   http_res_json(res, 200, was ? "{\"ok\":true,\"already\":true}" : "{\"ok\":true}");
 }
 
+/* ================= 规则设置(图形化) =================
+   规则本来是 rules.json 里的一堆键。让人直接改 JSON,是把工具的麻烦转嫁给使用者,
+   所以这里按"类型"拆组:GET 给出当前生效的整份规则,POST 整份写回并立即重载。 */
+static void h_settings(const http_req_t *req, http_res_t *res) {
+  char path[MAX_PATH * 2];
+  app_data_path(path, sizeof(path), "rules.json");
+
+  if (strcmp(req->method, "POST") == 0) {
+    json_t *body = req->body ? json_parse(req->body) : NULL;
+    json_t *rules = body ? j_get(body, "rules") : NULL;
+    if (!rules || rules->type != J_OBJ) {
+      if (body) json_free(body);
+      http_res_json(res, 400, "{\"ok\":false,\"error\":\"需要 rules 对象\"}");
+      return;
+    }
+    char *text = json_dump_pretty(rules);
+    int rc = text ? file_write_all(path, text, strlen(text)) : -1;
+    free(text);
+    if (body) json_free(body);
+    if (rc != 0) {
+      http_res_json(res, 500, "{\"ok\":false,\"error\":\"规则文件写入失败\"}");
+      return;
+    }
+    rules_shutdown();
+    rules_init(app_dir());
+    refresh_status_cache();
+    store_audit(g_store, "修改规则设置", "rules.json", 1, "界面保存并重载", g_task, "");
+    buf_t b;
+    buf_init(&b);
+    buf_puts(&b, "{\"ok\":true,\"path\":");
+    buf_json_str(&b, path);
+    buf_puts(&b, ",\"source\":");
+    buf_json_str(&b, rules_source());
+    buf_puts(&b, "}");
+    http_res_json(res, 200, b.data);
+    buf_free(&b);
+    return;
+  }
+
+  /* GET:返回当前真正生效的那一份(数据目录有就用它,没有就用内置默认) */
+  json_t *root = rules_root();
+  json_t *copy = root ? json_parse(json_dump(root)) : j_obj();
+  json_t *out = j_obj();
+  j_set_bool(out, "ok", 1);
+  j_set_str(out, "path", path);
+  j_set_str(out, "source", rules_source());
+  j_set_bool(out, "fromFile", rules_from_file());
+  j_set(out, "rules", copy ? copy : j_obj());
+  char *text = json_dump(out);
+  http_res_json(res, 200, text);
+  free(text);
+  json_free(out);
+}
+
 static void router(const http_req_t *req, http_res_t *res, void *ud) {
   (void)ud;
   if (strcmp(req->method, "GET") != 0 && strcmp(req->method, "POST") != 0) {
@@ -2364,6 +2418,7 @@ static void router(const http_req_t *req, http_res_t *res, void *ud) {
     if (!strcmp(p, "/api/cancel")) { h_cancel(req, res); return; }
     if (!strcmp(p, "/api/chats")) { h_chats(req, res); return; }
     if (!strcmp(p, "/api/attach")) { h_attach(req, res); return; }
+    if (!strcmp(p, "/api/settings")) { h_settings(req, res); return; }
     if (!strcmp(p, "/api/chat")) { h_chat(req, res); return; }    if (!strcmp(p, "/api/config/list")) { h_config_list(req, res); return; }
     if (!strcmp(p, "/api/config")) {
       if (strcmp(req->method, "POST") == 0) h_config_save(req, res);

@@ -127,6 +127,8 @@
     </div>
 
     <form class="compose" id="form">
+      <div class="compose-grip" id="compose-grip" role="separator" aria-orientation="horizontal"
+           title="拖动调整输入区高度，双击恢复默认"></div>
       <!-- 审批条：贴在输入框上方浮着，和主流 agent 一样 ——
            它属于"你现在要做的决定"，不属于历史记录，所以不进流 -->
       <div class="approval-bar" id="approval-bar" role="alertdialog" aria-live="polite">        <div class="ab-row">
@@ -502,7 +504,23 @@
     </section>
 
     <section class="view" id="view-config">
-      <section class="panel">
+      <div class="set-shell">
+        <nav class="set-nav" id="set-nav" aria-label="设置分类"></nav>
+        <div class="set-main">
+          <div class="set-head">
+            <h2 id="set-title">基础</h2>
+            <span id="set-desc">规则版本</span>
+          </div>
+          <div class="set-form" id="set-form"></div>
+          <div class="set-foot">
+            <button id="set-save">保存并生效</button>
+            <button class="ghost" id="set-reset">放弃改动</button>
+            <span id="set-msg"></span>
+          </div>
+        </div>
+      </div>
+
+      <section class="panel ui-panel" id="ui-panel">
         <div class="panel-head"><div><h2>界面</h2></div><span class="hint" id="ui-hint">改动即时生效，记在本机</span></div>
         <div class="ui-form">
           <label class="ui-row"><span>左栏宽度</span>
@@ -510,7 +528,7 @@
           <label class="ui-row"><span>右栏宽度</span>
             <input type="range" id="ui-rail" min="240" max="560" step="4"><b id="ui-rail-v"></b></label>
           <label class="ui-row"><span>输入框高度</span>
-            <input type="range" id="ui-compose" min="44" max="180" step="4"><b id="ui-compose-v"></b></label>
+            <input type="range" id="ui-compose" min="44" max="300" step="4"><b id="ui-compose-v"></b></label>
           <label class="ui-row ui-check"><span>本轮留痕</span>
             <input type="checkbox" id="ui-trace"><b></b></label>
           <label class="ui-row ui-check"><span>自动滚动</span>
@@ -524,6 +542,7 @@
         </div>
       </section>
 
+      <div class="cfg-advanced" id="cfg-advanced">
       <section class="panel">
         <div class="market-bar">
           <span class="muted">寻找现成能力</span>
@@ -550,6 +569,7 @@
           </div>
         </div>
       </section>
+      </div>
     </section>
 
   </div>
