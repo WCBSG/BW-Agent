@@ -9,6 +9,7 @@
  */
 #include "tools.h"
 #include "regex.h"
+#include "profile.h"
 
 #include "net.h"
 #include "rules.h"
@@ -378,6 +379,23 @@ static int scan_text_into(tool_ctx_t *ctx, const char *text, json_t *hits) {
   if (rules_n == 0) {
     log_warn("[规则] patterns.sensitive 为空:敏感信息扫描没有可用规则");
   }
+
+  /* 出厂规则之外,再按"本单位定义"扫一遍。
+     两套口径是叠加的:出厂规则负责通用泄露形态(证件号/私钥/凭据),
+     本单位定义负责只有这家才有的关键词、样例与正则。 */
+  {
+    char kind[64], sev[16], masked[160];
+    if (profile_scan_text(text, kind, sizeof(kind), sev, sizeof(sev), masked, sizeof(masked))) {
+      json_t *h = j_obj();
+      j_set_str(h, "kind", kind);
+      j_set_str(h, "severity", sev);
+      j_set_str(h, "masked", masked);
+      j_set_str(h, "rule", "本单位敏感信息定义");
+      j_add(hits, h);
+      count++;
+    }
+  }
+
   (void)ctx;
   return count;
 }
@@ -853,6 +871,10 @@ static int t_sensitive_file_probe(tool_ctx_t *ctx, json_t *args, tool_result_t *
     int cap = (int)rules_number("max_paths", 40);
     if (cap < 1) cap = 40;
     for (int i = 0; i < n && i < cap; i++) j_add(paths, j_str(list[i]));
+    /* 本单位自定义落点追加在后面:规则给的是通用清单,单位自己更清楚哪些文件不该放出来 */
+    const char *extra[80];
+    int ne = profile_active_paths(extra, 80);
+    for (int i = 0; i < ne && j_len(paths) < cap + 20; i++) j_add(paths, j_str(extra[i]));
   }
 
   calib_t calib;
@@ -896,8 +918,28 @@ static int t_sensitive_file_probe(tool_ctx_t *ctx, json_t *args, tool_result_t *
       j_set_str(hit, "evidence", sig.evidence);
       j_add(hits, hit);
     } else {
-      j_set_str(hit, "note", "内容与站点默认页不同,但没匹配到已知特征");
-      j_add(pending, hit);
+      /* 特征表没认出来,再看是不是命中本单位定义 ——
+         这往往才是这家单位真正在意的东西(内部代号、样例片段、自己的正则)。 */
+      char pkind[64] = {0}, psev[16] = {0}, pmasked[160] = {0};
+      int unit_hit = profile_scan_text(f.body ? f.body : "", pkind, sizeof(pkind),
+                                       psev, sizeof(psev), pmasked, sizeof(pmasked));
+      int type_hit = profile_type_hit(path);
+      if (unit_hit || type_hit) {
+        j_set_str(hit, "signature", unit_hit ? "本单位敏感信息定义" : "本单位定义的文件类型");
+        j_set_str(hit, "kind", "敏感信息");
+        j_set_str(hit, "severity", unit_hit && psev[0] ? psev : "高");
+        j_set_str(hit, "tag", "unit-profile");
+        buf_t ev;
+        buf_init(&ev);
+        if (unit_hit) buf_printf(&ev, "正文命中本单位定义(%s),命中片段:%s", pkind, pmasked);
+        else buf_printf(&ev, "该文件后缀属于本单位定义的文件类型(%s)", path);
+        j_set_str(hit, "evidence", ev.data);
+        buf_free(&ev);
+        j_add(hits, hit);
+      } else {
+        j_set_str(hit, "note", "内容与站点默认页不同,但没匹配到已知特征");
+        j_add(pending, hit);
+      }
     }
     fetch_free2(&f);
   }

@@ -131,9 +131,15 @@ void agent_add_history(agent_t *a, const char *role, const char *text) {
 
 /* 观察序列里是否出现过"硬否定"信息 */
 static int observed_blocker(json_t *observations, char **why) {
+  /* 取数通道的越权标记比"文案匹配"更可靠:只要有一次请求被边界拦下,
+     这一轮就必须停 —— 不指望模型自己从文字里读出"我越界了"。 */
+  if (net_scope_violation()) {
+    if (why) *why = xstrdup("有请求越出授权池,已按合规要求立刻停止整轮");
+    return 1;
+  }
   for (int i = 0; i < j_len(observations); i++) {
     const char *res = j_s(j_at(observations, i), "result", "");
-    if (str_icontains(res, "不在授权域名内")) {
+    if (str_icontains(res, "不在授权池内") || str_icontains(res, "不在授权域名内")) {
       if (why) *why = xstrdup("目标不在授权范围内,已按合规要求停止");
       return 1;
     }
@@ -242,6 +248,27 @@ static int run_step(agent_t *a, tool_ctx_t *ctx, const char *name, json_t *args,
   if (a->hooks.on_action) {
     a->hooks.on_action(a->hooks.userdata, name, args,
                        sk ? sk->when : tl->description);
+  }
+
+  /* —— 权限审批 ——
+     主流 Agent 的做法:动手之前先问一句。拒绝不是"报错",而是一条观察 ——
+     模型能读到"这一步被拒了、原因是什么",然后换路子或老实收束。
+     返回 0 = 拒绝(不执行),返回 1 = 放行。 */
+  if (a->hooks.on_approval) {
+    char *reason = NULL;
+    int allow = a->hooks.on_approval(a->hooks.userdata, name, args, &reason);
+    if (!allow) {
+      buf_t msg;
+      buf_init(&msg);
+      buf_printf(&msg, "这一步没有得到你的允许,已跳过(%s)。",
+                 (reason && reason[0]) ? reason : "按审批策略未放行");
+      EMIT_ANSWER(a, msg.data);
+      observation_append(observations, name, args, msg.data, 1);
+      buf_free(&msg);
+      free(reason);
+      return 0;
+    }
+    free(reason);
   }
 
   int rc;

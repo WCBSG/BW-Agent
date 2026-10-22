@@ -14,12 +14,20 @@
 #include <bcrypt.h>
 #include <signal.h>
 
+#include <ctime>
+
 #include "agent.h"
+#include "approval.h"
+#include "automation.h"
 #include "embed.h"
+#include "export.h"
+#include "profile.h"
+#include "regex.h"
 #include "ext.h"
 #include "http.h"
 #include "llm.h"
 #include "net.h"
+#include "profile.h"
 #include "res.h"
 #include "rules.h"
 #include "skills.h"
@@ -37,6 +45,13 @@ static char *g_status_cache = NULL;
 static char g_session[128] = "web-session";
 static char g_task[64] = "WEB-TASK";
 static char g_domain[256] = "";
+/* 授权池:允许被检查的主机白名单(host 或 host:port)。
+   以前这里是"一个全局巡检目标",那样做有两个毛病:
+     · 换一个站就得先改全局设置,不然智能体被自己的配置挡住;
+     · 边界是"当前目标"而不是"允许的范围",一旦模型自己换个主机名就说不清了。
+   现在边界就是池子:任务/周期规则各自从池里挑目标,越池的请求在 net 层就被掐断。 */
+static char g_pool_file[512] = "";
+static char g_pool_json[16384] = "{\"hosts\":[]}";
 static int g_turn_seq = 0;
 static char g_data_dir[512];
 /* 每次启动生成的接口令牌:只给本程序打开的界面用。
@@ -294,13 +309,202 @@ static void hook_ask(void *ud, const char *text) {
   t_close_text(c);
 }
 
+/* ================= 权限审批(动手之前先问一句) =================
+ * 主流 Agent 的形态:动作被策略拦下时,界面出现一张"允许 / 拒绝"的卡,
+ * 点下去才发现"这一轮还没结束"。这里用一条 SSE 事件 + 一个等待事件对象实现:
+ *   循环线程卡在 WaitForSingleObject 上(连接还开着,可以继续推事件),
+ *   用户点按钮走 POST /api/approval,SetEvent 把循环放行。
+ * 超时按"拒绝"处理 —— 无人值守时宁可不动手。
+ */
+typedef struct {
+  CRITICAL_SECTION lock;
+  HANDLE event;
+  char id[40];
+  int decision;          /* 0 未定 / 1 允许 / 2 拒绝 */
+  int pending;
+} approval_slot_t;
+
+static approval_slot_t g_appr;
+static int g_appr_ready = 0;
+static volatile LONG g_appr_seq = 0;
+
+static void approval_init(void) {
+  if (g_appr_ready) return;
+  InitializeCriticalSection(&g_appr.lock);
+  g_appr.event = CreateEventA(NULL, TRUE, FALSE, NULL);   /* 手动复位:决定一次只生效一次 */
+  g_appr.pending = 0;
+  g_appr.decision = 0;
+  g_appr_ready = 1;
+}
+
+/* 循环线程调用:问一句,然后等。 */
+static int hook_approval(void *ud, const char *tool, json_t *args, char **reason) {
+  (void)ud;
+  approval_init();
+  if (reason) *reason = NULL;
+
+  approval_action_t act = approval_decide(tool ? tool : "");
+  if (act == APPROVAL_ALLOW) return 1;
+  if (act == APPROVAL_DENY) {
+    if (reason) *reason = xstrdup("按当前审批策略,这个动作被直接拒绝");
+    return 0;
+  }
+
+  sse_ctx_t *c = g_sse;
+  if (!c) {
+    /* 无人值守(周期巡检)且策略是"询问":没有人在看,不能默认放行。
+       这一轮就地停下,并在观察里写清原因 —— 想让它自己跑就把策略调成"全部允许"。 */
+    if (reason) *reason = xstrdup("当前是「询问」策略,但这一轮没有界面在等确认");
+    return 0;
+  }
+
+  char id[40];
+  snprintf(id, sizeof(id), "ap-%ld-%04d", (long)GetCurrentProcessId(),
+           (int)InterlockedIncrement(&g_appr_seq));
+
+  EnterCriticalSection(&g_appr.lock);
+  snprintf(g_appr.id, sizeof(g_appr.id), "%s", id);
+  g_appr.decision = 0;
+  g_appr.pending = 1;
+  ResetEvent(g_appr.event);
+  LeaveCriticalSection(&g_appr.lock);
+
+  char *argtext = args ? json_dump(args) : NULL;
+  buf_t b;
+  buf_init(&b);
+  buf_puts(&b, "{\"type\":\"approval_request\",\"id\":");
+  buf_json_str(&b, id);
+  buf_puts(&b, ",\"tool\":");
+  buf_json_str(&b, tool ? tool : "");
+  buf_puts(&b, ",\"args\":");
+  buf_json_str(&b, argtext ? argtext : "{}");
+  buf_puts(&b, ",\"policy\":");
+  buf_json_str(&b, approval_mode_text());
+  buf_puts(&b, "}");
+  sse_send(c, b.data);
+  buf_free(&b);
+  free(argtext);
+
+  /* 事件还在同一条 SSE 连接上:先把"等待确认"的状态播出去,界面据此画卡片 */
+  ev_tool_status(c, c->tool_use_id, "waiting_approval", "等你确认:允许还是拒绝?");
+
+  DWORD wait_ms = 15 * 60 * 1000;      /* 15 分钟没人理就当拒绝 */
+  DWORD got = WaitForSingleObject(g_appr.event, wait_ms);
+
+  EnterCriticalSection(&g_appr.lock);
+  int decision = g_appr.decision;
+  g_appr.pending = 0;
+  LeaveCriticalSection(&g_appr.lock);
+
+  if (got != WAIT_OBJECT_0 || decision == 0) {
+    if (reason) *reason = xstrdup("等你确认超时了,这一步没有执行");
+    return 0;
+  }
+  if (decision == 1) return 1;
+  if (reason) *reason = xstrdup("你拒绝了这一步");
+  return 0;
+}
+
 static const agent_hooks_t g_hooks = {
     NULL, hook_thinking, hook_action, hook_status,
-    hook_observation, hook_answer, hook_ask};
+    hook_observation, hook_answer, hook_ask, hook_approval};
 
 /* ================= 会话状态 ================= */
 
 /* 从"用户填的目标"里拆出主机与端口(可能是 host:port,也可能带协议与路径) */
+/* 池子:读盘 / 落盘 / 应用到取数通道。
+   文件就是人可读的一行一个 host(或 host:port),不搞二进制格式 ——
+   "允许检查谁"这件事应该能被直接看见、被版本管理。 */
+static void pool_apply(void) {
+  json_t *root = json_parse(g_pool_json);
+  if (!root) return;
+  json_t *hosts = j_get(root, "hosts");
+  const char *list[512];
+  int n = 0;
+  for (int i = 0; i < j_len(hosts) && n < 512; i++) {
+    json_t *v = j_at(hosts, i);
+    if (!v) continue;
+    if (v->type == J_STR && v->str) list[n++] = v->str;
+    else if (v->type == J_OBJ) list[n++] = j_s(v, "host", "");
+  }
+  net_pool_set(list, n);
+  json_free(root);
+}
+
+static void pool_save(void) {
+  if (!g_pool_file[0]) return;
+  json_t *root = json_parse(g_pool_json);
+  char *text = root ? json_dump_pretty(root) : NULL;
+  if (text) file_write_all(g_pool_file, text, strlen(text));
+  free(text);
+  if (root) json_free(root);
+}
+
+static void pool_load(void) {
+  app_data_path(g_pool_file, sizeof(g_pool_file), "pool.json");
+  size_t len = 0;
+  char *text = file_read_all(g_pool_file, &len);
+  if (text && len > 0 && len < sizeof(g_pool_json)) {
+    snprintf(g_pool_json, sizeof(g_pool_json), "%s", text);
+  }
+  free(text);
+  if (!json_parse(g_pool_json)) snprintf(g_pool_json, sizeof(g_pool_json), "{\"hosts\":[]}");
+  pool_apply();
+}
+
+/* 池内查询:返回 1 表示这个主机(可带端口)在池里 */
+static int pool_contains(const char *entry) {
+  if (!entry || !entry[0]) return 0;
+  char host[256];
+  int port = net_host_port_of(entry, host, sizeof(host));
+  if (!host[0]) snprintf(host, sizeof(host), "%s", entry);
+  return net_pool_has(host, port);
+}
+
+static int pool_add(const char *entry) {
+  if (!entry || !entry[0]) return -1;
+  if (strstr(entry, "://") || strchr(entry, '/') || strchr(entry, ' ')) return -1;
+  json_t *root = json_parse(g_pool_json);
+  if (!root) root = j_obj();
+  json_t *hosts = j_get(root, "hosts");
+  if (!hosts || hosts->type != J_ARR) { hosts = j_arr(); j_set(root, "hosts", hosts); }
+  for (int i = 0; i < j_len(hosts); i++) {
+    const char *cur = j_at(hosts, i)->type == J_STR ? j_at(hosts, i)->str : j_s(j_at(hosts, i), "host", "");
+    if (str_ieq(cur, entry)) { json_free(root); return 0; }   /* 已在池里 */
+  }
+  j_add(hosts, j_str(entry));
+  char *text = json_dump(root);
+  snprintf(g_pool_json, sizeof(g_pool_json), "%s", text ? text : "{\"hosts\":[]}");
+  free(text);
+  json_free(root);
+  pool_save();
+  pool_apply();
+  return 1;
+}
+
+static int pool_remove(const char *entry) {
+  json_t *root = json_parse(g_pool_json);
+  if (!root) return -1;
+  json_t *hosts = j_get(root, "hosts");
+  json_t *keep = j_arr();
+  int removed = 0;
+  for (int i = 0; i < j_len(hosts); i++) {
+    json_t *v = j_at(hosts, i);
+    const char *cur = v->type == J_STR ? v->str : j_s(v, "host", "");
+    if (str_ieq(cur, entry)) { removed = 1; continue; }
+    j_add(keep, json_parse(json_dump(v)));
+  }
+  j_set(root, "hosts", keep);
+  char *text = json_dump(root);
+  snprintf(g_pool_json, sizeof(g_pool_json), "%s", text ? text : "{\"hosts\":[]}");
+  free(text);
+  json_free(root);
+  if (!removed) return 0;
+  pool_save();
+  pool_apply();
+  return 1;
+}
+
 static void apply_scope(const char *domain) {
   if (domain && *domain) {
     snprintf(g_domain, sizeof(g_domain), "%s", domain);
@@ -350,7 +554,16 @@ static char *build_status_json(void) {
   buf_json_str(&b, g_task);
   buf_puts(&b, ",\"domain\":");
   buf_json_str(&b, g_domain);
-  buf_printf(&b, ",\"authorized\":%s", g_domain[0] ? "true" : "false");
+  buf_printf(&b, ",\"authorized\":%s", (g_domain[0] || net_pool_count() > 0) ? "true" : "false");
+  buf_puts(&b, ",\"pool\":");          /* 授权池:界面上"能检查谁"就照这个渲染 */
+  buf_puts(&b, g_pool_json);
+  buf_printf(&b, ",\"poolSize\":%d", net_pool_count());
+  /* 审批策略:界面顶栏要显示当前是哪一档,以及"全部允许"的警告标记 */
+  buf_puts(&b, ",\"approval\":{\"active\":");
+  buf_json_str(&b, approval_active_id());
+  buf_puts(&b, ",\"name\":");
+  buf_json_str(&b, approval_mode_text());
+  buf_printf(&b, ",\"allowAll\":%s}", approval_is_allow_all() ? "true" : "false");
   buf_printf(&b, ",\"model\":%s", llm_enabled() ? "true" : "false");
   buf_puts(&b, ",\"modelName\":");
   buf_json_str(&b, llm_enabled() ? "恒脑智能体(在线)" : "本地规则降级(离线可用)");
@@ -713,6 +926,566 @@ static void h_reload(const http_req_t *req, http_res_t *res) {
   buf_free(&b);
 }
 
+/* ================= 周期巡检 =================
+ * 数据全部来自 automations 集合;这里只做四件事:
+ * 列出来、存一份、删一份、让它"马上跑一次"(把 next_at 拨到现在,交给调度线程)。
+ * 「马上跑」不在这里同步执行 —— 否则这个 HTTP 连接要挂着等一整轮巡检。
+ */
+static void h_automation_list(const http_req_t *req, http_res_t *res) {
+  (void)req;
+  auto_rule_t *list = NULL;
+  int n = 0;
+  auto_list(g_store, &list, &n);
+  json_t *arr = j_arr();
+  for (int i = 0; i < n; i++) j_add(arr, auto_to_json(&list[i]));
+  auto_free_list(list);
+
+  json_t *root = j_obj();
+  j_set_bool(root, "ok", 1);
+  j_set_num(root, "serverNow", (double)time(NULL));
+  j_set(root, "items", arr);
+  char *text = json_dump(root);
+  http_res_json(res, 200, text);
+  free(text);
+  json_free(root);
+}
+
+static void h_automation_post(const http_req_t *req, http_res_t *res) {
+  json_t *body = req->body ? json_parse(req->body) : NULL;
+  if (!body) {
+    http_res_json(res, 400, "{\"ok\":false,\"error\":\"请求体不是合法 JSON\"}");
+    return;
+  }
+  const char *action = j_s(body, "action", "save");
+  json_t *body_rule = j_get(body, "rule");
+  char id[24];
+  snprintf(id, sizeof(id), "%s", j_s(body, "id", ""));
+  if (!id[0]) snprintf(id, sizeof(id), "%s", j_s(body_rule, "id", ""));
+
+  if (str_ieq(action, "delete")) {
+    int rc = auto_remove(g_store, id);
+    json_free(body);
+    if (rc != 0) { http_res_json(res, 404, "{\"ok\":false,\"error\":\"没有这条周期规则\"}"); return; }
+    store_audit(g_store, "删除周期巡检", id, 1, "界面操作", g_task, "");
+    http_res_json(res, 200, "{\"ok\":true}");
+    return;
+  }
+
+  if (str_ieq(action, "run")) {
+    auto_rule_t r;
+    if (auto_find(g_store, id, &r) != 0) {
+      json_free(body);
+      http_res_json(res, 404, "{\"ok\":false,\"error\":\"没有这条周期规则\"}");
+      return;
+    }
+    r.next_at = (long long)time(NULL);      /* 拨到现在:调度线程下一拍就捡走 */
+    auto_save(g_store, &r);
+    json_free(body);
+    store_audit(g_store, "立即执行周期巡检", r.domain, 1, "界面点「马上跑一次」", g_task, "");
+    http_res_json(res, 200, "{\"ok\":true,\"queued\":true,\"note\":\"已排进调度队列,几秒内开始;界面会自动刷新\"}");
+    return;
+  }
+
+  /* save / toggle 都走这里。带 id 时先取出既有规则再做"只覆盖填了的字段" ——
+     否则前端只传一个 every_min 就会把 domain 覆盖成空,报"目标不能为空"。 */
+  auto_rule_t r;
+  json_t *rule = j_get(body, "rule");
+  if (!rule) rule = body;
+  json_t *merged = NULL;
+  if (id[0] && auto_find(g_store, id, &r) == 0) {
+    merged = auto_to_json(&r);
+    for (int i = 0; i < j_len(rule); i++) {
+      if (!rule->keys || !rule->keys[i]) continue;
+      j_set(merged, rule->keys[i], json_parse(json_dump(rule->items[i])));
+    }
+    auto_from_json(merged, &r);
+    json_free(merged);
+  } else {
+    auto_from_json(rule, &r);
+  }
+  if (str_ieq(action, "toggle")) r.enabled = r.enabled ? 0 : 1;
+
+  const char *bad = auto_validate(&r);
+  if (bad) {
+    json_free(body);
+    buf_t b;
+    buf_init(&b);
+    buf_puts(&b, "{\"ok\":false,\"error\":");
+    buf_json_str(&b, bad);
+    buf_puts(&b, "}");
+    http_res_json(res, 400, b.data);
+    buf_free(&b);
+    return;
+  }
+
+  /* 周期改了就得重算下次时间,否则还按旧的走 */
+  r.next_at = auto_next_at(&r, (long long)time(NULL));
+  auto_save(g_store, &r);
+  store_audit(g_store, "设置周期巡检", r.domain, 1, r.id, g_task, "");
+
+  json_t *out = auto_to_json(&r);
+  json_t *root = j_obj();
+  j_set_bool(root, "ok", 1);
+  j_set(root, "item", out);
+  char *text = json_dump(root);
+  json_free(body);
+  http_res_json(res, 200, text);
+  free(text);
+  json_free(root);
+}
+
+/* ================= 本单位敏感信息定义 =================
+ * 命题①要求"支持录入……本单位敏感信息定义(关键词、正则、文件类型或样例)"。
+ * 这里把"定义"做成可编辑对象:一条定义 = 一组关键词 + 正则 + 文件类型 + 落点 + 样例。
+ * 保存前逐条校验:正则必须能编译(否则扫描时会被静默跳过,使用者还以为站点干净),
+ * 落点必须以 / 开头且不能带 ..(路径穿越在安全工具里尤其不能有)。
+ */
+static const char *profile_check_list(json_t *p, const char *key, int max_items, size_t max_len,
+                                      char *err, size_t cap) {
+  json_t *arr = j_get(p, key);
+  if (!arr) return NULL;
+  if (arr->type != J_ARR) { snprintf(err, cap, "%s 必须是数组", key); return err; }
+  if (arr->count > max_items) { snprintf(err, cap, "%s 最多 %d 条", key, max_items); return err; }
+  for (int i = 0; i < arr->count; i++) {
+    json_t *v = arr->items[i];
+    if (!v || v->type != J_STR) { snprintf(err, cap, "%s 的每一项都必须是字符串", key); return err; }
+    if (v->str && strlen(v->str) > max_len) { snprintf(err, cap, "%s 第 %d 条太长(上限 %d 字节)", key, i + 1, (int)max_len); return err; }
+  }
+  return NULL;
+}
+
+static const char *profile_validate(json_t *p, char *err, size_t cap) {
+  if (!p || p->type != J_OBJ) { snprintf(err, cap, "定义必须是一个 JSON 对象"); return err; }
+  const char *name = j_s(p, "name", "");
+  if (!name[0]) { snprintf(err, cap, "名称不能为空"); return err; }
+  if (strlen(name) > 64) { snprintf(err, cap, "名称最多 64 字节"); return err; }
+
+  const char *bad = profile_check_list(p, "keywords", 200, 200, err, cap);
+  if (bad) return bad;
+  bad = profile_check_list(p, "samples", 40, 300, err, cap);
+  if (bad) return bad;
+  bad = profile_check_list(p, "file_types", 40, 16, err, cap);
+  if (bad) return bad;
+  bad = profile_check_list(p, "regex", 40, 300, err, cap);
+  if (bad) return bad;
+  bad = profile_check_list(p, "paths", 80, 300, err, cap);
+  if (bad) return bad;
+
+  json_t *regex = j_get(p, "regex");
+  for (int i = 0; regex && i < regex->count; i++) {
+    const char *pat = regex->items[i]->str;
+    if (!pat || !pat[0]) continue;
+    char rerr[128] = {0};
+    rx_pattern *re = rx_compile(pat, rerr, sizeof(rerr));
+    if (!re) {
+      snprintf(err, cap, "第 %d 条正则不合法:%s", i + 1, rerr[0] ? rerr : "无法编译");
+      return err;
+    }
+    rx_free(re);
+  }
+  json_t *paths = j_get(p, "paths");
+  for (int i = 0; paths && i < paths->count; i++) {
+    const char *path = paths->items[i]->str;
+    if (!path || !path[0]) continue;
+    if (path[0] != '/') { snprintf(err, cap, "第 %d 个落点必须以 / 开头", i + 1); return err; }
+    if (strstr(path, "..")) { snprintf(err, cap, "第 %d 个落点不允许出现 ..", i + 1); return err; }
+  }
+  json_t *types = j_get(p, "file_types");
+  for (int i = 0; types && i < types->count; i++) {
+    const char *t = types->items[i]->str;
+    if (!t || !t[0]) continue;
+    for (const char *q = t; *q; q++) {
+      if (*q == '.') continue;               /* 允许写 .env,点会被忽略 */
+      if (!isalnum((unsigned char)*q)) {
+        snprintf(err, cap, "第 %d 个文件类型只能写字母、数字与点", i + 1);
+        return err;
+      }
+    }
+  }
+  return NULL;
+}
+
+static void h_profiles(const http_req_t *req, http_res_t *res) {
+  if (strcmp(req->method, "POST") != 0) {
+    json_t *all = store_all(g_store, "profiles");
+    json_t *root = j_obj();
+    j_set_bool(root, "ok", 1);
+    j_set(root, "items", all);
+    char *text = json_dump(root);
+    http_res_json(res, 200, text);
+    free(text);
+    json_free(root);
+    return;
+  }
+
+  json_t *body = req->body ? json_parse(req->body) : NULL;
+  if (!body) { http_res_json(res, 400, "{\"ok\":false,\"error\":\"请求体不是合法 JSON\"}"); return; }
+  const char *action = j_s(body, "action", "save");
+  const char *id = j_s(body, "id", "");
+  json_t *tpl = j_get(body, "profile");
+  if (!id[0] && tpl) id = j_s(tpl, "id", "");
+
+  if (str_ieq(action, "delete")) {
+    int rc = id[0] ? store_delete(g_store, "profiles", id) : -1;
+    json_free(body);
+    if (rc != 0) { http_res_json(res, 404, "{\"ok\":false,\"error\":\"没有这套定义\"}"); return; }
+    http_res_json(res, 200, "{\"ok\":true}");
+    return;
+  }
+
+  /* 合并式保存:只传改了的那几个字段也不会把其它字段抹掉 */
+  json_t *merged = j_obj();
+  if (id[0]) {
+    json_t *old = store_get(g_store, "profiles", id);
+    if (old) {
+      merged = old;
+      if (!j_s(merged, "id", "")[0]) j_set_str(merged, "id", id);
+    } else {
+      j_set_str(merged, "id", id);
+    }
+  }
+  if (tpl && tpl->type == J_OBJ) {
+    for (int i = 0; i < j_len(tpl); i++) {
+      if (!tpl->keys || !tpl->keys[i]) continue;
+      j_set(merged, tpl->keys[i], json_parse(json_dump(tpl->items[i])));
+    }
+  }
+
+  char err[256] = {0};
+  const char *bad = profile_validate(merged, err, sizeof(err));
+  if (bad) {
+    json_free(merged);
+    json_free(body);
+    buf_t b;
+    buf_init(&b);
+    buf_puts(&b, "{\"ok\":false,\"error\":");
+    buf_json_str(&b, bad);
+    buf_puts(&b, "}");
+    http_res_json(res, 400, b.data);
+    buf_free(&b);
+    return;
+  }
+  if (!j_s(merged, "id", "")[0]) {
+    char *nid = store_next_id(g_store, "profiles");
+    j_set_str(merged, "id", nid);
+    free(nid);
+  }
+  char ts[40];
+  now_iso(ts, sizeof(ts));
+  if (!j_s(merged, "created_at", "")[0]) j_set_str(merged, "created_at", ts);
+  j_set_str(merged, "updated_at", ts);
+  store_save(g_store, "profiles", merged);
+  store_audit(g_store, "保存敏感信息定义", j_s(merged, "name", ""), 1, j_s(merged, "id", ""), g_task, "");
+
+  json_t *root = j_obj();
+  j_set_bool(root, "ok", 1);
+  j_set(root, "item", json_parse(json_dump(merged)));
+  char *text = json_dump(root);
+  json_free(merged);
+  json_free(body);
+  http_res_json(res, 200, text);
+  free(text);
+  json_free(root);
+}
+
+/* 把某套定义设为当前生效口径(巡检一轮用一套)。没有 id 就清空,回到出厂规则。 */
+static void apply_profile(const char *profile_id) {
+  if (!profile_id || !profile_id[0]) { profile_clear_active(); return; }
+  json_t *p = store_get(g_store, "profiles", profile_id);
+  if (!p) { profile_clear_active(); return; }
+  profile_set_active(p);
+  json_free(p);
+}
+
+/* ================= 审批策略接口 ================= */
+static void h_approvals(const http_req_t *req, http_res_t *res) {
+  if (strcmp(req->method, "POST") == 0) {
+    json_t *body = req->body ? json_parse(req->body) : NULL;
+    if (!body) { http_res_json(res, 400, "{\"ok\":false,\"error\":\"请求体不是合法 JSON\"}"); return; }
+    const char *action = j_s(body, "action", "activate");
+    char err[256] = {0};
+
+    if (str_ieq(action, "activate")) {
+      const char *id = j_s(body, "id", "");
+      int ok = approval_activate(id);
+      if (!ok) { json_free(body); http_res_json(res, 404, "{\"ok\":false,\"error\":\"没有这条审批策略\"}"); return; }
+      /* 状态缓存要跟着变:界面的顶栏读数来自 /api/status,
+         不刷新会出现"后端已经切了、下拉框还停在旧值"的分裂。 */
+      EnterCriticalSection(&g_lock);
+      refresh_status_cache();
+      LeaveCriticalSection(&g_lock);
+      json_free(body);
+      store_audit(g_store, "切换审批策略", id, 1, approval_mode_text(), g_task, "");
+      json_t *root = j_obj();
+      j_set_bool(root, "ok", 1);
+      j_set_str(root, "active", approval_active_id());
+      j_set_bool(root, "allowAll", approval_is_allow_all());
+      j_set(root, "items", approval_list_json());
+      char *text = json_dump(root);
+      http_res_json(res, 200, text);
+      free(text);
+      json_free(root);
+      return;
+    }
+
+    if (str_ieq(action, "save")) {
+      json_t *p = j_get(body, "policy");
+      char *id = approval_save_policy(p, err, sizeof(err));
+      if (!id) {
+        json_free(body);
+        buf_t b;
+        buf_init(&b);
+        buf_puts(&b, "{\"ok\":false,\"error\":");
+        buf_json_str(&b, err);
+        buf_puts(&b, "}");
+        http_res_json(res, 400, b.data);
+        buf_free(&b);
+        return;
+      }
+      store_audit(g_store, "保存审批策略", j_s(p, "name", ""), 1, id, g_task, "");
+      EnterCriticalSection(&g_lock);
+      refresh_status_cache();
+      LeaveCriticalSection(&g_lock);
+      json_t *root = j_obj();
+      j_set_bool(root, "ok", 1);
+      j_set_str(root, "id", id);
+      j_set(root, "items", approval_list_json());
+      char *text = json_dump(root);
+      free(id);
+      json_free(body);
+      http_res_json(res, 200, text);
+      free(text);
+      json_free(root);
+      return;
+    }
+
+    if (str_ieq(action, "delete")) {
+      int ok = approval_delete_policy(j_s(body, "id", ""));
+      json_free(body);
+      EnterCriticalSection(&g_lock);
+      refresh_status_cache();
+      LeaveCriticalSection(&g_lock);
+      json_t *root = j_obj();
+      j_set_bool(root, "ok", ok ? 1 : 0);
+      j_set(root, "items", approval_list_json());
+      char *text = json_dump(root);
+      http_res_json(res, ok ? 200 : 404, text);
+      free(text);
+      json_free(root);
+      return;
+    }
+
+    json_free(body);
+    http_res_json(res, 400, "{\"ok\":false,\"error\":\"未知的 action\"}");
+    return;
+  }
+
+  json_t *root = j_obj();
+  j_set_bool(root, "ok", 1);
+  j_set_str(root, "active", approval_active_id());
+  j_set_str(root, "modeText", approval_mode_text());
+  j_set_bool(root, "allowAll", approval_is_allow_all());
+  j_set(root, "items", approval_list_json());
+  char *text = json_dump(root);
+  http_res_json(res, 200, text);
+  free(text);
+  json_free(root);
+}
+
+/* 用户点了"允许/拒绝":唤醒卡在 hook_approval 里的循环 */
+static void h_approval_decision(const http_req_t *req, http_res_t *res) {
+  json_t *body = req->body ? json_parse(req->body) : NULL;
+  const char *id = body ? j_s(body, "id", "") : "";
+  const char *decision = body ? j_s(body, "decision", "") : "";
+  if (!id[0] || !decision[0]) {
+    if (body) json_free(body);
+    http_res_json(res, 400, "{\"ok\":false,\"error\":\"需要 id 与 decision\"}");
+    return;
+  }
+  approval_init();
+  EnterCriticalSection(&g_appr.lock);
+  int match = g_appr.pending && strcmp(g_appr.id, id) == 0;
+  if (match) {
+    g_appr.decision = str_ieq(decision, "allow") ? 1 : 2;
+    SetEvent(g_appr.event);
+  }
+  LeaveCriticalSection(&g_appr.lock);
+  if (body) json_free(body);
+  if (!match) {
+    http_res_json(res, 409,
+                  "{\"ok\":false,\"error\":\"这条审批请求已经不在了(可能超时或已处理)\"}");
+    return;
+  }
+  http_res_json(res, 200, "{\"ok\":true}");
+}
+
+/* ================= 报告导出 ================= */
+static void h_export(const http_req_t *req, http_res_t *res) {
+  char fmt[16], rid[24];
+  http_query(req, "format", fmt, sizeof(fmt), "md");
+  http_query(req, "report", rid, sizeof(rid), "");
+
+  buf_t out;
+  buf_init(&out);
+  char err[512];
+  if (export_report(g_store, rid, fmt, &out, err, sizeof(err)) != 0) {
+    buf_free(&out);
+    buf_t b;
+    buf_init(&b);
+    buf_puts(&b, "{\"ok\":false,\"error\":");
+    buf_json_str(&b, err[0] ? err : "导出失败");
+    buf_puts(&b, "}");
+    http_res_json(res, 400, b.data);
+    buf_free(&b);
+    return;
+  }
+
+  const char *ctype = "application/octet-stream";
+  if (str_ieq(fmt, "md") || str_ieq(fmt, "markdown")) ctype = "text/markdown; charset=utf-8";
+  else if (str_ieq(fmt, "html")) ctype = "text/html; charset=utf-8";
+  else if (str_ieq(fmt, "csv")) ctype = "text/csv; charset=utf-8";
+  else if (str_ieq(fmt, "json")) ctype = "application/json; charset=utf-8";
+  else if (str_ieq(fmt, "docx")) ctype = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+  else if (str_ieq(fmt, "pdf")) ctype = "application/pdf";
+
+  char fname[128];
+  export_filename(rid[0] ? rid : "latest", fmt, fname, sizeof(fname));
+  http_res_file(res, 200, ctype, fname, out.data, out.len);
+  buf_free(&out);
+}
+
+/* ================= 周期巡检调度线程 =================
+ * 每秒醒一次,看有没有到点的规则。为什么用 TryEnter 而不是 Enter:
+ * 手动那一轮可能正在跑(几十秒到几分钟),周期巡检排到它后面就行,
+ * 但不能因为抢锁把调度线程挂死 —— 拿不到锁就下一拍再来。
+ * 停机期间错过的周期不补跑(启动时顺延),这是刻意的:补跑会在开机瞬间
+ * 对着目标突发十几个请求,既不合规也不像话。
+ */
+static volatile LONG g_sched_stop = 0;
+static HANDLE g_sched_thread = NULL;
+
+static DWORD WINAPI sched_thread(LPVOID param) {
+  (void)param;
+  {
+    auto_rule_t *list = NULL;
+    int n = 0;
+    auto_list(g_store, &list, &n);
+    int fixed = auto_resync(g_store, list, n);
+    auto_free_list(list);
+    if (fixed) log_info("周期巡检:启动时有 %d 条规则的到期时间已顺延(停机期间不补跑)", fixed);
+  }
+
+  while (!g_sched_stop) {
+    Sleep(1000);
+    if (g_sched_stop) break;
+    if (!g_agent) break;
+
+    if (!TryEnterCriticalSection(&g_lock)) continue;     /* 手动那一轮还在跑 */
+
+    auto_rule_t rule;
+    long long now = (long long)time(NULL);
+    if (!auto_take_due(g_store, &rule, now)) {
+      LeaveCriticalSection(&g_lock);
+      continue;
+    }
+
+    /* 授权边界:周期规则的域名就是它的授权凭据;跑完把会话原有的范围还回去。
+       同时按规则指定的"本单位敏感信息定义"设口径 —— 这一轮用哪套定义是可追溯的。 */
+    if (!pool_contains(rule.domain)) {
+      log_warn("周期巡检: %s 的目标 %s 不在授权池内,本轮跳过(不擅自扩权)", rule.id, rule.domain);
+      store_audit(g_store, "周期巡检跳过", rule.domain, 0, "目标不在授权池内", g_task, "");
+      LeaveCriticalSection(&g_lock);
+      continue;
+    }
+    char prev_domain[256];
+    snprintf(prev_domain, sizeof(prev_domain), "%s", g_domain);
+    char prev_task[64];
+    snprintf(prev_task, sizeof(prev_task), "%s", g_task);
+    char prev_profile[24];
+    snprintf(prev_profile, sizeof(prev_profile), "%s", profile_active_id());
+
+    apply_profile(rule.profile_id);
+    apply_scope(rule.domain);
+    char instr[1400];
+    {
+      char scope_txt[1024];
+      auto_checks_instruction(rule.checks, rule.scope, scope_txt, sizeof(scope_txt));
+      snprintf(instr, sizeof(instr), "【周期巡检 %s】对 %s 现在开始,不要问我确认。%s",
+               rule.id, rule.domain, scope_txt);
+    }
+    char sig[128];
+    auto_checks_signature(rule.checks, rule.scope, sig, sizeof(sig));
+    log_info("周期巡检: %s → %s(范围 %s%s%s)", rule.id, rule.domain, sig,
+             rule.profile_id[0] ? ",定义 " : "", rule.profile_id);
+
+    /* 全流程巡检会自己建运行记录(技能内部);收窄范围的那些技能不建,
+       所以这里替它建一份 —— 否则「这一轮跑了什么」在历史里看不见。 */
+    int is_full = str_ieq(sig, "full");
+    int calls_before = net_http_calls();
+    char *wrap_run = NULL;
+    if (!is_full) {
+      wrap_run = store_run_start(g_store, g_task, "周期巡检", sig);
+      agent_set_store(g_agent, g_store, wrap_run ? wrap_run : "");
+    }
+
+    sse_ctx_t *saved_sse = g_sse;
+    g_sse = NULL;                       /* 无人值守:没有界面在等这些事件 */
+    store_set_trigger("周期巡检");
+    agent_add_history(g_agent, "user", instr);
+    loop_state_t st;
+    memset(&st, 0, sizeof(st));
+    int rc = agent_run_turn(g_agent, instr, &st);
+    store_set_trigger("手动");
+    g_sse = saved_sse;
+
+    char *run_id = is_full ? auto_latest_run_of_domain(g_store, rule.domain)
+                           : (wrap_run ? xstrdup(wrap_run) : NULL);
+    if (!is_full && wrap_run) {
+      json_t *fs = store_findings_of_run(g_store, wrap_run);
+      int nf = j_len(fs);
+      json_free(fs);
+      store_run_finish(g_store, wrap_run, rc == 0 ? "done" : "failed",
+                       0, net_http_calls() - calls_before, nf, rc == 0 ? "" : "巡检未正常收束");
+      agent_set_store(g_agent, g_store, "");
+    }
+
+    int changed = 0;
+    if (rc == 0 && run_id) changed = auto_after_run(g_store, &rule, run_id);
+    log_info("周期巡检: %s %s,停止原因 %s%s", rule.id,
+             rc == 0 ? "完成" : "失败", st.stop_reason[0] ? st.stop_reason : "—",
+             !run_id ? " · 没拿到运行记录,这轮不做差分"
+                     : (changed == 2 ? " · 同类范围的首轮,已建立基线(不告警)"
+                                     : (changed ? " · 与上一轮相比有变化,已写告警"
+                                                : " · 与上一轮相比没有变化")));
+    free(run_id);
+    free(wrap_run);
+    if (st.steps) json_free(st.steps);
+    buf_free(&st.transcript);
+
+    /* 恢复会话原来的授权范围与口径,别让周期任务把用户的上下文改掉 */
+    apply_scope(prev_domain[0] ? prev_domain : NULL);
+    apply_profile(prev_profile);
+    if (prev_task[0]) snprintf(g_task, sizeof(g_task), "%s", prev_task);
+    refresh_status_cache();
+    LeaveCriticalSection(&g_lock);
+  }
+  return 0;
+}
+
+static void sched_start(void) {
+  g_sched_stop = 0;
+  g_sched_thread = CreateThread(NULL, 0, sched_thread, NULL, 0, NULL);
+}
+
+static void sched_stop(void) {
+  InterlockedExchange(&g_sched_stop, 1);
+  if (g_sched_thread) {
+    WaitForSingleObject(g_sched_thread, 5000);
+    CloseHandle(g_sched_thread);
+    g_sched_thread = NULL;
+  }
+}
+
 /* ================= 静态界面资源 ================= */
 
 typedef struct {
@@ -833,7 +1606,7 @@ static void h_collection(const http_req_t *req, http_res_t *res) {
   http_query(req, "name", name, sizeof(name), "findings");
   static const char *ALLOWED[] = {"findings", "assets", "alerts", "runs", "reports",
                                   "evals", "tasks", "profiles", "testcases",
-                                  "baselines", "diffs", NULL};
+                                  "baselines", "diffs", "automations", NULL};
   int ok = 0;
   for (int i = 0; ALLOWED[i]; i++) if (strcmp(ALLOWED[i], name) == 0) ok = 1;
   if (!ok) {
@@ -912,14 +1685,62 @@ static void h_scope(const http_req_t *req, http_res_t *res) {
     return;
   }
   EnterCriticalSection(&g_lock);
+  /* 确认授权 = 把目标加进授权池,并把这一轮焦点设成它。
+     以后换站不需要"改全局设置":池子先收进来,后面谁都能从池里挑。 */
+  pool_add(domain);
   apply_scope(domain);
   refresh_status_cache();
   char *j = status_snapshot();
   LeaveCriticalSection(&g_lock);
-  store_audit(g_store, "设置授权范围", domain, 1, "界面确认已获授权", g_task, "");
+  store_audit(g_store, "授权池加入目标", domain, 1, "界面确认已获授权", g_task, "");
   if (body) json_free(body);
   http_res_json(res, 200, j);
   free(j);
+}
+
+/* ================= 授权池接口 ================= */
+static void h_pool(const http_req_t *req, http_res_t *res) {
+  if (strcmp(req->method, "POST") == 0) {
+    json_t *body = req->body ? json_parse(req->body) : NULL;
+    if (!body) { http_res_json(res, 400, "{\"ok\":false,\"error\":\"请求体不是合法 JSON\"}"); return; }
+    const char *action = j_s(body, "action", "add");
+    const char *entry = j_s(body, "entry", "");
+    if (!entry[0]) entry = j_s(body, "domain", "");
+    int rc = 0;
+    if (str_ieq(action, "remove")) {
+      rc = pool_remove(entry);
+    } else if (str_ieq(action, "add")) {
+      rc = pool_add(entry);
+      if (rc < 0) {
+        json_free(body);
+        http_res_json(res, 400,
+                      "{\"ok\":false,\"error\":\"只填主机名(可带端口),不要带协议、路径或空格\"}");
+        return;
+      }
+      store_audit(g_store, "授权池加入", entry, 1, "界面操作", g_task, "");
+    }
+    json_free(body);
+    EnterCriticalSection(&g_lock);
+    refresh_status_cache();
+    LeaveCriticalSection(&g_lock);
+    buf_t b;
+    buf_init(&b);
+    buf_puts(&b, "{\"ok\":true,\"changed\":");
+    buf_printf(&b, "%d", rc > 0 ? 1 : 0);
+    buf_puts(&b, ",\"pool\":");
+    buf_puts(&b, g_pool_json);
+    buf_puts(&b, "}");
+    http_res_json(res, 200, b.data);
+    buf_free(&b);
+    return;
+  }
+  buf_t b;
+  buf_init(&b);
+  buf_puts(&b, "{\"ok\":true,\"pool\":");
+  buf_puts(&b, g_pool_json);
+  buf_puts(&b, "}");
+  http_res_json(res, 200, b.data);
+  buf_free(&b);
 }
 
 static void h_chat(const http_req_t *req, http_res_t *res) {
@@ -935,6 +1756,31 @@ static void h_chat(const http_req_t *req, http_res_t *res) {
   if (!q[0]) {
     http_res_json(res, 400, "{\"ok\":false,\"error\":\"缺少参数 q\"}");
     return;
+  }
+
+  /* 这一轮看哪个站由请求带(不是全局设定),但必须落在授权池里。
+     越池的目标在这里就挡掉,连 SSE 都不开 —— 省得模型白跑一轮。 */
+  char target[256];
+  http_query(req, "target", target, sizeof(target), "");
+  if (target[0]) {
+    if (!pool_contains(target)) {
+      buf_t msg;
+      buf_init(&msg);
+      buf_printf(&msg, "目标 %s 不在授权池内:先把主机加进授权池,再对它发起巡检", target);
+      buf_t e;
+      buf_init(&e);
+      buf_puts(&e, "{\"ok\":false,\"error\":");
+      buf_json_str(&e, msg.data);
+      buf_puts(&e, "}");
+      http_res_json(res, 403, e.data);
+      buf_free(&msg);
+      buf_free(&e);
+      return;
+    }
+    EnterCriticalSection(&g_lock);
+    apply_scope(target);
+    net_scope_violation_clear();
+    LeaveCriticalSection(&g_lock);
   }
 
   if (!http_sse_begin(res)) return;
@@ -1002,6 +1848,7 @@ static void router(const http_req_t *req, http_res_t *res, void *ud) {
     if (!strcmp(p, "/api/rules")) { h_rules(req, res); return; }
     if (!strcmp(p, "/api/data")) { h_collection(req, res); return; }
     if (!strcmp(p, "/api/scope")) { h_scope(req, res); return; }
+    if (!strcmp(p, "/api/pool")) { h_pool(req, res); return; }
     if (!strcmp(p, "/api/chat")) { h_chat(req, res); return; }
     if (!strcmp(p, "/api/config/list")) { h_config_list(req, res); return; }
     if (!strcmp(p, "/api/config")) {
@@ -1010,6 +1857,15 @@ static void router(const http_req_t *req, http_res_t *res, void *ud) {
       return;
     }
     if (!strcmp(p, "/api/reload")) { h_reload(req, res); return; }
+    if (!strcmp(p, "/api/automations")) {
+      if (strcmp(req->method, "POST") == 0) h_automation_post(req, res);
+      else h_automation_list(req, res);
+      return;
+    }
+    if (!strcmp(p, "/api/export")) { h_export(req, res); return; }
+    if (!strcmp(p, "/api/profiles")) { h_profiles(req, res); return; }
+    if (!strcmp(p, "/api/approvals")) { h_approvals(req, res); return; }
+    if (!strcmp(p, "/api/approval")) { h_approval_decision(req, res); return; }
     http_res_404(res);
     return;
   }
@@ -1045,6 +1901,18 @@ int serve_run(const char *domain, int port, int open_ui) {
   res_bootstrap_data_dir();          /* 首次运行:把可改的规则与说明落一份到数据目录 */
   snprintf(g_data_dir, sizeof(g_data_dir), "%s", ddir);
   g_store = store_open(g_data_dir);
+  /* 授权池先load:边界必须在任何请求之前就位。
+     首次升级时池子是空的 —— 把启动参数里的域名当作第一条授权收进去,
+     否则老用户一升级就"什么都不能查",会以为程序坏了。 */
+  pool_load();
+  if (net_pool_count() == 0 && domain && *domain) pool_add(domain);
+  {
+    char apath[MAX_PATH * 2];
+    app_data_path(apath, sizeof(apath), "approval.json");
+    approval_set_path(apath);
+    approval_load();
+    approval_init();
+  }
   {
     char audit_path[MAX_PATH * 2];
     app_data_path(audit_path, sizeof(audit_path), "audit.jsonl");
@@ -1091,6 +1959,9 @@ int serve_run(const char *domain, int port, int open_ui) {
 
   SetConsoleCtrlHandler(on_console_ctrl, TRUE);
 
+  /* 周期巡检:服务一起来就把调度线程挂上。关掉浏览器它照样跑 —— 这正是"周期"的意思。 */
+  sched_start();
+
   if (open_ui) {
     /* 界面用系统浏览器打开。为什么不用进程内嵌 WebView2 见 exp/probe.c 的取证结论。 */
     ui_open_url_async(port);
@@ -1098,6 +1969,7 @@ int serve_run(const char *domain, int port, int open_ui) {
 
   int serve_rc = http_serve(NULL, port, router, NULL);
 
+  sched_stop();
   printf("服务已停止。\n");
   ui_close();
   int port_busy = (serve_rc != 0) && str_icontains(http_last_error(), "占用");

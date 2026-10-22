@@ -1,4 +1,4 @@
-/* app.js —— 界面层：把智能体的决策循环直播成"看得见的过程"，并把闭环数据摊开展示。
+﻿/* app.js —— 界面层：把智能体的决策循环直播成"看得见的过程"，并把闭环数据摊开展示。
  *
  * 与后端只通过 HTTP + SSE 说话，事件协议就是三册合同里的六个事件
  * (message_start / block_start / block_delta / block_stop / tool_status / message_stop)，
@@ -59,6 +59,9 @@ const BW_TOKEN = (document.querySelector('meta[name="bw-token"]') || {}).content
 async function api(path, opts) {
   const o = Object.assign({}, opts);
   o.headers = Object.assign({ 'X-BW-Token': BW_TOKEN }, (opts && opts.headers) || {});
+  /* 后端门禁要求 POST 必须是 application/json —— 统一在这里补,
+     免得每个调用点都记着写一遍(漏一处就是一个 415)。 */
+  if (o.body && !o.headers['Content-Type']) o.headers['Content-Type'] = 'application/json';
   const r = await fetch(path, o);
   const j = await r.json().catch(() => null);
   if (!r.ok) throw new Error((j && j.error) || ('HTTP ' + r.status));
@@ -137,7 +140,10 @@ function renderStatus(s) {
     ? '<svg class="status-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3 19 6v5c0 4.5-2.7 7.8-7 10-4.3-2.2-7-5.5-7-10V6l7-3Z"/><path d="m8.5 12 2.2 2.2 4.8-4.8"/></svg>'
     : '<svg class="status-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3 19 6v5c0 4.5-2.7 7.8-7 10-4.3-2.2-7-5.5-7-10V6l7-3Z"/><path d="m9 9 6 6M15 9l-6 6"/></svg>';
   ps.className = 'pill status-pill ' + (s.authorized ? 'on' : 'off');
-  ps.title = s.authorized ? '已授权：' + s.domain : '尚未设置巡检授权';
+  const poolSize = s.poolSize !== undefined ? s.poolSize : 0;
+  ps.title = poolSize
+    ? `授权池 ${poolSize} 个主机；当前巡检目标：${s.domain || '未选'}`
+    : '授权池是空的：任何请求都不会发出去';
 
   const pc = $('pill-count');
   const n = s.findingCount !== undefined ? s.findingCount : (s.findings || []).length;
@@ -145,22 +151,128 @@ function renderStatus(s) {
   pc.className = 'pill status-pill ' + (n > 0 ? 'has-findings' : '');
   pc.title = n > 0 ? `发现 ${n} 个问题` : '暂无发现问题';
 
-  $('scope-domain').value = s.authorized ? s.domain : '';
-  $('scope-ok').checked = !!s.authorized;
+  POOL.entries = ((s.pool || {}).hosts || []).slice();
+  renderPoolList();
+  $('scope-ok').checked = false;
+  /* 审批策略读数：顶栏选择器 + 警告标记都由 renderApprovals 负责，
+     这里只在状态里带上"当前是哪一档"，避免两处各说一套。 */
+  if (s.approval && $('approval-select')) {
+    const sel = $('approval-select');
+    if (!sel.options.length) renderApprovals().catch(() => {});
+    else if (sel.value !== s.approval.active) sel.value = s.approval.active;
+    sel.classList.toggle('warn', !!s.approval.allowAll);
+  }
 
   const sideStatus = $('side-scope-status');
   const sideName = $('side-scope-name');
   if (sideStatus) {
-    sideStatus.textContent = s.authorized ? '目标已授权' : '未设置目标';
-    sideStatus.dataset.ready = s.authorized ? 'true' : 'false';
+    sideStatus.textContent = poolSize ? `授权池 ${poolSize} 个主机` : '授权池为空';
+    sideStatus.dataset.ready = poolSize ? 'true' : 'false';
   }
-  if (sideName) sideName.textContent = s.authorized ? s.domain : '确认授权后开始巡检';
+  if (sideName) sideName.textContent = s.domain || (poolSize ? '从池里挑一个目标' : '先加一个授权主机');
   const introModel = $('intro-model');
   if (introModel) introModel.textContent = s.model ? '恒脑在线' : '离线规则';
+
+  /* 起手式与工作台各自的读数：同一份状态，两处写法不同 */
+  const hs = $('home-scope');
+  if (hs) hs.textContent = s.domain ? '目标：' + s.domain : (poolSize ? `授权池 ${poolSize} 个主机` : '授权池为空');
+  const ws = $('work-scope');
+  if (ws) ws.textContent = s.domain || '未选目标';
+  /* 工作台右上角的目标选择器：选项就是授权池。
+     "这轮看哪个站"是这一轮的事，不是全局设定 —— 所以放在发送的地方，而不是设置页。 */
+  const sel = $('target-select');
+  if (sel) {
+    const entries = POOL.entries;
+    sel.innerHTML = '';
+    if (!entries.length) {
+      const o = document.createElement('option');
+      o.value = '';
+      o.textContent = '授权池为空';
+      sel.appendChild(o);
+    } else {
+      for (const e of entries) {
+        const o = document.createElement('option');
+        o.value = e;
+        o.textContent = e;
+        sel.appendChild(o);
+      }
+      const cur = s.domain || entries[0];
+      sel.value = entries.includes(cur) ? cur : entries[0];
+    }
+  }
+  const wm = $('work-model');
+  if (wm) wm.textContent = s.model ? '恒脑在线' : '离线规则';
+  const rb = $('rail-boundary');
+  if (rb) {
+    rb.innerHTML = '';
+    const rows = [
+      ['授权池', poolSize ? poolSize + ' 个主机' : '空'],
+      ['本轮目标', s.domain || '未选'],
+      ['方法', 'GET / HEAD / OPTIONS'],
+      ['限速', '2 请求/秒'],
+      ['越界', '立刻掐断整轮'],
+    ];
+    for (const [k, v] of rows) {
+      rb.appendChild(el('dt', null, k));
+      rb.appendChild(el('dd', null, v));
+    }
+  }
 }
 
-function renderManifest(m) {
-  state.manifest = m;
+/* ============ 授权池 ============
+   边界是"允许检查谁"这张表,不是"当前目标"。
+   目标只是从池里挑出来的焦点,换站不用改全局设定,越池的请求会被后端掐断。 */
+const POOL = { entries: [] };
+
+function renderPoolList() {
+  const box = $('pool-list');
+  if (!box) return;
+  box.innerHTML = '';
+  if (!POOL.entries.length) {
+    box.appendChild(el('div', 'pool-empty', '池子还是空的。没有授权主机时，任何请求都不会发出去。'));
+    return;
+  }
+  for (const entry of POOL.entries) {
+    const row = el('div', 'pool-row');
+    row.appendChild(el('span', 'pool-host', entry));
+    if (state.status && state.status.domain === entry) row.appendChild(el('span', 'chip', '当前目标'));
+    const b = el('button', 'ghost tiny', '移出');
+    b.addEventListener('click', async () => {
+      try {
+        const r = await api('/api/pool', { method: 'POST', body: JSON.stringify({ action: 'remove', entry }) });
+        POOL.entries = ((r.pool || {}).hosts || []).slice();
+        renderPoolList();
+        renderStatus(await api('/api/status'));
+      } catch (e) { console.warn(e.message); }
+    });
+    row.appendChild(b);
+    box.appendChild(row);
+  }
+}
+
+async function addPoolEntry() {
+  const err = $('scope-err');
+  const entry = $('scope-domain').value.trim();
+  err.textContent = '';
+  if (!entry) { $('scope-domain').focus(); return; }
+  if (!$('scope-ok').checked) {
+    err.textContent = '请先勾选"已获得该目标的巡检授权"';
+    return;
+  }
+  try {
+    const r = await api('/api/scope', { method: 'POST', body: JSON.stringify({ domain: entry, authorized: 1 }) });
+    POOL.entries = ((r.pool || {}).hosts || []).slice();
+    renderPoolList();
+    renderStatus(r);
+    $('scope-domain').value = '';
+    $('scope-ok').checked = false;
+    shutModal();
+  } catch (e) {
+    err.textContent = '没加进去：' + e.message;
+  }
+}
+
+function renderManifest(m) {  state.manifest = m;
   $('cap-count').textContent = `${(m.skills || []).length} 技能 / ${(m.tools || []).length} 工具`;
   const fill = (pane, list, isSkill) => {
     pane.innerHTML = '';
@@ -325,12 +437,17 @@ function endTurn() {
   setBusy(false);
   state.cache = {};                    // 一轮结束：闭环数据可能变了,下次进视图重新取
   api('/api/status').then(renderStatus).catch(() => {});
+  renderRail();
+  renderRecent();
+  renderTasks();
 }
 
 function send(text) {
   const q = (text || '').trim();
   if (!q || busy) return;
 
+  showWork();
+  if ($('task-title')) $('task-title').textContent = q.length > 26 ? q.slice(0, 26) + '…' : q;
   if ($('stream-empty')) $('stream-empty').remove();
   const wrap = el('div', 'msg user');
   wrap.appendChild(el('div', 'body', q));
@@ -340,11 +457,15 @@ function send(text) {
   $('q').value = '';
   $('q').style.height = 'auto';
   setBusy(true);
+  /* 后端建好这一轮再刷新左栏，否则新任务不会出现在列表里 */
+  setTimeout(() => { renderTasks().catch(() => {}); }, 900);
   trace.textContent = '';
   if (stepsBox) stepsBox.innerHTML = '<div class="muted">执行后这里按步列出「为什么这么做」。</div>';
 
   /* EventSource 不能自定义请求头,所以令牌走查询串 */
+  const target = ($('target-select') && $('target-select').value) || '';
   const es = new EventSource('/api/chat?q=' + encodeURIComponent(q) +
+                             (target ? '&target=' + encodeURIComponent(target) : '') +
                              (BW_TOKEN ? '&t=' + encodeURIComponent(BW_TOKEN) : ''));
   let closed = false;
 
@@ -357,6 +478,7 @@ function send(text) {
       case 'block_delta':   onBlockDelta(e); break;
       case 'block_stop':    onBlockStop(e); break;
       case 'tool_status':   onToolStatus(e); break;
+      case 'approval_request': showApprovalBar(e); break;
       case 'message_stop':  onMessageStop(e); es.close(); closed = true; break;
     }
   };
@@ -744,6 +866,140 @@ async function renderRulesView() {
   $('rules-dirs-hint').textContent = `${(r.dir_candidates || []).length} 个目录`;
 }
 
+/* ============ 起手式与工作台的列表 ============
+   两个列表都只画后端真的落过盘的东西：没有运行记录就写"还没有"，不摆假数据。 */
+
+function runChip(status) {
+  return RUN_STATUS_LABEL[status] || status || '未知';
+}
+
+async function recentData() {
+  const [runs, tasks] = await Promise.all([
+    fetchCollection('runs', 12).catch(() => ({ items: [] })),
+    fetchCollection('tasks', 20).catch(() => ({ items: [] })),
+  ]);
+  const taskMap = {};
+  for (const t of tasks.items || []) taskMap[t.id] = t;
+  return { list: (runs.items || []).slice().reverse(), taskMap };
+}
+
+async function renderRecent() {
+  const box = $('recent');
+  if (!box) return;
+  const { list, taskMap } = await recentData();
+  box.innerHTML = '';
+  $('recent-meta').textContent = list.length ? `${list.length} 次 · 共 ${list.reduce((a, r) => a + (Number(r.findings_new) || 0), 0)} 条新发现` : '还没有记录';
+  if (!list.length) {
+    box.appendChild(el('div', 'recent-empty', '跑完第一轮，这里会按时间排出历史。'));
+    return;
+  }
+  for (const r of list.slice(0, 6)) {
+    const t = taskMap[r.task_id] || {};
+    const target = (t.authorized_domains || [])[0] || (state.status && state.status.domain) || r.task_id || '—';
+    const card = el('button', 'rcard');
+    card.type = 'button';
+    const top = el('span', 'rtop');
+    top.appendChild(el('span', 'tg', target));
+    top.appendChild(el('span', 'rst', runChip(r.status)));
+    card.appendChild(top);
+    card.appendChild(el('span', 'nm', r.id || '—'));
+    card.appendChild(el('span', 'rmeta', `${r.pages_found || 0} 页 · ${r.tools_called || 0} 次调用 · ${r.findings_new || 0} 条新发现`));
+    card.appendChild(el('span', 'rfoot', fmtTime(r.started_at)));
+    card.addEventListener('click', () => { showWork(); switchView('history'); loadView('history'); });
+    void t;
+    box.appendChild(card);
+  }
+}
+
+async function renderTasks() {
+  const box = $('tasks');
+  if (!box) return;
+  const { list, taskMap } = await recentData();
+  box.innerHTML = '';
+  if (!list.length) {
+    box.appendChild(el('div', 'grp', '还没有运行记录'));
+    return;
+  }
+  const groups = [['running', '进行中'], ['paused', '待复核'], ['failed', '失败'], ['done', '已完成']];
+  const other = list.filter((r) => !groups.some(([k]) => k === (r.status || 'done')));
+  for (const [key, label] of groups) {
+    const rows = list.filter((r) => (r.status || 'done') === key);
+    if (!rows.length) continue;
+    const g = el('div', 'grp');
+    g.appendChild(el('span', null, label));
+    g.appendChild(el('b', null, String(rows.length)));
+    box.appendChild(g);
+    for (const r of rows) box.appendChild(taskRow(r, taskMap[r.task_id]));
+  }
+  if (other.length) {
+    const g = el('div', 'grp');
+    g.appendChild(el('span', null, '其它'));
+    g.appendChild(el('b', null, String(other.length)));
+    box.appendChild(g);
+    for (const r of other) box.appendChild(taskRow(r, taskMap[r.task_id]));
+  }
+  const first = box.querySelector('.titem');
+  if (first) first.setAttribute('aria-current', 'true');
+}
+
+function taskRow(r, t) {
+  const row = el('button', 'titem');
+  row.type = 'button';
+  const r1 = el('span', 'r1');
+  r1.appendChild(el('span', 't', `${r.id} · ${(t && t.name) || r.triggered_by || '巡检'}`));
+  const dot = el('span', 'sdot ' + (r.status || 'done'));
+  r1.appendChild(dot);
+  row.appendChild(r1);
+  const r2 = el('span', 'r2');
+  r2.appendChild(el('span', 'sub', `${r.pages_found || 0} 页 · ${r.tools_called || 0} 次调用 · ${fmtTime(r.started_at)}`));
+  if (r.findings_new) {
+    const df = el('span', 'df');
+    df.appendChild(el('em', null, '+' + r.findings_new));
+    r2.appendChild(df);
+  }
+  row.appendChild(r2);
+  row.addEventListener('click', () => {
+    document.querySelectorAll('.titem').forEach((x) => x.setAttribute('aria-current', 'false'));
+    row.setAttribute('aria-current', 'true');
+    switchView('history'); loadView('history');
+  });
+  return row;
+}
+
+/* 右栏的"产物"：报告卡直接来自最新一份报告，没有就写成未生成 */
+async function renderRail() {
+  const [rep, fl] = await Promise.all([
+    fetchCollection('reports', 1).catch(() => ({ items: [] })),
+    fetchCollection('findings', 200).catch(() => ({ items: [] })),
+  ]);
+  const r = (rep.items || [])[0];
+  const findings = fl.items || [];
+  const bars = $('rail-report-bars');
+  const kvBox = $('rail-report-kv');
+  if (bars) bars.innerHTML = '';
+  if (kvBox) kvBox.innerHTML = '';
+  if (!r) return;
+  const stats = r.stats || {};
+  const sev = stats.by_severity || {};
+  $('rail-report-state').textContent = '已生成';
+  $('rail-report-title').textContent = `报告 ${r.id || ''}`;
+  $('rail-report-meta').textContent = `${fmtTime(r.created_at)} · ${findings.length} 条发现`;
+  const total = Object.values(sev).reduce((a, v) => a + (Number(v) || 0), 0) || 1;
+  for (const [k, color] of [['严重', 'var(--sev-严重)'], ['中', 'var(--sev-中)'], ['低', 'var(--sev-低)']]) {
+    const i = el('i');
+    i.style.width = Math.round(((Number(sev[k]) || 0) / total) * 100) + '%';
+    i.style.background = color;
+    if (bars) bars.appendChild(i);
+  }
+  if (kvBox) {
+    for (const [k, v] of [['严重', sev['严重'] || 0], ['中', sev['中'] || 0], ['低', sev['低'] || 0], ['未处理', stats.open === undefined ? '—' : stats.open]]) {
+      kvBox.appendChild(el('dt', null, k));
+      kvBox.appendChild(el('dd', null, String(v)));
+    }
+  }
+  $('rail-count').textContent = `${findings.length} 条`;
+}
+
 async function loadView(name) {
   const map = {
     report: renderReportView,
@@ -751,6 +1007,7 @@ async function loadView(name) {
     assets: renderAssetsView,
     eval: renderEvalView,
     rules: renderRulesView,
+    automation: renderAutomationView,
     config: renderConfigView,
   };
   const fn = map[name];
@@ -763,18 +1020,57 @@ async function loadView(name) {
   }
 }
 
+/* 三层壳：起手式 → 任务工作台 → 数据视图（整页抽屉）。
+   起手式与工作台互斥（同一块屏的两种排布），抽屉叠在它们上面。
+   切换靠 .on 驱动 CSS 动画（见 app.css「零 · 层」），不是 display 硬切。 */
+const BASE = ['home', 'work'];
+
+/** 起手式 ⇄ 工作台。进工作台时新层从下方升起，回起手式时从上方落下 —— 方向一致，不混淆来路。 */
+function raise(name, dir) {
+  for (const id of BASE) {
+    const node = $(id);
+    if (!node) continue;
+    if (id === name) {
+      node.classList.toggle('enter-down', dir === 'down');
+      void node.offsetWidth;              // 重放同一段动画：类不变时浏览器不会重播
+      node.classList.add('on');
+    } else {
+      node.classList.remove('on', 'enter-down');
+    }
+  }
+  if (name === 'work') renderTasks();
+}
+
+function showHome() {
+  raise('home', 'down');
+  const q = $('hq');
+  if (q && !q.value.trim()) setTimeout(() => q.focus(), 210);
+}
+function showWork() {
+  raise('work');
+}
+
+/** 抽屉叠在基线之上，从上方压下来。关掉时原样露出下面那层，不必判断"从哪来"。 */
+function openSheet() {
+  const s = $('sheet');
+  s.classList.add('enter-down');
+  void s.offsetWidth;
+  s.classList.add('on');
+}
+function closeSheet() { $('sheet').classList.remove('on'); }
+
 function switchView(name) {
+  if (name === 'loop') { closeSheet(); return; }
   state.view = name;
-  document.querySelectorAll('.vtab').forEach((b) => b.classList.toggle('active', b.dataset.view === name));
-  document.querySelectorAll('.view').forEach((v) => v.classList.toggle('active', v.id === 'view-' + name));
-  const meta = {
-    loop: ['工作台 / 决策循环', '决策循环'],
+  openSheet();
+  document.querySelectorAll('#views .view').forEach((v) => v.classList.toggle('active', v.id === 'view-' + name));  const meta = {
     report: ['巡检 / 报告与告警', '报告与告警'],
     history: ['巡检 / 历史记录', '巡检历史'],
     assets: ['数据 / 资产底账', '资产底账'],
     eval: ['数据 / 效果评测', '效果评测'],
     rules: ['数据 / 生效规则', '生效规则'],
     caps: ['系统 / 能力清单', '能力清单'],
+    automation: ['系统 / 周期巡检', '周期巡检'],
     config: ['系统 / 配置编辑', '配置编辑'],
   }[name];
   if (meta) {
@@ -784,6 +1080,546 @@ function switchView(name) {
     if (title) title.textContent = meta[1];
   }
 }
+
+/* ============ 本单位敏感信息定义 ============ */
+/* 一台机器上可能有多个站点/多家单位,所以定义是可保存的多份对象,
+   周期规则各自选一套。保存前后端会逐条验(正则能不能编译、落点是否合法)。 */
+const PROF = { items: [], editing: '' };
+
+async function renderProfiles() {
+  const box = $('prof-list');
+  if (!box) return;
+  const r = await api('/api/profiles');
+  PROF.items = r.items || [];
+  $('prof-hint').textContent = PROF.items.length ? `${PROF.items.length} 套定义` : '还没有自定义定义';
+  box.innerHTML = '';
+
+  const sel = $('auto-profile');
+  const keep = sel.value;
+  sel.innerHTML = '';
+  const opt0 = document.createElement('option');
+  opt0.value = '';
+  opt0.textContent = '出厂口径（只用 rules.json）';
+  sel.appendChild(opt0);
+  for (const p of PROF.items) {
+    const o = document.createElement('option');
+    o.value = p.id;
+    o.textContent = `${p.name}（${(p.keywords || []).length} 关键词 / ${(p.regex || []).length} 正则 / ${(p.paths || []).length} 落点）`;
+    sel.appendChild(o);
+  }
+  sel.value = keep;
+
+  if (!PROF.items.length) {
+    const e = el('div', 'auto-empty');
+    e.appendChild(el('b', null, '还没有本单位定义'));
+    e.appendChild(el('span', null, '下面填一套：只有这家站点才会出现的项目代号、内部工号格式、不该外放的文件名。'));
+    box.appendChild(e);
+    return;
+  }
+  for (const p of PROF.items) {
+    const c = el('div', 'rule');
+    const h = el('div', 'rh');
+    h.appendChild(el('span', 'rn', p.name || p.id));
+    h.appendChild(el('span', 'rt', p.id));
+    const rs = el('div', 'rs');
+    h.appendChild(rs);
+    c.appendChild(h);
+    const m = el('div', 'rm');
+    const add = (label, value) => {
+      const s = el('span');
+      s.appendChild(el('i', null, label));
+      s.appendChild(document.createTextNode(' '));
+      s.appendChild(el('b', null, value));
+      m.appendChild(s);
+    };
+    add('关键词', String((p.keywords || []).length));
+    add('正则', String((p.regex || []).length));
+    add('落点', String((p.paths || []).length));
+    add('文件类型', (p.file_types || []).join(' / ') || '—');
+    if (p.updated_at) add('更新', fmtTime(p.updated_at));
+    c.appendChild(m);
+    const act = el('div', 'ract');
+    const bEdit = el('button', 'ghost', '编辑');
+    bEdit.addEventListener('click', () => fillProfileForm(p));
+    const bDel = el('button', 'ghost danger', '删除');
+    bDel.addEventListener('click', async () => {
+      if (!window.confirm(`删除定义「${p.name}」？引用它的周期规则会回到出厂口径。`)) return;
+      try {
+        await api('/api/profiles', { method: 'POST', body: JSON.stringify({ action: 'delete', id: p.id }) });
+        if (PROF.editing === p.id) fillProfileForm({});
+        renderProfiles();
+      } catch (e) { console.warn(e.message); }
+    });
+    for (const b of [bEdit, bDel]) act.appendChild(b);
+    c.appendChild(act);
+    box.appendChild(c);
+  }
+}
+
+function linesToArr(id) {
+  return ($(id).value || '')
+    .split('\n')
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0);
+}
+
+function fillProfileForm(p) {
+  PROF.editing = p && p.id ? p.id : '';
+  $('prof-name').value = (p && p.name) || '';
+  $('prof-keywords').value = ((p && p.keywords) || []).join('\n');
+  $('prof-regex').value = ((p && p.regex) || []).join('\n');
+  $('prof-samples').value = ((p && p.samples) || []).join('\n');
+  $('prof-paths').value = ((p && p.paths) || []).join('\n');
+  $('prof-types').value = ((p && p.file_types) || []).join('\n');
+  $('prof-msg').className = 'note';
+  $('prof-msg').textContent = PROF.editing ? `正在编辑 ${PROF.editing}` : '';
+}
+
+async function saveProfile() {
+  const msg = $('prof-msg');
+  const profile = {
+    id: PROF.editing || '',
+    name: $('prof-name').value.trim(),
+    keywords: linesToArr('prof-keywords'),
+    regex: linesToArr('prof-regex'),
+    samples: linesToArr('prof-samples'),
+    paths: linesToArr('prof-paths'),
+    file_types: linesToArr('prof-types'),
+  };
+  msg.className = 'note';
+  msg.textContent = '保存中…';
+  try {
+    const r = await api('/api/profiles', { method: 'POST', body: JSON.stringify({ action: 'save', profile }) });
+    PROF.editing = r.item.id;
+    msg.textContent = `已保存：${r.item.id}`;
+    await renderProfiles();
+    $('auto-profile').value = r.item.id;
+  } catch (e) {
+    msg.className = 'err';
+    msg.textContent = '没保存：' + e.message;
+  }
+}
+
+/* ============ 周期巡检 ============ */
+/* 数据来自 /api/automations:后端算好 next_at 与 next_run_at,前端只负责摆放。
+   所有时间都用「还有多久」而不是裸时间戳 —— 巡检员关心的是"什么时候跑",不是绝对值。 */
+const AUTO = { items: [], editing: '' };
+
+function fmtIn(iso) {
+  if (!iso) return '—';
+  const t = Date.parse(iso);
+  if (!t) return '—';
+  const d = Math.round((t - Date.now()) / 1000);
+  if (d <= 0) return '即将开始';
+  if (d < 60) return d + ' 秒后';
+  if (d < 3600) return Math.round(d / 60) + ' 分钟后';
+  if (d < 86400) return (d / 3600).toFixed(1).replace(/\.0$/, '') + ' 小时后';
+  return Math.round(d / 86400) + ' 天后';
+}
+
+async function renderAutomationView() {
+  const box = $('auto-list');
+  if (!box) return;
+  const r = await api('/api/automations');
+  AUTO.items = r.items || [];
+  box.innerHTML = '';
+  const enabled = AUTO.items.filter((x) => x.enabled).length;
+  $('auto-hint').textContent = AUTO.items.length
+    ? `${AUTO.items.length} 条规则 · ${enabled} 条在跑`
+    : '还没有规则';
+  const badge = $('auto-badge');
+  if (badge) { badge.textContent = enabled ? enabled + ' 条在跑' : ''; badge.classList.toggle('on', enabled > 0); }
+
+  if (!AUTO.items.length) {
+    const e = el('div', 'auto-empty');
+    e.appendChild(el('b', null, '还没有周期规则'));
+    e.appendChild(el('span', null, '在下面填一个目标和周期，它能自己跑；跑完会与上一轮比对，变了才告警。'));
+    box.appendChild(e);
+    renderProfiles().catch(() => {});
+    return;
+  }
+  for (const a of AUTO.items) box.appendChild(ruleCard(a));
+  renderProfiles().catch(() => {});
+}
+
+function ruleCard(a) {
+  const c = el('div', 'rule' + (a.enabled ? '' : ' off'));
+  const h = el('div', 'rh');
+  h.appendChild(el('span', 'rn', a.name || a.domain));
+  h.appendChild(el('span', 'rt', a.domain));
+  h.appendChild(el('span', 'st-dot' + (a.enabled ? ' on' : ''), a.enabled ? '在跑' : '已停'));
+  const rs = el('div', 'rs');
+  if (a.due) rs.appendChild(el('span', 'chip', '即将触发'));
+  h.appendChild(rs);
+  c.appendChild(h);
+
+  const m = el('div', 'rm');
+  const add = (label, value) => {
+    const s = el('span');
+    s.appendChild(el('i', null, label));
+    s.appendChild(document.createTextNode(' '));
+    s.appendChild(el('b', null, value));
+    m.appendChild(s);
+  };
+  add('周期', a.cycle_text || '—');
+  add('范围', a.scope_label || '—');
+  add('下次', a.enabled ? fmtIn(a.next_run_at) : '已停用');
+  add('已跑', `${a.run_count || 0} 轮`);
+  add('告警', `${a.change_count || 0} 次变化`);
+  if (a.last_run_at) add('上次', fmtTime(a.last_run_at));
+  c.appendChild(m);
+
+  const act = el('div', 'ract');
+  const bRun = el('button', 'ghost', '马上跑一次');
+  bRun.addEventListener('click', async () => {
+    bRun.disabled = true;
+    bRun.textContent = '已排队…';
+    try {
+      await api('/api/automations', { method: 'POST', body: JSON.stringify({ action: 'run', id: a.id }) });
+      setTimeout(() => { renderAutomationView(); state.cache = {}; renderRail(); }, 2000);
+    } catch (e) {
+      bRun.textContent = '没排上';
+      console.warn(e.message);
+    }
+  });
+  const bToggle = el('button', 'ghost', a.enabled ? '停用' : '启用');
+  bToggle.addEventListener('click', async () => {
+    try {
+      await api('/api/automations', { method: 'POST', body: JSON.stringify({ action: 'toggle', id: a.id }) });
+      renderAutomationView();
+    } catch (e) { console.warn(e.message); }
+  });
+  const bEdit = el('button', 'ghost', '编辑');
+  bEdit.addEventListener('click', () => fillAutoForm(a));
+  const bDel = el('button', 'ghost danger', '删除');
+  bDel.addEventListener('click', async () => {
+    if (!window.confirm(`删除周期规则「${a.name || a.domain}」？已跑过的记录会保留。`)) return;
+    try {
+      await api('/api/automations', { method: 'POST', body: JSON.stringify({ action: 'delete', id: a.id }) });
+      renderAutomationView();
+    } catch (e) { console.warn(e.message); }
+  });
+  for (const b of [bRun, bToggle, bEdit, bDel]) act.appendChild(b);
+  c.appendChild(act);
+  return c;
+}
+
+function autoKindChanged() {
+  const kind = $('auto-kind').value;
+  $('auto-every-wrap').hidden = kind !== 'interval';
+  $('auto-at-wrap').hidden = kind === 'interval';
+  $('auto-wd-wrap').hidden = kind !== 'weekly';
+}
+
+/* 范围预设与检查项是同一件事的两种说法:
+   选预设就自动勾上对应的检查项;自己勾检查项时把预设标成"自定义"。 */
+const SCOPE_CHECKS = {
+  full: ['full'], leak: ['leak'], integrity: ['integrity'],
+  recon: ['recon'], retest: ['retest'],
+};
+
+function syncChecksFromScope() {
+  const want = SCOPE_CHECKS[$('auto-scope').value] || ['full'];
+  document.querySelectorAll('.auto-check').forEach((c) => { c.checked = want.includes(c.value); });
+}
+
+function checkedChecks() {
+  return Array.from(document.querySelectorAll('.auto-check')).filter((c) => c.checked).map((c) => c.value);
+}
+
+function fillAutoForm(a) {
+  AUTO.editing = a.id || '';
+  $('auto-form-title').textContent = a.id ? `编辑规则 ${a.id}` : '新建周期规则';
+  $('auto-domain').value = a.domain || '';
+  $('auto-scope').value = a.scope || 'full';
+  $('auto-kind').value = a.kind || 'interval';
+  $('auto-every').value = a.every_min || 360;
+  $('auto-hour').value = a.at_hour != null ? a.at_hour : 3;
+  $('auto-min').value = a.at_min != null ? a.at_min : 0;
+  $('auto-weekday').value = String(a.weekday != null ? a.weekday : 1);
+  $('auto-name').value = a.name || '';
+  $('auto-enabled').checked = a.enabled !== 0 && a.enabled !== false;
+  const checks = (a.checks && a.checks.length) ? a.checks : SCOPE_CHECKS[a.scope || 'full'];
+  document.querySelectorAll('.auto-check').forEach((c) => { c.checked = checks.includes(c.value); });
+  const sel = $('auto-profile');
+  if (sel) sel.value = a.profile_id || '';
+  autoKindChanged();
+  $('auto-msg').textContent = '';
+  $('auto-msg').className = 'note';
+}
+
+async function saveAutomation() {
+  const msg = $('auto-msg');
+  const checks = checkedChecks();
+  const rule = {
+    id: AUTO.editing || '',
+    name: $('auto-name').value.trim(),
+    domain: $('auto-domain').value.trim(),
+    scope: $('auto-scope').value,
+    checks,
+    profile_id: $('auto-profile') ? $('auto-profile').value : '',
+    kind: $('auto-kind').value,
+    every_min: Number($('auto-every').value) || 0,
+    at_hour: Number($('auto-hour').value) || 0,
+    at_min: Number($('auto-min').value) || 0,
+    weekday: Number($('auto-weekday').value) || 0,
+    enabled: $('auto-enabled').checked ? 1 : 0,
+  };
+  msg.className = 'note';
+  msg.textContent = '保存中…';
+  try {
+    const r = await api('/api/automations', { method: 'POST', body: JSON.stringify({ action: 'save', rule }) });
+    msg.textContent = `已保存：${r.item.id}，下次 ${fmtIn(r.item.next_run_at)}`;
+    AUTO.editing = r.item.id;
+    $('auto-form-title').textContent = `编辑规则 ${r.item.id}`;
+    await renderAutomationView();
+  } catch (e) {
+    msg.className = 'err';
+    msg.textContent = '没保存：' + e.message;
+  }
+}
+
+$('auto-kind').addEventListener('change', autoKindChanged);
+$('auto-scope').addEventListener('change', syncChecksFromScope);
+$('auto-save').addEventListener('click', saveAutomation);
+$('auto-reset').addEventListener('click', () => { fillAutoForm({}); syncChecksFromScope(); });
+$('prof-save').addEventListener('click', saveProfile);
+$('prof-reset').addEventListener('click', () => fillProfileForm({}));
+
+/* 周期巡检是后台在跑的：界面要自己跟上，不能让用户以为"点了没反应"。
+   页面停在自动化视图时每 8 秒刷新一次规则状态；停在工作台时每 30 秒刷新
+   右栏与最近记录 —— 定时那一轮跑完会自然出现在这里。 */
+let autoTick = 0;
+setInterval(() => {
+  const sheetOpen = $('sheet').classList.contains('on');
+  const onAuto = sheetOpen && $('view-automation') && $('view-automation').classList.contains('active');
+  if (onAuto) { renderAutomationView().catch(() => {}); return; }
+  autoTick++;
+  if (autoTick % 4 === 0 && !sheetOpen) {
+    state.cache = {};
+    renderRecent();
+    renderRail();
+    api('/api/status').then(renderStatus).catch(() => {});
+  }
+}, 8000);
+
+/* ============ 权限审批 ============ */
+const APPR = { items: [], active: 'ask', pendingWarn: '' };
+
+async function renderApprovals() {
+  const r = await api('/api/approvals');
+  APPR.items = r.items || [];
+  APPR.active = r.active || 'ask';
+  const sel = $('approval-select');
+  if (sel) {
+    sel.innerHTML = '';
+    for (const p of APPR.items) {
+      const o = document.createElement('option');
+      o.value = p.id;
+      o.textContent = p.mode === 'allow_all' ? '⚠ ' + p.name : p.name;
+      sel.appendChild(o);
+    }
+    sel.value = APPR.active;
+    sel.classList.toggle('warn', APPR.active === 'allow_all');
+    sel.title = '审批策略：' + (r.modeText || '');
+  }
+  const box = $('appr-list');
+  if (box) {
+    box.innerHTML = '';
+    for (const p of APPR.items) box.appendChild(apprCard(p));
+    $('appr-hint').textContent = APPR.items.length + ' 条策略 · 当前：' + (r.modeText || '');
+  }
+}
+
+function apprCard(p) {
+  const c = el('div', 'rule' + (p.active ? '' : ' off'));
+  const h = el('div', 'rh');
+  h.appendChild(el('span', 'rn', p.name));
+  h.appendChild(el('span', 'rt', p.id));
+  h.appendChild(el('span', 'st-dot' + (p.active ? ' on' : ''), p.active ? '生效中' : '未启用'));
+  c.appendChild(h);
+  const m = el('div', 'rm');
+  const add = (label, value) => {
+    const s = el('span');
+    s.appendChild(el('i', null, label));
+    s.appendChild(document.createTextNode(' '));
+    s.appendChild(el('b', null, value));
+    m.appendChild(s);
+  };
+  add('模式', p.mode === 'ask' ? '每个动作都问' : p.mode === 'allow_all' ? '全部自动放行' : '自定义规则');
+  add('性质', p.builtin ? '内置' : '预设');
+  if (p.rules) add('规则', String(p.rules.split('\n').filter(Boolean).length) + ' 条');
+  c.appendChild(m);
+  if (p.note) c.appendChild(el('div', 'cd', p.note));
+
+  const act = el('div', 'ract');
+  if (!p.active) {
+    const bUse = el('button', 'ghost', '启用');
+    bUse.addEventListener('click', () => applyApproval(p.id));
+    act.appendChild(bUse);
+  }
+  if (!p.builtin) {
+    const bEdit = el('button', 'ghost', '编辑');
+    bEdit.addEventListener('click', () => {
+      $('appr-name').value = p.name || '';
+      $('appr-rules').value = p.rules || '';
+      $('appr-msg').className = 'note';
+      $('appr-msg').textContent = `正在编辑 ${p.id}（保存会覆盖它）`;
+      APPR.editing = p.id;
+    });
+    const bDel = el('button', 'ghost danger', '删除');
+    bDel.addEventListener('click', async () => {
+      if (!window.confirm(`删除策略「${p.name}」？`)) return;
+      try {
+        await api('/api/approvals', { method: 'POST', body: JSON.stringify({ action: 'delete', id: p.id }) });
+        await renderApprovals();
+        renderStatus(await api('/api/status'));
+      } catch (e) { console.warn(e.message); }
+    });
+    act.appendChild(bEdit);
+    act.appendChild(bDel);
+  }
+  c.appendChild(act);
+  return c;
+}
+
+async function applyApproval(id) {
+  try {
+    const r = await api('/api/approvals', { method: 'POST', body: JSON.stringify({ action: 'activate', id }) });
+    APPR.active = r.active;
+    await renderApprovals();
+    renderStatus(await api('/api/status'));
+  } catch (e) {
+    console.warn(e.message);
+  }
+}
+
+/* 顶栏切换:选到"全部允许"要先过一次警告 */
+$('approval-select').addEventListener('change', (e) => {
+  const id = e.target.value;
+  const p = APPR.items.find((x) => x.id === id);
+  if (p && p.mode === 'allow_all') {
+    APPR.pendingWarn = id;
+    $('warn-modal').classList.add('on');
+    return;
+  }
+  applyApproval(id);
+});
+$('warn-cancel').addEventListener('click', () => {
+  $('warn-modal').classList.remove('on');
+  $('approval-select').value = APPR.active;
+  APPR.pendingWarn = '';
+});
+$('warn-ok').addEventListener('click', async () => {
+  const id = APPR.pendingWarn;
+  $('warn-modal').classList.remove('on');
+  APPR.pendingWarn = '';
+  if (id) await applyApproval(id);
+});
+$('appr-save').addEventListener('click', async () => {
+  const msg = $('appr-msg');
+  const policy = {
+    id: APPR.editing || '',
+    name: $('appr-name').value.trim(),
+    mode: 'custom',
+    rules: $('appr-rules').value,
+  };
+  msg.className = 'note';
+  msg.textContent = '保存中…';
+  try {
+    const r = await api('/api/approvals', { method: 'POST', body: JSON.stringify({ action: 'save', policy }) });
+    APPR.editing = r.id;
+    msg.textContent = '已保存：' + r.id;
+    await renderApprovals();
+  } catch (e) {
+    msg.className = 'err';
+    msg.textContent = '没保存：' + e.message;
+  }
+});
+$('appr-reset').addEventListener('click', () => {
+  APPR.editing = '';
+  $('appr-name').value = '';
+  $('appr-rules').value = '';
+  $('appr-msg').textContent = '';
+});
+
+/* 审批条：贴在输入框上方浮着。
+   它是"现在要做的决定"，不是历史，所以不进聊天流；一轮里只有一条，
+   连续多个动作被拦时用计数表示"还有 N 个在排队"。 */
+const AB = { id: '', queue: 0, busy: false };
+
+function showApprovalBar(e) {
+  AB.id = e.id;
+  AB.queue += 1;
+  $('ab-tool').textContent = e.tool || '';
+  $('ab-policy').textContent = e.policy ? '策略：' + e.policy : '';
+  $('ab-count').textContent = AB.queue > 1 ? `还有 ${AB.queue} 个动作在等` : '';
+  $('ab-args').textContent = e.args || '{}';
+  $('ab-yes').disabled = false;
+  $('ab-no').disabled = false;
+  $('ab-yes').textContent = '允许';
+  $('ab-no').textContent = '拒绝';
+  $('approval-bar').classList.remove('ok', 'no');
+  $('approval-bar').classList.add('on');
+  $('ab-yes').focus();
+}
+
+function hideApprovalBar(delay) {
+  setTimeout(() => {
+    $('approval-bar').classList.remove('on');
+    AB.id = '';
+    AB.queue = 0;
+  }, delay || 0);
+}
+
+async function decideApproval(ok) {
+  if (!AB.id || AB.busy) return;
+  AB.busy = true;
+  $('ab-yes').disabled = true;
+  $('ab-no').disabled = true;
+  try {
+    await api('/api/approval', { method: 'POST', body: JSON.stringify({ id: AB.id, decision: ok ? 'allow' : 'deny' }) });
+    $('approval-bar').classList.add(ok ? 'ok' : 'no');
+    $('ab-yes').textContent = ok ? '已允许' : '允许';
+    $('ab-no').textContent = ok ? '拒绝' : '已拒绝';
+    AB.queue = Math.max(0, AB.queue - 1);
+    AB.id = '';
+    hideApprovalBar(ok ? 900 : 1400);
+  } catch (err) {
+    $('ab-args').textContent = '提交失败：' + err.message;
+    $('ab-yes').disabled = false;
+    $('ab-no').disabled = false;
+  } finally {
+    AB.busy = false;
+  }
+}
+
+$('ab-yes').addEventListener('click', () => decideApproval(true));
+$('ab-no').addEventListener('click', () => decideApproval(false));
+
+/* ============ 导出 ============ */
+/* 五种格式都由后端渲染(/api/export),前端只负责点一个链接 —— 
+   这样"页面上的数字"和"文件里的数字"不会有两套统计逻辑。 */
+function closeExportMenu() { $('export-menu').classList.remove('open'); }
+
+$('btn-export').addEventListener('click', (e) => {
+  e.stopPropagation();
+  $('export-menu').classList.toggle('open');
+});
+document.addEventListener('click', (e) => {
+  if (!$('export-menu').contains(e.target)) closeExportMenu();
+});
+document.querySelectorAll('#export-list button').forEach((b) => {
+  b.addEventListener('click', () => {
+    closeExportMenu();
+    const fmt = b.dataset.fmt;
+    const rep = (state.cache['reports:1'] || {}).items || [];
+    const id = rep.length ? rep[0].id : '';
+    const url = '/api/export?format=' + encodeURIComponent(fmt) + (id ? '&report=' + encodeURIComponent(id) : '') +
+                (BW_TOKEN ? '&t=' + encodeURIComponent(BW_TOKEN) : '');
+    window.location.href = url;
+  });
+});
 
 /* ============ 配置编辑 ============ */
 /* 支持编辑:rules.json(检测口径)、mcp.json(MCP 服务器)、skills\*.md(技能)、tools\*.json(外部工具)。
@@ -904,51 +1740,6 @@ function newConfigFile() {
   $('cfg-msg').textContent = '模板已就绪 —— 改完点「保存」';
 }
 
-/* ============ 报告导出：前端按当前报告 + 发现清单拼 Markdown（后端只提供数据，导出格式不写死后端） ============ */
-function exportMarkdown() {
-  const findings = (state.cache['findings:200'] || {}).items || [];
-  const reports = (state.cache['reports:1'] || {}).items || [];
-  const rep = reports[0];
-  const lines = [];
-  lines.push(`# ${rep ? rep.title : '网站安全巡检报告'}`);
-  lines.push('');
-  lines.push(`- 报告编号：${rep ? rep.id : '（未生成）'}`);
-  lines.push(`- 生成时间：${rep ? fmtTime(rep.generated_at) : fmtTime(new Date().toISOString())}`);
-  lines.push(`- 授权域名：${state.status && state.status.authorized ? state.status.domain : '—'}`);
-  lines.push(`- 规则来源：${rep ? rep.rules_source || '—' : (state.cache['rules'] ? state.cache['rules'].source : '—')}`);
-  lines.push('');
-  if (rep && rep.summary) { lines.push('## 摘要'); lines.push(''); lines.push(rep.summary); lines.push(''); }
-  const sev = {};
-  for (const f of findings) sev[f.severity || '信息'] = (sev[f.severity || '信息'] || 0) + 1;
-  lines.push('## 统计');
-  lines.push('');
-  for (const k of SEV_ORDER) if (sev[k]) lines.push(`- ${k}：${sev[k]}`);
-  lines.push('');
-  lines.push('## 发现清单');
-  lines.push('');
-  for (const f of findings) {
-    lines.push(`### ${f.id || ''} [${f.severity || ''}] ${f.title || ''}`);
-    lines.push('');
-    lines.push(`- 类别 / 状态：${f.kind || ''} / ${STATUS_LABEL[f.status] || f.status || ''}`);
-    lines.push(`- 目标：${f.target || ''}`);
-    if (f.evidence) lines.push(`- 证据：${f.evidence}`);
-    if (f.impact) lines.push(`- 影响：${f.impact}`);
-    if (f.fix) lines.push(`- 修复建议：${f.fix}`);
-    lines.push(`- 来源 / 首次发现：${f.source_tool || ''} / ${f.first_seen || ''}`);
-    for (const r of f.retests || []) {
-      lines.push(`- 复测（${fmtTime(r.time)}）：${RESULT_LABEL[r.result] || r.result} —— ${r.note || ''}`);
-    }
-    lines.push('');
-  }
-  lines.push('> 由「网站安全巡检智能体（C 版）」生成：结论均来自只读检查与规则判定，证据已去敏。');
-  const blob = new Blob([lines.join('\n')], { type: 'text/markdown;charset=utf-8' });
-  const a = document.createElement('a');
-  a.href = URL.createObjectURL(blob);
-  a.download = (rep ? rep.id : 'report') + '.md';
-  a.click();
-  setTimeout(() => URL.revokeObjectURL(a.href), 2000);
-}
-
 /* ============ 绑定 ============ */
 
 $('form').addEventListener('submit', (e) => {
@@ -974,6 +1765,61 @@ document.querySelectorAll('.vtab').forEach((b) => {
     switchView(b.dataset.view);
     loadView(b.dataset.view);
   });
+});
+
+/* 起手式：给目标就开始；快捷短语只是把话填进去，不替你决定 */
+const hq = $('hq');
+if (hq) {
+  hq.addEventListener('input', () => {
+    hq.style.height = 'auto';
+    hq.style.height = Math.min(hq.scrollHeight, 160) + 'px';
+  });
+  hq.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      $('home-form').requestSubmit();
+    }
+  });
+}
+$('home-form').addEventListener('submit', (e) => {
+  e.preventDefault();
+  const text = (hq.value || '').trim();
+  if (!text) { hq.focus(); return; }
+  if (!state.status || !state.status.authorized) {
+    openModal();
+    return;
+  }
+  hq.value = '';
+  send(text);
+});
+document.querySelectorAll('.chip-btn').forEach((b) => {
+  b.addEventListener('click', () => {
+    hq.value = b.dataset.q;
+    hq.focus();
+  });
+});
+document.querySelectorAll('.hint-btn').forEach((b) => {
+  b.addEventListener('click', () => send(b.dataset.q));
+});
+
+/* 任何 data-goto 都走同一个入口：先切视图，再取数 */
+document.querySelectorAll('[data-goto]').forEach((b) => {
+  b.addEventListener('click', () => {
+    const name = b.dataset.goto;
+    switchView(name);
+    loadView(name);
+  });
+});
+
+$('btn-back').addEventListener('click', closeSheet);
+$('btn-new').addEventListener('click', () => {
+  showHome();
+  if (hq) hq.focus();
+});
+$('btn-refresh2').addEventListener('click', async () => {
+  state.cache = {};
+  try { renderStatus(await api('/api/status')); } catch { /* 后端可能刚停 */ }
+  await loadView(state.view);
 });
 
 const scrollTimer = new WeakMap();
@@ -1002,7 +1848,7 @@ $('btn-refresh').addEventListener('click', async () => {
   await loadView(state.view);
 });
 
-$('btn-export').addEventListener('click', exportMarkdown);
+
 
 /* 配置编辑页的按钮 */
 $('cfg-save').addEventListener('click', saveConfigFile);
@@ -1015,56 +1861,152 @@ $('cfg-text').addEventListener('input', () => {
   $('cfg-msg').textContent = '有未保存的改动';
 });
 
-/* 授权弹窗：这是合规的第一道闸，前端也必须拦一次 */
-$('btn-scope').addEventListener('click', () => $('modal').classList.remove('hidden'));
-$('scope-cancel').addEventListener('click', () => $('modal').classList.add('hidden'));
+/* 授权弹窗：池子是合规的第一道闸，前端也必须拦一次 */
+function openModal() { $('modal').classList.add('on'); renderPoolList(); setTimeout(() => $('scope-domain').focus(), 200); }
+function shutModal() { $('modal').classList.remove('on'); }
+$('btn-scope').addEventListener('click', openModal);
+$('scope-cancel').addEventListener('click', shutModal);
+$('scope-save').addEventListener('click', addPoolEntry);
+$('scope-domain').addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); addPoolEntry(); } });
 $('modal').addEventListener('click', (e) => {
-  if (e.target.classList.contains('modal-backdrop')) $('modal').classList.add('hidden');
-});
-$('scope-save').addEventListener('click', async () => {
-  const domain = $('scope-domain').value.trim();
-  const ok = $('scope-ok').checked;
-  const err = $('scope-err');
-  err.textContent = '';
-  if (!domain) { err.textContent = '请填写目标域名。'; return; }
-  if (!ok) { err.textContent = '必须确认已获授权，智能体才会对该目标发起请求。'; return; }
-  try {
-    const s = await api('/api/scope', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ domain, authorized: true }),
-    });
-    renderStatus(s);
-    state.cache = {};
-    $('modal').classList.add('hidden');
-  } catch (e) {
-    err.textContent = '设置失败：' + e.message;
-  }
+  if (e.target.classList.contains('modal-backdrop')) shutModal();
 });
 
-/* ============ 主题（亮色 / 暗色）============
-   颜色全部走 CSS 变量，切主题只是给 <html> 换一个 class。
-   默认跟随系统，用户手动切过就记在 localStorage 里。 */
-function applyTheme(dark) {
-  document.documentElement.classList.toggle('dark', dark);
-  const button = $('btn-theme');
-  if (button) {
-    const label = dark ? '切换到亮色主题' : '切换到暗色主题';
-    button.setAttribute('aria-label', label);
-    button.setAttribute('title', label);
-  }
-}
+/* ============ 主题 ============
+   界面只有一套纸白（工作台）与一处纯黑（起手式）——两套并存会让同一页出现两种性格，
+   所以不再提供主题开关。这里只保留"跟随系统滚动条/选区"的一致性设置。 */
 function initTheme() {
-  let saved = null;
-  try { saved = localStorage.getItem('theme'); } catch { /* 隐私模式下忽略 */ }
-  const dark = saved ? saved === 'dark' : window.matchMedia('(prefers-color-scheme: dark)').matches;
-  applyTheme(dark);
-  $('btn-theme').addEventListener('click', () => {
-    const next = !document.documentElement.classList.contains('dark');
-    applyTheme(next);
-    try { localStorage.setItem('theme', next ? 'dark' : 'light'); } catch { /* 忽略 */ }
+  document.documentElement.style.colorScheme = 'light';
+}
+
+/* ============ 搜索（Ctrl+K） ============
+   只查已经落盘的东西：任务 / 运行 / 发现 / 资产 + 视图跳转。
+   不做"智能补全"，也不假装能搜后端没存的数据。 */
+const PAL = { open: false, rows: [], sel: 0 };
+
+const PAL_VIEWS = [
+  ['report', '视图 · 报告与告警'], ['history', '视图 · 巡检历史'], ['assets', '视图 · 资产底账'],
+  ['eval', '视图 · 效果评测'], ['rules', '视图 · 生效规则'], ['caps', '视图 · 能力清单'],
+  ['automation', '视图 · 周期巡检'],
+  ['config', '视图 · 配置编辑'],
+];
+
+async function palLoad() {
+  const [runs, tasks, findings, assets] = await Promise.all([
+    fetchCollection('runs', 60).catch(() => ({ items: [] })),
+    fetchCollection('tasks', 60).catch(() => ({ items: [] })),
+    fetchCollection('findings', 120).catch(() => ({ items: [] })),
+    fetchCollection('assets', 120).catch(() => ({ items: [] })),
+  ]);
+  return {
+    runs: runs.items || [], tasks: tasks.items || [],
+    findings: findings.items || [], assets: assets.items || [],
+  };
+}
+
+let PAL_DATA = null;
+
+function palBuild(q) {
+  const kw = q.trim().toLowerCase();
+  const rows = [];
+  for (const [view, label] of PAL_VIEWS) {
+    rows.push({ kind: '视图', text: label, note: '', act: () => { switchView(view); loadView(view); } });
+  }
+  const d = PAL_DATA || { runs: [], tasks: [], findings: [], assets: [] };
+  const taskMap = {};
+  for (const t of d.tasks) taskMap[t.id] = t;
+  for (const r of d.runs.slice().reverse()) {
+    const t = taskMap[r.task_id] || {};
+    const target = (t.authorized_domains || [])[0] || t.name || r.task_id || '—';
+    rows.push({
+      kind: '运行', text: `${r.id} · ${target}`,
+      note: `${RUN_STATUS_LABEL[r.status] || r.status || ''} ${r.pages_found || 0} 页`,
+      act: () => { showWork(); switchView('history'); loadView('history'); },
+    });
+  }
+  for (const f of d.findings.slice().reverse()) {
+    rows.push({
+      kind: '发现', text: f.title || f.name || f.id || '未命名',
+      note: [f.severity, f.kind].filter(Boolean).join(' · '),
+      act: () => { showWork(); switchView('report'); loadView('report'); },
+    });
+  }
+  for (const a of d.assets.slice().reverse()) {
+    rows.push({ kind: '资产', text: a.url || a.id || '—', note: a.kind || '', act: () => { switchView('assets'); loadView('assets'); } });
+  }
+  const hit = kw ? rows.filter((r) => (r.text + ' ' + r.note + ' ' + r.kind).toLowerCase().includes(kw)) : rows;
+  return hit.slice(0, 60);
+}
+
+function palRender() {
+  const box = $('palette-list');
+  box.innerHTML = '';
+  $('palette-foot').textContent = PAL.rows.length
+    ? '回车打开第一项 · ↑↓ 选择'
+    : '没有匹配项。这里只搜已经落盘的任务、运行、发现和资产。';
+  if (!PAL.rows.length) {
+    box.appendChild(el('div', 'palette-empty', '换个词试试，或者直接搜域名、路径、严重度。'));
+    return;
+  }
+  PAL.rows.forEach((r, i) => {
+    const row = el('button', 'palette-row' + (i === PAL.sel ? ' sel' : ''));
+    row.type = 'button';
+    row.appendChild(el('span', 'pi', r.kind));
+    row.appendChild(el('span', 'pt', r.text));
+    if (r.note) row.appendChild(el('span', 'pd', r.note));
+    row.addEventListener('click', () => palPick(i));
+    row.addEventListener('mouseenter', () => { PAL.sel = i; palMark(); });
+    box.appendChild(row);
   });
 }
+function palMark() {
+  document.querySelectorAll('.palette-row').forEach((r, i) => r.classList.toggle('sel', i === PAL.sel));
+}
+function palPick(i) {
+  const r = PAL.rows[i];
+  palClose();
+  if (r && r.act) r.act();
+}
+async function palOpen() {
+  PAL.open = true;
+  PAL.sel = 0;
+  $('palette').classList.add('on');
+  $('palette-q').value = '';
+  $('palette-list').innerHTML = '<div class="palette-empty">正在读取已落盘的数据…</div>';
+  setTimeout(() => $('palette-q').focus(), 60);
+  PAL_DATA = null;                        // 每次打开都重算一遍（底层有缓存，不会重复请求）
+  PAL_DATA = await palLoad().catch(() => ({ runs: [], tasks: [], findings: [], assets: [] }));
+  if (!PAL.open) return;
+  PAL.rows = palBuild('');
+  palRender();
+}
+function palClose() {
+  PAL.open = false;
+  $('palette').classList.remove('on');
+}
+
+$('btn-search').addEventListener('click', palOpen);
+$('palette').addEventListener('click', (e) => {
+  if (e.target.classList.contains('palette-backdrop')) palClose();
+});
+$('palette-q').addEventListener('input', (e) => {
+  PAL.rows = palBuild(e.target.value);
+  PAL.sel = 0;
+  palRender();
+});
+$('palette-q').addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') { palClose(); return; }
+  if (e.key === 'ArrowDown') { e.preventDefault(); PAL.sel = Math.min(PAL.sel + 1, PAL.rows.length - 1); palMark(); }
+  if (e.key === 'ArrowUp') { e.preventDefault(); PAL.sel = Math.max(PAL.sel - 1, 0); palMark(); }
+  if (e.key === 'Enter') { e.preventDefault(); palPick(PAL.sel); }
+});
+document.addEventListener('keydown', (e) => {
+  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') {
+    e.preventDefault();
+    if (PAL.open) palClose(); else palOpen();
+  }
+  if (e.key === 'Escape' && PAL.open) palClose();
+});
 
 /* ============ 启动 ============ */
 (async () => {
@@ -1077,7 +2019,11 @@ function initTheme() {
   } catch (e) {
     console.warn('连不上后端服务：' + e.message);
   }
+  renderRecent();
+  renderRail();
+  renderAutomationView().catch(() => {});
+  renderApprovals().catch(() => {});
   if (!state.status || !state.status.authorized) {
-    $('modal').classList.remove('hidden');
+    openModal();
   }
 })();

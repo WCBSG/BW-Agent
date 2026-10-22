@@ -96,14 +96,16 @@ static const char *status_text(int code) {
   }
 }
 
-static void send_head(http_res_t *res, int status, const char *ctype, long len) {
+static void send_head_ex(http_res_t *res, int status, const char *ctype, long len,
+                         const char *extra) {
   if (res->header_sent) return;
-  char h[1024];
+  char h[1600];
   int n = snprintf(h, sizeof(h),
                    "HTTP/1.1 %d %s\r\n"
                    "Content-Type: %s\r\n"
                    "Content-Length: %ld\r\n"
                    "Cache-Control: no-store\r\n"
+                   "%s"
                    /* 本地界面只允许同源脚本/样式,且不允许被当成别的类型嗅探 */
                    "X-Content-Type-Options: nosniff\r\n"
                    "Referrer-Policy: no-referrer\r\n"
@@ -112,11 +114,15 @@ static void send_head(http_res_t *res, int status, const char *ctype, long len) 
                    "connect-src 'self'; frame-ancestors 'none'; base-uri 'none'\r\n"
                    "Connection: %s\r\n"
                    "\r\n",
-                   status, status_text(status), ctype, len,
+                   status, status_text(status), ctype, len, extra ? extra : "",
                    res->no_reuse ? "close" : "keep-alive");
   if (!send_all(res->sock, h, (size_t)n)) res->aborted = 1;
   res->header_sent = 1;
   res->status = status;
+}
+
+static void send_head(http_res_t *res, int status, const char *ctype, long len) {
+  send_head_ex(res, status, ctype, len, NULL);
 }
 
 void http_res_text(http_res_t *res, int status, const char *ctype, const char *body) {
@@ -128,6 +134,18 @@ void http_res_text(http_res_t *res, int status, const char *ctype, const char *b
 void http_res_bytes(http_res_t *res, int status, const char *ctype, const char *data,
                     size_t len) {
   send_head(res, status, ctype, (long)len);
+  if (len && !send_all(res->sock, data, len)) res->aborted = 1;
+}
+
+/* 下载:Content-Disposition 里只放 ASCII 文件名(调用方已经生成好),
+   RFC 5987 的 filename* 也一并给上,中文名才不会在保存时变成乱码。 */
+void http_res_file(http_res_t *res, int status, const char *ctype, const char *filename,
+                   const char *data, size_t len) {
+  char extra[512];
+  snprintf(extra, sizeof(extra),
+           "Content-Disposition: attachment; filename=\"%s\"\r\n",
+           filename && filename[0] ? filename : "download.bin");
+  send_head_ex(res, status, ctype, (long)len, extra);
   if (len && !send_all(res->sock, data, len)) res->aborted = 1;
 }
 

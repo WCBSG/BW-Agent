@@ -764,7 +764,16 @@ static int s_full_inspection(tool_ctx_t *ctx, json_t *args, skill_result_t *out)
 
   /* 先立"运行记录":从这一刻起做了什么都有据可查(失败也要落盘成 error) */
   store_t *st = (store_t *)ctx->store;
-  char *run_id = st ? store_run_start(st, ctx->task_id, "手动") : NULL;
+  char *run_id = st ? store_run_start(st, ctx->task_id, store_trigger_label(), "full") : NULL;
+  /* 让本轮产生的发现挂到这条运行记录上 —— 周期巡检要靠它做"这一轮 vs 上一轮"的差分。
+     之前这里只在内部用 run_id,发现没被关联,历史里就查不到"是哪一轮发现的"。 */
+  const char *outer_run = ctx->run_id;
+  if (run_id) ctx->run_id = run_id;
+  struct run_guard {
+    tool_ctx_t *c;
+    const char *prev;
+    ~run_guard() { c->run_id = prev; }
+  } guard{ctx, outer_run};
   int http_calls_at_start = ctx->http_calls;
   int findings_new = 0;
   int pages_found = 0;

@@ -25,6 +25,14 @@ void net_set_readonly(int on);
 
 /* 合规配置 */
 void net_set_scope(const char *task_id, const char **domains, int count);
+/* 授权池:允许访问的主机白名单(条目可写 host 或 host:port)。
+   池子非空时它是唯一边界 —— "这一轮看哪个站"只是焦点,不是边界。 */
+void net_pool_set(const char **entries, int count);
+int  net_pool_count(void);
+int  net_pool_has(const char *host, int port);
+/* 最近一次请求是否因越权被拒(决策循环据此立刻收束) */
+int  net_scope_violation(void);
+void net_scope_violation_clear(void);
 void net_set_audit_path(const char *path);
 void net_set_rate_limit(double qps);
 /* 目标地址对齐:演示/评测时把巡检起点指向本地靶站(如 http://127.0.0.1:8899)。

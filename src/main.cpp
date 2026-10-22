@@ -6,6 +6,8 @@
 #include "json.h"
 #include "llm.h"
 #include "net.h"
+#include "approval.h"
+#include "profile.h"
 #include "res.h"
 #include "rules.h"
 #include "serve.h"
@@ -236,6 +238,49 @@ static void selftest_agent(void) {
   free(dump);
   json_free(td);
   json_free(sd);
+
+  /* ---- 审批策略:默认最安全、能切、能自定义、能删 ---- */
+  {
+    char apath[MAX_PATH * 2];
+    app_data_path(apath, sizeof(apath), "selftest_approval.json");
+    DeleteFileA(apath);
+    approval_set_path(apath);
+    approval_load();
+    check(approval_decide("dir_probe") == APPROVAL_ASK && !approval_is_allow_all(),
+          "默认审批策略是「询问」(不会默认放行)", approval_mode_text());
+    check(approval_activate("allow_all") && approval_decide("nuclei_scan") == APPROVAL_ALLOW,
+          "能切到「全部允许」", approval_mode_text());
+
+    json_t *p = j_obj();
+    j_set_str(p, "name", "自检用策略");
+    j_set_str(p, "mode", "custom");
+    j_set_str(p, "rules", "dir_probe=拒绝\n*_probe=询问\npage_diff=允许");
+    char perr[160] = {0};
+    char *pid = approval_save_policy(p, perr, sizeof(perr));
+    json_free(p);
+    check(pid != NULL, "自定义策略能保存", perr);
+    if (pid) {
+      approval_activate(pid);
+      check(approval_decide("dir_probe") == APPROVAL_DENY, "自定义:精确规则命中即拒绝");
+      check(approval_decide("sensitive_file_probe") == APPROVAL_ASK, "自定义:通配规则生效");
+      check(approval_decide("page_diff") == APPROVAL_ALLOW, "自定义:放行项生效");
+      check(approval_decide("whoami") == APPROVAL_ASK, "自定义:没命中的项按询问兜底");
+      approval_activate("ask");
+      check(approval_delete_policy(pid), "自定义策略能删除");
+      check(strcmp(approval_active_id(), "ask") == 0, "删掉当前策略后回到「询问」");
+      free(pid);
+    }
+    /* 写错的规则要被当场拒绝,而不是静默变成"全部允许" */
+    json_t *bad = j_obj();
+    j_set_str(bad, "name", "坏策略");
+    j_set_str(bad, "mode", "custom");
+    j_set_str(bad, "rules", "dir_probe=随便");
+    char berr[160] = {0};
+    check(approval_save_policy(bad, berr, sizeof(berr)) == NULL && berr[0],
+          "自定义策略:动作词写错会被拒绝", berr);
+    json_free(bad);
+    DeleteFileA(apath);
+  }
 
   /* 目标解析与授权 */
   buf_t u;
@@ -1151,6 +1196,22 @@ int app_main(int argc, char **argv) {
     ctx.domains = nd ? doms : NULL;
     ctx.domain_count = nd;
     net_set_scope(ctx.task_id, nd ? doms : NULL, nd);
+
+    /* BW_PROFILE=SP-0002 时按这套"本单位定义"跑:命令行也能复现界面里选的那套口径,
+       验收/排障时不用为了试一条关键词去点界面。 */
+    {
+      const char *pid = getenv("BW_PROFILE");
+      if (pid && *pid) {
+        json_t *p = store_get(store, "profiles", pid);
+        if (p) {
+          profile_set_active(p);
+          printf("本单位定义:%s(%s)\n", j_s(p, "name", ""), pid);
+          json_free(p);
+        } else {
+          printf("本单位定义:%s 不存在,按出厂口径跑\n", pid);
+        }
+      }
+    }
 
     json_t *args = args_from_argv(argc, argv, args_start, target, tname);
     tool_result_t tr;

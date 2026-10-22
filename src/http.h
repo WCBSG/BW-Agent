@@ -67,6 +67,10 @@ void http_res_404(http_res_t *res);
 /* 二进制应答(图标之类不能用字符串发,遇到 0 字节会被截断) */
 void http_res_bytes(http_res_t *res, int status, const char *ctype, const char *data,
                     size_t len);
+/* 带下载名的应答(报告导出):额外发 Content-Disposition,浏览器直接存成文件。
+   filename 只允许 ASCII 可见字符与数字,调用方负责兜底(中文名走 filename*)。 */
+void http_res_file(http_res_t *res, int status, const char *ctype, const char *filename,
+                   const char *data, size_t len);
 
 /* ---------- SSE(服务端推送,给界面做流式) ---------- */
 /* 发 SSE 头;返回 1 成功,0 对端已断开。之后反复调 http_sse_json 推事件。 */

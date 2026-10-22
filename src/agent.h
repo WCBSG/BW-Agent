@@ -110,6 +110,9 @@ typedef struct {
   void (*on_answer)(void *ud, const char *text);
   /* 需要用户补充信息 */
   void (*on_ask)(void *ud, const char *text);
+  /* 动手之前的权限审批:返回 1 放行、0 拒绝(拒绝理由写进 reason,调用方 free)。
+     不实现(为 NULL)等价于"全部允许" —— 命令行与自检走这条路。 */
+  int (*on_approval)(void *ud, const char *tool, json_t *args, char **reason);
 } agent_hooks_t;
 
 /* ---------- 生命周期 ---------- */

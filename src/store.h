@@ -26,6 +26,8 @@ int store_save(store_t *s, const char *collection, json_t *obj);
 /* 读全部(结果类会去重,同 id 取最后一行) */
 json_t *store_all(store_t *s, const char *collection);
 json_t *store_get(store_t *s, const char *collection, const char *id);
+/* 删除一个"一对象一文件"的记录(周期规则要能被删掉) */
+int store_delete(store_t *s, const char *collection, const char *id);
 json_t *store_find(store_t *s, const char *collection, const char *key, const char *value);
 
 /* 运行索引:本次运行看到了哪些发现(合同对象只存首次运行,报告要的是"本次") */
@@ -76,10 +78,19 @@ char *store_ensure_profile(store_t *s, const char *name, json_t *keywords,
 /* 资产入库:同 url 只更新 last_seen(底账是"一直都在"的意思,不是每轮重记一遍) */
 int   store_upsert_asset(store_t *s, const char *task_id, const char *url, const char *kind,
                          int status_code, int depth, const char *parent_url);
-/* 运行记录:开始写一份 running,结束覆盖成 done(对外只用它一份) */
-char *store_run_start(store_t *s, const char *task_id, const char *triggered_by);
+/* 运行记录:开始写一份 running,结束覆盖成 done(对外只用它一份)。
+   scope 记的是这一轮"查了什么"(full/leak/integrity/recon/retest) ——
+   基线对比必须同类比同类,拿只查泄露的一轮去和完整巡检比,会把没查的项误判成"已修复"。 */
+char *store_run_start(store_t *s, const char *task_id, const char *triggered_by,
+                      const char *scope);
 int   store_run_finish(store_t *s, const char *run_id, const char *status, int pages_found,
                        int tools_called, int findings_new, const char *error);
+
+/* 触发来源标签(「手动」/「周期巡检」)。
+   为什么要一个全局:技能里创建运行记录时并不知道"是谁触发的",
+   而这个信息恰恰是评审要看的东西(这一轮是人点的还是定时跑的)。 */
+void store_set_trigger(const char *label);
+const char *store_trigger_label(void);
 
 /* 证据去敏:手机号/邮箱/IP/身份证/卡号/凭据,落盘前就脱敏 */
 void mask_evidence(buf_t *out, const char *text);

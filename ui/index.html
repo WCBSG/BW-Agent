@@ -3,210 +3,572 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<meta name="theme-color" content="#0c1628">
+<meta name="theme-color" content="#faf9f6">
 <title>网站安全巡检智能体</title>
 <link rel="icon" type="image/png" href="/ui/logo.png">
 <link rel="stylesheet" href="/ui/app.css">
 </head>
 <body>
-<div class="app-shell">
-  <aside class="sidebar">
-    <div class="brand">
-      <div class="brand-mark" aria-hidden="true"><svg viewBox="0 0 32 32"><path d="M16 3.5 27 7.4v7.5c0 6.8-4.2 11.8-11 14.5C9.2 26.7 5 21.7 5 14.9V7.4L16 3.5Z"/><path d="m10.5 15.8 3.5 3.5 7.5-8"/></svg></div>
-      <div class="brand-copy">
-        <strong>网站安全巡检</strong>
+
+<!-- ============================================================
+     起手式：首屏只问一句 —— 要巡检哪个站
+     给了目标才开始；没有仪表盘、没有侧栏
+     ============================================================ -->
+<div class="layer home on" id="home">
+  <header class="home-top">
+    <span class="brand"><s aria-hidden="true"></s>网站安全巡检</span>
+    <nav class="home-nav" aria-label="数据视图">
+      <button class="link" data-goto="report">报告</button>
+      <button class="link" data-goto="history">历史</button>
+      <button class="link" data-goto="assets">资产</button>
+      <button class="link" data-goto="eval">评测</button>
+      <button class="link" data-goto="rules">规则</button>
+      <button class="link" data-goto="caps">能力</button>
+      <button class="link" data-goto="config">配置</button>
+    </nav>
+    <div class="home-right">
+      <span class="pill status-pill" id="pill-model" title="模型状态"></span>
+      <span class="pill status-pill" id="pill-scope" title="授权状态"></span>
+      <span class="pill status-pill" id="pill-count" title="发现数量"></span>
+      <button class="link weak" id="btn-scope">设置授权</button>
+    </div>
+  </header>
+
+  <main class="home-main">
+    <h1 class="ask">要巡检哪个站？</h1>
+    <p class="ask-sub">给一个已授权的域名或地址，它在边界内自己决定怎么查，最后交一份带证据的报告。</p>
+
+    <form class="composer" id="home-form">
+      <textarea id="hq" rows="2" aria-label="巡检目标与要求"
+        placeholder="看看www.example-gov.cn有没有敏感文件泄露"></textarea>
+      <div class="composer-bar">
+        <span class="tag" id="home-scope">未设置授权目标</span>
+        <span class="tag">只读 · GET/HEAD/OPTIONS</span>
+        <span class="tag">2 请求/秒</span>
+        <button class="start" type="submit" id="btn-start">开始</button>
       </div>
+    </form>
+
+    <div class="ask-chips" id="ask-chips">
+      <button class="chip-btn" data-q="把这个站完整巡检一遍">完整巡检</button>
+      <button class="chip-btn" data-q="重点查敏感文件泄露">敏感文件泄露</button>
+      <button class="chip-btn" data-q="查目录索引是否开放">目录暴露</button>
+      <button class="chip-btn" data-q="看看有没有注入问题">注入差分</button>
+      <button class="chip-btn" data-q="检查响应头与错误回显">配置错误</button>
+      <button class="chip-btn" data-q="复测上次没修复的发现">复测</button>
     </div>
 
-    <nav class="views" id="views" aria-label="主导航">
-      <div class="nav-section">
-        <div class="sidebar-caption">巡检</div>
-        <button class="vtab active" data-view="loop"><span class="nav-icon">⌁</span><span>决策循环</span></button>
-        <button class="vtab" data-view="report"><span class="nav-icon">▤</span><span>报告与告警</span></button>
-        <button class="vtab" data-view="history"><span class="nav-icon">◷</span><span>巡检历史</span></button>
+    <section class="recent">
+      <div class="recent-head">
+        <h2>最近的巡检</h2>
+        <span id="recent-meta">还没有记录</span>
+        <button class="link weak" data-goto="history">全部</button>
       </div>
-      <div class="nav-section">
-        <div class="sidebar-caption">数据与复核</div>
-        <button class="vtab" data-view="assets"><span class="nav-icon">▱</span><span>资产底账</span></button>
-        <button class="vtab" data-view="eval"><span class="nav-icon">◒</span><span>效果评测</span></button>
-        <button class="vtab" data-view="rules"><span class="nav-icon nav-icon-svg"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 5h14v14H5z"/><path d="m8.5 11.5 2 2 5-5"/><path d="M8 7.5h.01M12 7.5h.01M16 7.5h.01"/></svg></span><span>生效规则</span></button>
-      </div>
-      <div class="nav-section">
-        <div class="sidebar-caption">系统</div>
-        <button class="vtab" data-view="caps"><span class="nav-icon">✦</span><span>能力清单</span></button>
-        <button class="vtab" data-view="config"><span class="nav-icon">⚙</span><span>配置编辑</span></button>
-      </div>
-    </nav>
+      <div class="recent-grid" id="recent"><div class="recent-empty">跑完第一轮，这里会按时间排出历史。</div></div>
+    </section>
+  </main>
 
-    <div class="sidebar-bottom">
-      <div class="scope-card">
-        <div class="scope-card-head">
-          <span class="status-dot"></span>
-          <span>巡检授权</span>
-          <button class="scope-edit" id="btn-scope" aria-label="设置巡检目标">设置</button>
-        </div>
-        <strong id="side-scope-status">未设置目标</strong>
-        <span id="side-scope-name">确认授权后开始巡检</span>
+  <footer class="home-foot">
+    <p>只在授权主体内发请求，只用 GET / HEAD / OPTIONS，不猜密码、不取数据、不做破坏性验证。<br>
+       每一次请求都写进审计表，报告里的每条结论都能回到原始响应。</p>
+  </footer>
+</div>
+
+<!-- ============================================================
+     任务工作台：左任务 / 中执行经过 / 右产物
+     ============================================================ -->
+<div class="layer work" id="work">
+  <aside class="side">
+    <div class="side-top">
+      <span class="brand"><s aria-hidden="true"></s>网站安全巡检</span>
+      <div class="side-actions">
+        <button class="act" id="btn-search" type="button" title="搜索任务、发现、资产（Ctrl+K）">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6.5"/><path d="m16 16 4.5 4.5"/></svg>
+          <span>搜索</span>
+          <kbd>Ctrl K</kbd>
+        </button>
+        <button class="act" data-goto="caps" type="button" title="已装技能、MCP 与外部工具">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 4v3M15 4v3"/><rect x="4" y="7" width="16" height="13" rx="2.5"/><path d="M9.5 12h5M9.5 15.5h3"/></svg>
+          <span>能力</span>
+        </button>
+        <button class="act" data-goto="automation" type="button" title="定时巡检：按周期自动跑，并与上一轮做基线差分">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12.8" r="7.2"/><path d="M12 9.6v3.6l2.4 1.6"/><path d="M7 4.4 5 6.4M17 4.4l2 2"/></svg>
+          <span>自动化</span>
+          <b class="act-badge" id="auto-badge"></b>
+        </button>
+        <button class="act" data-goto="config" type="button" title="规则、MCP、技能与工具配置">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M12 3v2.2M12 18.8V21M3 12h2.2M18.8 12H21M5.6 5.6l1.6 1.6M16.8 16.8l1.6 1.6M18.4 5.6l-1.6 1.6M7.2 16.8l-1.6 1.6"/></svg>
+          <span>设置</span>
+        </button>
       </div>
+      <button class="new" id="btn-new" type="button">＋ 新建巡检</button>
+    </div>
+    <div class="side-list" id="tasks"></div>
+    <div class="side-foot">
+      <b id="side-scope-name">未设置目标</b>
+      <span id="side-scope-status">确认授权后开始巡检</span>
     </div>
   </aside>
 
-  <section class="workspace">
-    <header class="topbar">
-      <div class="page-context">
-        <div class="eyebrow" id="current-view-kicker">工作台 / 决策循环</div>
-        <h1 id="current-view-title">决策循环</h1>
+  <div class="main">
+    <div class="head">
+      <span class="path">任务 /</span>
+      <h1 id="task-title">巡检会话</h1>
+      <div class="head-right">
+        <select class="target-select policy-select" id="approval-select" title="工具调用的审批策略"></select>
+        <select class="target-select" id="target-select" title="从授权池里挑本轮目标"></select>
+        <span class="chip" id="work-model">离线规则</span>
+        <button class="ghost" id="btn-refresh" title="刷新数据">刷新</button>
+        <button class="ghost" data-goto="report">数据</button>
       </div>
-      <div class="topbar-right">
-        <span class="pill status-pill" id="pill-model" title="模型状态"></span>
-        <span class="pill status-pill" id="pill-scope" title="授权状态"></span>
-        <span class="pill status-pill" id="pill-count" title="发现数量"></span>
-        <button class="ghost icon-button" id="btn-theme" aria-label="切换到暗色主题" title="切换主题">
-          <svg class="toolbar-icon theme-moon" viewBox="0 0 24 24" aria-hidden="true"><path d="M20.2 15.2A8.2 8.2 0 0 1 8.8 3.8 8.5 8.5 0 1 0 20.2 15.2Z"/></svg>
-          <svg class="toolbar-icon theme-sun" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3.5"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>
-        </button>
-        <button class="ghost icon-button" id="btn-refresh" aria-label="刷新数据" title="刷新数据">
-          <svg class="toolbar-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 11a8 8 0 0 0-14.7-4L3 10M3 5v5h5M4 13a8 8 0 0 0 14.7 4L21 14M21 19v-5h-5"/></svg>
-        </button>
+    </div>
+
+    <div class="stream" id="stream">
+      <div class="empty" id="stream-empty">
+        <b>还没有开始</b>
+        <p>在下面写一句要做什么，它会把每一步的决定和证据摊在这个位置。</p>
       </div>
-    </header>
+    </div>
 
-    <div class="main">
-      <!-- 决策循环 -->
-      <section class="view active" id="view-loop">
-        <div class="loop-intro">
-          <div class="intro-copy">
-            <div class="eyebrow">巡检工作台</div>
-            <h2>巡检会话</h2>
-            <p>输入目标和任务，查看每一步的执行过程、证据和最终结论。</p>
-          </div>
-          <div class="intro-rail">
-            <div class="metric-card"><span>决策方式</span><strong id="intro-model">离线规则</strong></div>
-            <div class="metric-card"><span>检查方式</span><strong>只读检查</strong></div>
-          </div>
+    <form class="compose" id="form">
+      <!-- 审批条：贴在输入框上方浮着，和主流 agent 一样 ——
+           它属于"你现在要做的决定"，不属于历史记录，所以不进流 -->
+      <div class="approval-bar" id="approval-bar" role="alertdialog" aria-live="polite">
+        <div class="ab-row">
+          <span class="ab-tag">需要你确认</span>
+          <span class="ab-tool" id="ab-tool"></span>
+          <span class="ab-policy" id="ab-policy"></span>
+          <span class="ab-count" id="ab-count"></span>
         </div>
-
-        <div class="grid">
-          <section class="panel chat-panel">
-            <div class="panel-head">
-              <div>
-                <h2>决策循环</h2>
-              </div>
-            </div>
-            <div class="stream" id="stream">
-              <div class="empty" id="stream-empty">
-                <div class="empty-icon" aria-hidden="true"><svg viewBox="0 0 32 32"><circle cx="16" cy="16" r="10"/><circle cx="16" cy="16" r="3"/><path d="M16 2v4M16 26v4M2 16h4M26 16h4"/></svg></div>
-                <strong>准备开始一次授权巡检</strong>
-                <p>先设置巡检目标，再告诉智能体你想得到什么结果。</p>
-                <span>示例：把这个站完整巡检一遍，重点看敏感文件泄露</span>
-              </div>
-            </div>
-            <form class="composer" id="form">
-              <textarea id="q" rows="1" aria-label="输入巡检指令" placeholder="输入巡检指令，回车执行"></textarea>
-              <button type="submit" id="btn-send"><span>执行</span><b>↗</b></button>
-            </form>
-          </section>
-
-          <aside class="side">
-            <section class="panel side-panel">
-              <div class="panel-head">
-                <div><h2>本轮留痕</h2></div>
-                <span class="hint" id="trace-hint"></span>
-              </div>
-              <div class="trace" id="trace"><div class="muted">还没有执行过循环。</div></div>
-            </section>
-            <section class="panel side-panel">
-              <div class="panel-head">
-                <div><h2>过程要点</h2></div>
-              </div>
-              <div class="steps" id="steps"><div class="muted">执行后这里按步列出决策理由。</div></div>
-            </section>
-          </aside>
+        <div class="ab-args" id="ab-args"></div>
+        <div class="ab-actions">
+          <button class="ab-no" id="ab-no" type="button">拒绝</button>
+          <button class="ab-yes" id="ab-yes" type="button">允许</button>
         </div>
+      </div>
+      <div class="field">
+        <textarea id="q" rows="1" aria-label="巡检指令" placeholder="继续追问，或让它在同一任务上接着做"></textarea>
+        <button type="submit" id="btn-send">执行</button>
+      </div>
+      <div class="hints">
+        <button type="button" class="hint-btn" data-q="复测没修复的那几条">复测这几条</button>
+        <button type="button" class="hint-btn" data-q="出一份巡检报告">出报告</button>
+        <button type="button" class="hint-btn" data-q="只看严重项的证据">只看严重的证据</button>
+        <span class="hint-note">不在授权主体内的请求一个都不发 —— 这是程序的闸</span>
+      </div>
+    </form>
+  </div>
+
+  <aside class="rail">
+    <div class="rail-head"><span>产物</span><b id="rail-count">本轮</b></div>
+    <div class="rail-body">
+      <section class="card rail-card">
+        <div class="k"><span>报告</span><em id="rail-report-state">未生成</em></div>
+        <h3 id="rail-report-title">还没有报告</h3>
+        <div class="sub" id="rail-report-meta">跑完一轮后自动生成</div>
+        <div class="bar-mini" id="rail-report-bars"></div>
+        <dl class="kv" id="rail-report-kv"></dl>
+        <button class="go" data-goto="report">看完整报告</button>
       </section>
 
-      <!-- 报告与告警 -->
-      <section class="view" id="view-report">
-        <div class="view-heading">
-          <div><div class="eyebrow">REPORTING / FINDINGS</div><h2>报告与告警</h2><p>把发现变成可执行的风险清单，按等级、证据和处置状态快速定位重点。</p></div>
-          <button class="ghost" id="btn-export" title="导出当前巡检报告和发现清单，格式为 Markdown（.md）">↓ 导出巡检报告 · Markdown</button>
-        </div>
-        <section class="panel">
-          <div class="panel-head"><div><div class="section-kicker">LATEST REPORT</div><h2>最新巡检报告</h2></div><span class="hint" id="report-hint"></span></div>
-          <div class="tiles" id="report-tiles"></div>
-          <div class="report-summary" id="report-summary"></div>
-          <div class="report-cols"><div class="mini"><h3>按等级</h3><div class="bars" id="report-sev"></div></div><div class="mini"><h3>按类别</h3><div class="bars" id="report-kind"></div></div></div>
-        </section>
-        <section class="panel"><div class="panel-head"><div><div class="section-kicker">FINDINGS</div><h2>发现清单</h2></div><span class="hint" id="findings-hint"></span></div><div class="cards" id="findings-list"></div></section>
-        <section class="panel"><div class="panel-head"><div><div class="section-kicker">ALERT DELIVERY</div><h2>告警推送</h2></div><span class="hint">高等级邮件 · 中等级站内</span></div><div class="cards" id="alerts-list"></div></section>
+      <section class="card rail-card">
+        <div class="k"><span>过程要点</span><span id="trace-hint"></span></div>
+        <div class="steps" id="steps"><div class="muted">执行后这里按步列出「为什么这么做」。</div></div>
       </section>
 
-      <!-- 巡检历史 -->
-      <section class="view" id="view-history">
-        <div class="view-heading"><div><div class="eyebrow">HISTORY / AUDIT TRAIL</div><h2>巡检历史</h2><p>任务授权、运行批次与内容基线都在这里留下可追溯记录。</p></div></div>
-        <section class="panel"><div class="panel-head"><div><div class="section-kicker">AUTHORIZED TASKS</div><h2>巡检任务</h2></div><span class="hint">授权范围 + 只读约束</span></div><div class="cards" id="tasks-list"></div></section>
-        <section class="panel"><div class="panel-head"><div><div class="section-kicker">RUNS</div><h2>运行记录</h2></div><span class="hint" id="runs-hint"></span></div><div class="table-wrap"><table class="table" id="runs-table"></table></div></section>
-        <section class="panel"><div class="panel-head"><div><div class="section-kicker">BASELINES</div><h2>内容基线</h2></div><span class="hint">首次采集，之后每次比对差异</span></div><div class="cards" id="baselines-list"></div></section>
+      <section class="card rail-card">
+        <div class="k"><span>本轮留痕</span><span>逐条</span></div>
+        <pre class="trace" id="trace">还没有执行过循环。</pre>
       </section>
 
-      <!-- 资产底账 -->
-      <section class="view" id="view-assets">
-        <div class="view-heading"><div><div class="eyebrow">ASSETS / INVENTORY</div><h2>资产底账</h2><p>站点页面、静态资源和接口的统一清单，帮助你快速判断覆盖范围。</p></div></div>
-        <section class="panel"><div class="panel-head"><div><div class="section-kicker">DISCOVERED SURFACE</div><h2>资产底账</h2></div><span class="hint" id="assets-hint"></span></div><div class="filters" id="asset-filters"></div><div class="table-wrap"><table class="table" id="assets-table"></table></div></section>
-      </section>
-
-      <!-- 效果评测 -->
-      <section class="view" id="view-eval">
-        <div class="view-heading"><div><div class="eyebrow">EVALUATION / QUALITY</div><h2>效果评测</h2><p>用统一测试集对账命中、漏检和多检，让检测质量有数字依据。</p></div></div>
-        <section class="panel"><div class="panel-head"><div><div class="section-kicker">QUALITY SCORE</div><h2>检测效果评测</h2></div><span class="hint" id="eval-hint"></span></div><div class="tiles" id="eval-tiles"></div><div class="formula" id="eval-formula"></div></section>
-        <section class="panel"><div class="panel-head"><div><div class="section-kicker">CASE RECONCILIATION</div><h2>用例对账</h2></div><span class="hint">命中 / 漏检 / 多检</span></div><div class="cards" id="eval-outcomes"></div></section>
-        <section class="panel"><div class="panel-head"><div><div class="section-kicker">TEST SET</div><h2>测试集</h2></div><span class="hint">结果类 JSONL，一行一个用例</span></div><div class="cards" id="testcases-list"></div></section>
-      </section>
-
-      <!-- 生效规则 -->
-      <section class="view" id="view-rules">
-        <div class="view-heading"><div><div class="eyebrow">POLICY / ACTIVE RULES</div><h2>生效规则</h2><p>这次巡检按哪套定义执行，所有判定都可以回到这里复核。</p></div></div>
-        <section class="panel"><div class="panel-head"><div><div class="section-kicker">DETECTION POLICY</div><h2>本次按什么定义检查</h2></div><span class="hint" id="rules-source"></span></div><p class="note">下面是本次巡检实际使用的判定规则与落点清单。调整规则后可重新载入，不需要改动程序。</p><div class="table-wrap"><table class="table" id="rules-table"></table></div></section>
-        <section class="panel"><div class="panel-head"><div><div class="section-kicker">SENSITIVE PATHS</div><h2>落点清单</h2></div><span class="hint" id="rules-paths-hint"></span></div><div class="chips" id="rules-paths"></div></section>
-        <section class="panel"><div class="panel-head"><div><div class="section-kicker">DIRECTORIES</div><h2>目录清单</h2></div><span class="hint" id="rules-dirs-hint"></span></div><div class="chips" id="rules-dirs"></div></section>
-      </section>
-
-      <!-- 能力清单 -->
-      <section class="view" id="view-caps">
-        <div class="view-heading"><div><div class="eyebrow">CAPABILITIES / TOOLS</div><h2>能力清单</h2><p>技能负责完整方法，工具负责一次动作；所有能力都能从这里快速理解。</p></div></div>
-        <section class="panel"><div class="panel-head"><div><div class="section-kicker">MANIFEST</div><h2>能力清单</h2></div><span class="hint" id="cap-count"></span></div><div class="tabs"><button class="tab active" data-tab="skills">技能</button><button class="tab" data-tab="tools">工具</button></div><div class="tabpane" id="pane-skills"></div><div class="tabpane hidden" id="pane-tools"></div></section>
-      </section>
-
-      <!-- 配置编辑 -->
-      <section class="view" id="view-config">
-        <div class="view-heading"><div><div class="eyebrow">CONFIGURATION / EXTENSIONS</div><h2>配置编辑</h2><p>调整检测口径、添加技能、接入外部工具和 MCP，保存前会做安全校验。</p></div></div>
-        <section class="panel">
-          <div class="market-bar"><span class="muted">寻找现成能力</span><a class="market-link" href="https://skillsmp.com/zh" target="_blank" rel="noopener noreferrer">Skill 市场 ↗</a><a class="market-link" href="https://gc.das-ai.com/marketplace/tools/mcp" target="_blank" rel="noopener noreferrer">官方 MCP 市场 ↗</a><span class="muted">技能包放 <code>skills\</code>，MCP 写进 <code>mcp.json</code>，工具放 <code>tools\</code></span></div>
-          <div class="config-grid">
-            <div class="config-side"><div class="config-side-head"><span>可编辑文件</span><button class="ghost tiny" id="cfg-new">＋ 新建</button></div><div class="filelist" id="cfg-list"></div></div>
-            <div class="config-main"><div class="config-main-head"><code id="cfg-name">（未选择文件）</code><span class="muted" id="cfg-meta"></span><span class="grow"></span><button class="ghost" id="cfg-reload-file">重新载入</button><button class="ghost" id="cfg-reload-rules">让规则生效</button><button id="cfg-save">保存</button></div><textarea id="cfg-text" spellcheck="false" rows="22" placeholder="从左侧选一个文件开始编辑…"></textarea><div class="config-foot"><span class="note" id="cfg-msg"></span><span class="muted" id="cfg-tip"></span></div></div>
-          </div>
-        </section>
+      <section class="card rail-card">
+        <div class="k"><span>边界</span><span>程序强制</span></div>
+        <dl class="kv" id="rail-boundary">
+          <dt>授权</dt><dd>未设置</dd>
+          <dt>方法</dt><dd>GET / HEAD / OPTIONS</dd>
+          <dt>限速</dt><dd>2 请求/秒</dd>
+          <dt>审计</dt><dd>每次留痕</dd>
+        </dl>
       </section>
     </div>
-  </section>
+  </aside>
 </div>
 
-<!-- 授权确认弹窗 -->
-<div class="modal hidden" id="modal" role="dialog" aria-modal="true" aria-labelledby="scope-title">
+<!-- ============================================================
+     数据视图：整页抽屉展开，不打断当前任务
+     ============================================================ -->
+<section class="layer sheet" id="sheet">
+  <header class="sheet-top">
+    <button class="ghost" id="btn-back">← 返回</button>
+    <div class="sheet-title">
+      <div class="path" id="current-view-kicker">巡检 / 报告与告警</div>
+      <h1 id="current-view-title">报告与告警</h1>
+    </div>
+    <div class="sheet-right">
+          <div class="export-menu" id="export-menu">
+            <button class="ghost" id="btn-export" title="导出报告与发现清单">导出</button>
+            <div class="export-list" id="export-list">
+              <button type="button" data-fmt="md">Markdown<span>给人读、能进 git</span></button>
+              <button type="button" data-fmt="html">HTML<span>浏览器打开，可打印</span></button>
+              <button type="button" data-fmt="csv">CSV<span>一条发现一行</span></button>
+              <button type="button" data-fmt="docx">Word (.docx)<span>走公文流程</span></button>
+              <button type="button" data-fmt="pdf">PDF<span>定稿交付</span></button>
+            </div>
+          </div>
+          <button class="ghost" id="btn-refresh2" title="刷新数据">刷新</button>
+        </div>
+  </header>
+
+  <div class="sheet-body" id="views">
+
+    <!-- 报告与告警 -->
+    <section class="view" id="view-report">
+      <section class="panel">
+        <div class="panel-head">
+          <div><h2>最新巡检报告</h2></div>
+          <span class="hint" id="report-hint"></span>
+        </div>
+        <div class="tiles" id="report-tiles"></div>
+        <div class="report-summary" id="report-summary"></div>
+        <div class="report-cols">
+          <div class="mini"><h3>按等级</h3><div class="bars" id="report-sev"></div></div>
+          <div class="mini"><h3>按类别</h3><div class="bars" id="report-kind"></div></div>
+        </div>
+      </section>
+      <section class="panel">
+        <div class="panel-head"><div><h2>发现清单</h2></div><span class="hint" id="findings-hint"></span></div>
+        <div class="cards" id="findings-list"></div>
+      </section>
+      <section class="panel">
+        <div class="panel-head"><div><h2>告警推送</h2></div><span class="hint">高等级邮件 · 中等级站内</span></div>
+        <div class="cards" id="alerts-list"></div>
+      </section>
+    </section>
+
+    <!-- 巡检历史 -->
+    <section class="view" id="view-history">
+      <section class="panel">
+        <div class="panel-head"><div><h2>巡检任务</h2></div><span class="hint">授权范围 + 只读约束</span></div>
+        <div class="cards" id="tasks-list"></div>
+      </section>
+      <section class="panel">
+        <div class="panel-head"><div><h2>运行记录</h2></div><span class="hint" id="runs-hint"></span></div>
+        <div class="table-wrap"><table class="table" id="runs-table"></table></div>
+      </section>
+      <section class="panel">
+        <div class="panel-head"><div><h2>内容基线</h2></div><span class="hint">首次采集，之后每次比对差异</span></div>
+        <div class="cards" id="baselines-list"></div>
+      </section>
+    </section>
+
+    <!-- 资产底账 -->
+    <section class="view" id="view-assets">
+      <section class="panel">
+        <div class="panel-head"><div><h2>资产底账</h2></div><span class="hint" id="assets-hint"></span></div>
+        <div class="filters" id="asset-filters"></div>
+        <div class="table-wrap"><table class="table" id="assets-table"></table></div>
+      </section>
+    </section>
+
+    <!-- 效果评测 -->
+    <section class="view" id="view-eval">
+      <section class="panel">
+        <div class="panel-head"><div><h2>检测效果评测</h2></div><span class="hint" id="eval-hint"></span></div>
+        <div class="tiles" id="eval-tiles"></div>
+        <div class="formula" id="eval-formula"></div>
+      </section>
+      <section class="panel">
+        <div class="panel-head"><div><h2>用例对账</h2></div><span class="hint">命中 / 漏检 / 多检</span></div>
+        <div class="cards" id="eval-outcomes"></div>
+      </section>
+      <section class="panel">
+        <div class="panel-head"><div><h2>测试集</h2></div><span class="hint">结果类 JSONL，一行一个用例</span></div>
+        <div class="cards" id="testcases-list"></div>
+      </section>
+    </section>
+
+    <!-- 生效规则 -->
+    <section class="view" id="view-rules">
+      <section class="panel">
+        <div class="panel-head"><div><h2>这次按什么定义检查</h2></div><span class="hint" id="rules-source"></span></div>
+        <p class="note">下面是本次巡检实际使用的判定规则与落点清单。改完规则点「让规则生效」，不需要重新编译程序。</p>
+        <div class="table-wrap"><table class="table" id="rules-table"></table></div>
+      </section>
+      <section class="panel">
+        <div class="panel-head"><div><h2>落点清单</h2></div><span class="hint" id="rules-paths-hint"></span></div>
+        <div class="chips" id="rules-paths"></div>
+      </section>
+      <section class="panel">
+        <div class="panel-head"><div><h2>目录清单</h2></div><span class="hint" id="rules-dirs-hint"></span></div>
+        <div class="chips" id="rules-dirs"></div>
+      </section>
+    </section>
+
+    <!-- 能力清单 -->
+    <section class="view" id="view-caps">
+      <section class="panel">
+        <div class="panel-head"><div><h2>能力清单</h2></div><span class="hint" id="cap-count"></span></div>
+        <div class="tabs">
+          <button class="tab active" data-tab="skills">技能</button>
+          <button class="tab" data-tab="tools">工具</button>
+        </div>
+        <div class="tabpane" id="pane-skills"></div>
+        <div class="tabpane hidden" id="pane-tools"></div>
+      </section>
+    </section>
+
+    <!-- 配置编辑 -->
+    <!-- 自动化（周期巡检） -->
+    <section class="view" id="view-automation">
+      <section class="panel">
+        <div class="panel-head">
+          <div><h2>周期巡检</h2></div>
+          <span class="hint" id="auto-hint"></span>
+        </div>
+        <p class="note">
+          到点由程序自己跑一轮，跑完把这一轮和<strong>同一目标上一轮</strong>比一遍：
+          新出现的、等级升高的、本轮没再出现的，各算一类，写进告警。
+          关掉浏览器它照样跑；服务没开着时错过的周期不补跑（避免开机瞬间对目标突发请求）。
+        </p>
+        <div class="cards" id="auto-list"></div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-head">
+          <div><h2 id="auto-form-title">新建周期规则</h2></div>
+          <span class="hint">授权域名 + 范围 + 周期</span>
+        </div>
+        <div class="auto-form">
+          <label class="fld">
+            <span>目标（授权域名，可带端口）</span>
+            <input id="auto-domain" type="text" autocomplete="off" placeholder="www.example-gov.cn">
+          </label>
+          <label class="fld">
+            <span>巡检范围</span>
+            <select id="auto-scope">
+              <option value="full">完整巡检（摸家底 + 完整性 + 敏感信息 + 配置与漏洞）</option>
+              <option value="leak">只查敏感信息泄露</option>
+              <option value="integrity">只查内容完整性（篡改/挂马）</option>
+              <option value="recon">只做资产与页面发现</option>
+              <option value="retest">只复测未修复项</option>
+            </select>
+            <em class="fld-help">要更细的组合用下面的检查项</em>
+          </label>
+          <div class="fld fld-wide">
+            <span>检查项（可多选；勾了就按勾的跑，基线只和"同样勾法"的上一轮比）</span>
+            <div class="checks-row">
+              <label class="check"><input type="checkbox" class="auto-check" value="recon"><span>资产与页面</span></label>
+              <label class="check"><input type="checkbox" class="auto-check" value="integrity"><span>内容完整性</span></label>
+              <label class="check"><input type="checkbox" class="auto-check" value="leak"><span>敏感信息</span></label>
+              <label class="check"><input type="checkbox" class="auto-check" value="retest"><span>复测</span></label>
+              <label class="check"><input type="checkbox" class="auto-check" value="full"><span>完整巡检（含配置与漏洞探测）</span></label>
+            </div>
+          </div>
+          <label class="fld">
+            <span>敏感信息定义（本单位口径）</span>
+            <select id="auto-profile"></select>
+            <em class="fld-help">选「出厂口径」就是只按 rules.json 的规则查</em>
+          </label>
+          <label class="fld">
+            <span>周期类型</span>
+            <select id="auto-kind">
+              <option value="interval">固定间隔</option>
+              <option value="daily">每天定点</option>
+              <option value="weekly">每周定点</option>
+            </select>
+          </label>
+          <label class="fld" id="auto-every-wrap">
+            <span>间隔（分钟）</span>
+            <input id="auto-every" type="number" min="1" max="43200" step="1" value="360">
+            <em class="fld-help">360 = 每 6 小时；演示时可填 1</em>
+          </label>
+          <label class="fld" id="auto-at-wrap" hidden>
+            <span>定点时间</span>
+            <div class="fld-row">
+              <input id="auto-hour" type="number" min="0" max="23" value="3"><span>时</span>
+              <input id="auto-min" type="number" min="0" max="59" value="0"><span>分</span>
+            </div>
+          </label>
+          <label class="fld" id="auto-wd-wrap" hidden>
+            <span>星期几</span>
+            <select id="auto-weekday">
+              <option value="1">周一</option><option value="2">周二</option><option value="3">周三</option>
+              <option value="4">周四</option><option value="5">周五</option><option value="6">周六</option>
+              <option value="0">周日</option>
+            </select>
+          </label>
+          <label class="fld">
+            <span>备注名（可空）</span>
+            <input id="auto-name" type="text" autocomplete="off" placeholder="例如 门户站每日体检">
+          </label>
+          <div class="auto-form-foot">
+            <label class="check"><input type="checkbox" id="auto-enabled" checked><span>启用</span></label>
+            <span class="grow"></span>
+            <button class="ghost" id="auto-reset" type="button">清空</button>
+            <button id="auto-save" type="button">保存规则</button>
+          </div>
+          <div class="note" id="auto-msg"></div>
+        </div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-head">
+          <div><h2>权限审批</h2></div>
+          <span class="hint" id="appr-hint"></span>
+        </div>
+        <p class="note">
+          智能体在<strong>动手之前</strong>先过这道闸：<code>询问</code> 会停下来等你点；
+          <code>全部允许</code> 直接放行（开之前会让你确认一次）；自定义策略按工具名逐条指定
+          允许 / 询问 / 拒绝，规则自上而下第一条命中说了算，一条都没命中就按「询问」。
+          被拒绝不是报错：它会作为一条观察交回给模型，模型据此换路子或老实收束。
+        </p>
+        <div class="cards" id="appr-list"></div>
+
+        <div class="auto-form" style="margin-top:14px">
+          <label class="fld">
+            <span>策略名称</span>
+            <input id="appr-name" type="text" autocomplete="off" placeholder="例如 只读放行，探测前问我">
+          </label>
+          <label class="fld fld-wide">
+            <span>规则（一行一条：工具名=允许/询问/拒绝，支持 * 通配）</span>
+            <textarea id="appr-rules" rows="5" spellcheck="false" placeholder="page_diff=允许&#10;sensitive_scan=允许&#10;sensitive_file_probe=询问&#10;dir_probe=询问&#10;nuclei_scan=拒绝&#10;*_probe=询问"></textarea>
+          </label>
+          <div class="auto-form-foot">
+            <span class="grow"></span>
+            <button class="ghost" id="appr-reset" type="button">清空</button>
+            <button id="appr-save" type="button">保存为自定义策略</button>
+          </div>
+          <div class="note" id="appr-msg"></div>
+        </div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-head">
+          <div><h2>本单位敏感信息定义</h2></div>
+          <span class="hint" id="prof-hint"></span>
+        </div>
+        <p class="note">
+          关键词与样例按"正文里出现即命中"判定;正则由内置引擎执行,保存前会当场试编译(写错了直接拒绝,不会静默跳过);
+          落点会追加到敏感文件探测里;文件类型用于给命中的文件定级。一条定义 = 一套口径,周期规则可以各自选一套。
+        </p>
+        <div class="cards" id="prof-list"></div>
+
+        <div class="auto-form" style="margin-top:14px">
+          <label class="fld">
+            <span>名称</span>
+            <input id="prof-name" type="text" autocomplete="off" placeholder="例如 门户站口径（2026 版）">
+          </label>
+          <div class="fld fld-wide">
+            <span>关键词（一行一个）</span>
+            <textarea id="prof-keywords" rows="3" spellcheck="false" placeholder="内部项目代号&#10;某某系统"></textarea>
+          </div>
+          <div class="fld fld-wide">
+            <span>正则（一行一条）</span>
+            <textarea id="prof-regex" rows="3" spellcheck="false" placeholder="工号 GD-[0-9]{6}&#10;(?i)internal[-_]token"></textarea>
+          </div>
+          <div class="fld fld-wide">
+            <span>样例片段（一行一条，正文里出现即命中）</span>
+            <textarea id="prof-samples" rows="2" spellcheck="false" placeholder="例如某段固定配置：spring.datasource.url=jdbc:mysql://10."></textarea>
+          </div>
+          <label class="fld">
+            <span>自定义落点（一行一个，以 / 开头）</span>
+            <textarea id="prof-paths" rows="3" spellcheck="false" placeholder="/backup/db.sql&#10;/.svn/entries"></textarea>
+          </label>
+          <label class="fld">
+            <span>文件类型（一行一个）</span>
+            <textarea id="prof-types" rows="3" spellcheck="false" placeholder="sql&#10;env&#10;bak"></textarea>
+          </label>
+          <div class="auto-form-foot">
+            <span class="grow"></span>
+            <button class="ghost" id="prof-reset" type="button">清空</button>
+            <button id="prof-save" type="button">保存定义</button>
+          </div>
+          <div class="note" id="prof-msg"></div>
+        </div>
+      </section>
+    </section>
+
+    <section class="view" id="view-config">
+      <section class="panel">
+        <div class="market-bar">
+          <span class="muted">寻找现成能力</span>
+          <a class="market-link" href="https://skillsmp.com/zh" target="_blank" rel="noopener noreferrer">Skill 市场 ↗</a>
+          <a class="market-link" href="https://gc.das-ai.com/marketplace/tools/mcp" target="_blank" rel="noopener noreferrer">官方 MCP 市场 ↗</a>
+          <span class="muted">技能放 <code>skills\</code>，MCP 写 <code>mcp.json</code>，工具放 <code>tools\</code></span>
+        </div>
+        <div class="config-grid">
+          <div class="config-side">
+            <div class="config-side-head"><span>可编辑文件</span><button class="ghost tiny" id="cfg-new">＋ 新建</button></div>
+            <div class="filelist" id="cfg-list"></div>
+          </div>
+          <div class="config-main">
+            <div class="config-main-head">
+              <code id="cfg-name">（未选择文件）</code>
+              <span class="muted" id="cfg-meta"></span>
+              <span class="grow"></span>
+              <button class="ghost" id="cfg-reload-file">重新载入</button>
+              <button class="ghost" id="cfg-reload-rules">让规则生效</button>
+              <button id="cfg-save">保存</button>
+            </div>
+            <textarea id="cfg-text" spellcheck="false" rows="22" placeholder="从左侧选一个文件开始编辑…"></textarea>
+            <div class="config-foot"><span class="note" id="cfg-msg"></span><span class="muted" id="cfg-tip"></span></div>
+          </div>
+        </div>
+      </section>
+    </section>
+
+  </div>
+</section>
+
+<!-- 搜索：任务 / 发现 / 资产 / 视图，一个入口。Ctrl+K 唤起 -->
+<div class="palette" id="palette" role="dialog" aria-modal="true" aria-label="搜索">
+  <div class="palette-backdrop"></div>
+  <div class="palette-box">
+    <div class="palette-input">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6.5"/><path d="m16 16 4.5 4.5"/></svg>
+      <input id="palette-q" type="text" autocomplete="off" placeholder="搜索任务、发现、资产，或直接跳到某个视图…">
+      <kbd>Esc</kbd>
+    </div>
+    <div class="palette-list" id="palette-list"></div>
+    <div class="palette-foot" id="palette-foot">回车打开第一项 · ↑↓ 选择</div>
+  </div>
+</div>
+
+<!-- 授权池：能检查谁由这张表说了算，而不是"当前目标" -->
+<div class="modal" id="modal" role="dialog" aria-modal="true" aria-labelledby="scope-title">
   <div class="modal-backdrop"></div>
   <div class="modal-box">
-    <div class="modal-icon">✓</div>
-    <div class="section-kicker">AUTHORIZATION GATE</div>
-    <h3 id="scope-title">设置巡检目标</h3>
-    <p class="muted">本工具只允许对自己<strong>已获授权</strong>的站点做巡检。确认后，智能体才会对该域名发起只读请求。</p>
-    <label>目标域名 / 地址<input id="scope-domain" placeholder="例如 www.example-gov.cn 或 127.0.0.1:8899"></label>
-    <p class="field-help">非标准端口请一并填写；端口只用于连接地址对齐，授权仍按主机名校验。</p>
+    <h3 id="scope-title">授权池</h3>
+    <p class="muted">本工具只会对<strong>池内主机</strong>发请求。池子之外的目标，请求在发出去之前就被拦下，整轮巡检立刻停止。</p>
+
+    <div class="pool-list" id="pool-list"></div>
+
+    <label>加入授权主机<input id="scope-domain" placeholder="www.example-gov.cn 或 127.0.0.1:8899"></label>
+    <p class="field-help">只填主机名，可带端口；带端口表示只放行那个端口。确认前请确保已获得该目标的巡检授权。</p>
     <label class="check"><input type="checkbox" id="scope-ok"><span>我确认已获得该目标的巡检授权</span></label>
-    <div class="modal-actions"><button class="ghost" id="scope-cancel">取消</button><button id="scope-save">确认并生效 <b>↗</b></button></div>
+    <div class="modal-actions">
+      <button class="ghost" id="scope-cancel">关闭</button>
+      <button id="scope-save">加入授权池</button>
+    </div>
     <div class="err" id="scope-err"></div>
   </div>
 </div>
+
+<!-- 危险操作确认：切到"全部允许"之前必须看一眼 -->
+<div class="modal" id="warn-modal" role="dialog" aria-modal="true" aria-labelledby="warn-title">
+  <div class="modal-backdrop"></div>
+  <div class="modal-box">
+    <h3 id="warn-title">切换到「全部允许」？</h3>
+    <p class="muted">开启后，智能体调用任何工具都不会再问你一句。它仍然只能访问<strong>授权池内</strong>的主机、
+      只用只读方法、全程留痕 —— 但「要不要动手」这道确认就没有了。</p>
+    <p class="field-help">演示与评测时可以开；对着真实生产站点跑的巡检，建议保留「询问」或收紧自定义策略。</p>
+    <div class="modal-actions">
+      <button class="ghost" id="warn-cancel">保持当前策略</button>
+      <button id="warn-ok">我已了解，开启</button>
+    </div>
+  </div>
+</div>
+
 <script src="/ui/app.js"></script>
 </body>
 </html>

@@ -16,6 +16,14 @@ static char g_task_id[64] = {0};
 static char **g_domains = NULL;
 static int g_domain_count = 0;
 
+/* 授权池:允许访问的主机白名单。池子非空时它就是唯一边界 ——
+   "这一轮看哪个站"只是焦点,不是边界;越池即拒,并置 violation 让循环立刻收束。 */
+static char **g_pool = NULL;
+static int g_pool_count = 0;
+static volatile LONG g_violation = 0;
+
+static int host_allowed(const char *host, int port);   /* 边界判定,实现在下方 */
+
 static char g_audit_path[MAX_PATH * 2] = {0};
 static char g_target_base[512] = {0};
 static double g_qps = 2.0;
@@ -84,6 +92,10 @@ void net_init(void) {
 void net_shutdown(void) {
   if (g_session) { WinHttpCloseHandle(g_session); g_session = NULL; }
   if (g_domains) { str_free_list(g_domains, g_domain_count); g_domains = NULL; g_domain_count = 0; }
+  net_lock_init();
+  EnterCriticalSection(&g_net_lock);
+  if (g_pool) { str_free_list(g_pool, g_pool_count); g_pool = NULL; g_pool_count = 0; }
+  LeaveCriticalSection(&g_net_lock);
 }
 
 void net_set_readonly(int on) { g_readonly = on ? 1 : 0; }
@@ -105,6 +117,35 @@ void net_set_scope(const char *task_id, const char **domains, int count) {
 void net_set_audit_path(const char *path) {
   strncpy_s(g_audit_path, sizeof(g_audit_path), path ? path : "", _TRUNCATE);
 }
+
+/* ---------- 授权池 ---------- */
+void net_pool_set(const char **entries, int count) {
+  net_lock_init();
+  EnterCriticalSection(&g_net_lock);
+  if (g_pool) { str_free_list(g_pool, g_pool_count); g_pool = NULL; }
+  g_pool_count = 0;
+  if (entries && count > 0) {
+    g_pool = (char **)xcalloc((size_t)count, sizeof(char *));
+    for (int i = 0; i < count; i++) g_pool[i] = xstrdup(entries[i]);
+    g_pool_count = count;
+  }
+  LeaveCriticalSection(&g_net_lock);
+}
+
+int net_pool_count(void) {
+  EnterCriticalSection(&g_net_lock);
+  int n = g_pool_count;
+  LeaveCriticalSection(&g_net_lock);
+  return n;
+}
+
+int net_pool_has(const char *host, int port) {
+  if (!host || !*host) return 0;
+  return host_allowed(host, port);
+}
+
+int net_scope_violation(void) { return (int)g_violation; }
+void net_scope_violation_clear(void) { InterlockedExchange(&g_violation, 0); }
 
 void net_set_rate_limit(double qps) { g_qps = (qps > 0) ? qps : 2.0; }
 
@@ -198,15 +239,40 @@ int net_same_host(const char *a, const char *b) {  char ha[256], hb[256];
   return ha[0] && strcmp(ha, hb) == 0;
 }
 
-/* 授权域名匹配:精确匹配,或"授权的是子域"(x.cn 授权后可访问 a.x.cn)。
+/* 授权匹配:精确匹配,或"授权的是子域"(x.cn 授权后可访问 a.x.cn)。
+   池内条目允许带端口:写了端口就只放行那个端口,不写端口表示该主机的任意端口。
    这是从宽还是从严的取舍:为了演示方便放行子域,但会在审计里如实记录。 */
-static int host_allowed(const char *host) {
+static int entry_matches(const char *entry, const char *host, int port) {
+  if (!entry || !*entry) return 0;
+  char want_host[256];
+  int want_port = net_host_port_of(entry, want_host, sizeof(want_host));
+  if (!want_host[0]) return 0;
+  if (want_port > 0 && port > 0 && want_port != port) return 0;
+
+  if (str_ieq(host, want_host)) return 1;
+  size_t lh = strlen(host), ld = strlen(want_host);
+  if (lh > ld && str_ieq(host + (lh - ld), want_host) && host[lh - ld - 1] == '.') return 1;
+  return 0;
+}
+
+/* 边界判定:池子非空时以池子为准(池子是唯一边界),否则退回"本轮授权范围"。
+   为什么要有"否则":命令行单工具跑(agent.exe tool ...)不一定建池,
+   那时仍然按当轮指定的域名校验,不能因为没池子就什么都放行。 */
+static int host_allowed(const char *host, int port) {
   if (!host || !*host) return 0;
+  EnterCriticalSection(&g_net_lock);
+  int pooled = 0;
+  if (g_pool_count > 0) {
+    for (int i = 0; i < g_pool_count; i++) {
+      if (entry_matches(g_pool[i], host, port)) { pooled = 1; break; }
+    }
+    LeaveCriticalSection(&g_net_lock);
+    return pooled;
+  }
+  LeaveCriticalSection(&g_net_lock);
+
   for (int i = 0; i < g_domain_count; i++) {
-    const char *d = g_domains[i];
-    if (str_ieq(host, d)) return 1;
-    size_t lh = strlen(host), ld = strlen(d);
-    if (lh > ld && str_ieq(host + (lh - ld), d) && host[lh - ld - 1] == '.') return 1;
+    if (entry_matches(g_domains[i], host, port)) return 1;
   }
   return 0;
 }
@@ -319,16 +385,31 @@ void net_request(const char *url, const char *method, const char *content_type,
     return;
   }
 
-  /* —— 合规第 1 道:授权校验。不在授权域名内,连请求都不发 —— */
+  /* —— 合规第 1 道:授权校验。不在池内,连请求都不发 ——
+     池子非空时以池子为唯一边界;"本轮目标"只是焦点,越界也照样拒。 */
   char host_u8[256];
   net_host_of(url, host_u8, sizeof(host_u8));
-  if (g_domain_count > 0 && !host_allowed(host_u8)) {
+  char host_only[256];
+  int url_port = net_host_port_of(url, host_only, sizeof(host_only));
+  int pooled = net_pool_count() > 0;
+  /* 池子空、本轮也没有授权范围 ⇒ 没有任何边界可言,一律不发。
+     "什么都没配"绝不能等价于"什么都能访问"。 */
+  if (!pooled && g_domain_count == 0) {
+    resp->error = xstrdup("还没有授权目标:先把主机加进授权池");
+    InterlockedExchange(&g_violation, 1);
+    net_audit("authorize", url, 0, resp->error, NULL);
+    return;
+  }
+  if (!host_allowed(host_u8, url_port)) {
     buf_t e;
     buf_init(&e);
-    buf_printf(&e, "目标 %s 不在授权域名内", host_u8);
+    if (pooled) buf_printf(&e, "目标 %s 不在授权池内", host_u8);
+    else buf_printf(&e, "目标 %s 不在授权域名内", host_u8);
     resp->error = buf_take(&e);
+    /* 越权就是越权:置标记,让决策循环下一步立刻收束,而不是继续试别的路径 */
+    InterlockedExchange(&g_violation, 1);
     net_audit("authorize", url, 0, resp->error, NULL);
-    log_warn("[合规] 拒绝未授权目标: %s", url);
+    log_warn("[合规] 拒绝越权目标: %s", url);
     return;
   }
 

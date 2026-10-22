@@ -18,7 +18,7 @@ static const coll_t COLLECTIONS[] = {
     {"findings", "F", 1},     {"assets", "A", 1},      {"alerts", "AL", 1},
     {"testcases", "TC", 1},   {"tasks", "T", 0},       {"profiles", "SP", 0},
     {"baselines", "B", 0},    {"diffs", "D", 0},       {"runs", "RUN", 0},
-    {"reports", "R", 0},      {"evals", "EV", 0},
+    {"reports", "R", 0},      {"evals", "EV", 0},      {"automations", "AUTO", 0},
 };
 
 static const coll_t *coll_find(const char *name) {
@@ -237,6 +237,21 @@ json_t *store_get(store_t *s, const char *collection, const char *id) {
   return hit;
 }
 
+int store_delete(store_t *s, const char *collection, const char *id) {
+  const coll_t *c = coll_find(collection);
+  if (!s || !c || c->jsonl || !id || !id[0]) return -1;
+  char dir[MAX_PATH * 2], path[MAX_PATH * 4], name[MAX_PATH];
+  coll_path(s, c, dir, sizeof(dir));
+  snprintf(name, sizeof(name), "%s.json", id);
+  path_join(path, sizeof(path), dir, name);
+  wchar_t *w = u8_to_w(path);
+  EnterCriticalSection(&s->lock);
+  int rc = (w && DeleteFileW(w)) ? 0 : -1;
+  LeaveCriticalSection(&s->lock);
+  free(w);
+  return rc;
+}
+
 json_t *store_find(store_t *s, const char *collection, const char *key, const char *value) {
   json_t *all = store_all(s, collection);
   json_t *arr = j_arr();
@@ -396,7 +411,16 @@ int store_upsert_asset(store_t *s, const char *task_id, const char *url, const c
   return 0;
 }
 
-char *store_run_start(store_t *s, const char *task_id, const char *triggered_by) {
+/* 当前这一轮的触发来源。默认「手动」,周期巡检线程在跑之前改成「周期巡检」。 */
+static char g_trigger[32] = "手动";
+
+void store_set_trigger(const char *label) {
+  snprintf(g_trigger, sizeof(g_trigger), "%s", (label && *label) ? label : "手动");
+}
+const char *store_trigger_label(void) { return g_trigger; }
+
+char *store_run_start(store_t *s, const char *task_id, const char *triggered_by,
+                      const char *scope) {
   if (!s) return NULL;
   char *id = store_next_id(s, "runs");
   char ts[40];
@@ -405,6 +429,7 @@ char *store_run_start(store_t *s, const char *task_id, const char *triggered_by)
   j_set_str(r, "id", id);
   j_set_str(r, "task_id", task_id ? task_id : "");
   j_set_str(r, "triggered_by", triggered_by ? triggered_by : "手动");
+  j_set_str(r, "scope", (scope && *scope) ? scope : "full");
   j_set_str(r, "status", "running");
   j_set_str(r, "started_at", ts);
   j_set_str(r, "finished_at", "");
