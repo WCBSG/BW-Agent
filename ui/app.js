@@ -1399,6 +1399,14 @@ function switchView(name) {
     if (kicker) kicker.textContent = meta[0];
     if (title) title.textContent = meta[1];
   }
+  /* 导出只在报告页出现：别的页面没有"要导出的东西"，
+     常驻一个按钮只会让人猜它导出什么。 */
+  const exp = $('export-menu');
+  if (exp) {
+    const on = name === 'report';
+    exp.style.display = on ? '' : 'none';
+    if (!on) exp.classList.remove('open');
+  }
 }
 
 /* ============ 本单位敏感信息定义 ============ */
@@ -2405,7 +2413,12 @@ function applyLayout() {
   const q = $('q');
   if (q) q.style.minHeight = LAYOUT.compose + 'px';
   const set = (id, v) => { const n = $(id); if (n) n.value = v; };
-  const txt = (id, v) => { const n = $(id); if (n) n.textContent = v + 'px'; };
+  /* 正在手输的那个数值不要被覆盖，否则输入框会当场消失 */
+  const txt = (id, v) => {
+    const n = $(id);
+    if (!n || n.dataset.editing) return;
+    n.textContent = v + 'px';
+  };
   set('ui-side', LAYOUT.side); txt('ui-side-v', LAYOUT.side);
   set('ui-rail', LAYOUT.rail); txt('ui-rail-v', LAYOUT.rail);
   set('ui-compose', LAYOUT.compose); txt('ui-compose-v', LAYOUT.compose);
@@ -2510,6 +2523,55 @@ if (uiReset) {
     saveLayout();
   });
 }
+
+/* 数值可以直接点开手输：滑杆拖不准时，输一个数更快 */
+function bindValueEdit(valueId, sliderId, key) {
+  const node = $(valueId);
+  const slider = $(sliderId);
+  if (!node || !slider) return;
+  node.classList.add('editable');
+  node.title = '点一下直接输入';
+  node.addEventListener('click', (ev) => {
+    /* 这行是 <label>，点它默认会把焦点转给滑杆；必须挡住，
+       否则输入框刚出现就被抢走焦点，一个字也打不进去。 */
+    ev.preventDefault();
+    ev.stopPropagation();
+    if (node.dataset.editing) return;
+    node.dataset.editing = '1';
+    const old = LAYOUT[key];
+    const inp = document.createElement('input');
+    inp.type = 'number';
+    inp.className = 'ui-num';
+    inp.value = old;
+    inp.min = slider.min;
+    inp.max = slider.max;
+    inp.step = slider.step;
+    node.textContent = '';
+    node.appendChild(inp);
+    setTimeout(() => { inp.focus(); inp.select(); }, 0);
+    const commit = (ok) => {
+      if (!node.dataset.editing) return;
+      delete node.dataset.editing;
+      const raw = Number(inp.value);
+      const min = Number(slider.min);
+      const max = Number(slider.max);
+      const v = ok && isFinite(raw) && raw > 0 ? Math.round(raw) : old;
+      LAYOUT[key] = Math.max(min, Math.min(max, v));
+      applyLayout();
+      saveLayout();
+    };
+    inp.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') { e.preventDefault(); commit(true); }
+      else if (e.key === 'Escape') { e.preventDefault(); commit(false); }
+    });
+    inp.addEventListener('blur', () => commit(true));
+  });
+}
+
+bindValueEdit('ui-side-v', 'ui-side', 'side');
+bindValueEdit('ui-rail-v', 'ui-rail', 'rail');
+bindValueEdit('ui-compose-v', 'ui-compose', 'compose');
+
 applyLayout();
 
 /* 偏好开关：不改后端，只改这一台机器上的观感 */
