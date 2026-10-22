@@ -490,6 +490,12 @@ code,pre,.mono{font-family:var(--mono)}
 .hint-btn:hover{color:var(--ink)}
 .hint-note{margin-left:auto}
 
+/* 旧记录(没有对话转录)的运行详情 */
+.runplain{font-size:13px;color:var(--ink-2);line-height:1.7}
+.runplain table{width:100%;border-collapse:collapse;margin-top:8px}
+.runplain th,.runplain td{text-align:left;padding:5px 8px;border-bottom:1px solid var(--line);font-size:12.5px}
+.runplain th{color:var(--ink-3);font-weight:500}
+
 /* 右栏 */
 .rail{border-left:1px solid var(--line);background:var(--bg);display:flex;flex-direction:column;min-height:0}
 .rail-head{

@@ -1067,10 +1067,7 @@ function taskRow(r, t) {
   row.addEventListener('click', () => {
     document.querySelectorAll('.titem').forEach((x) => x.setAttribute('aria-current', 'false'));
     row.setAttribute('aria-current', 'true');
-    /* 点一条运行记录 = 回到它所在的那次对话。
-       没有 session 的是旧数据(当时还没记会话),退回历史视图。 */
-    if (r.session) openChat(r.session);
-    else { switchView('history'); loadView('history'); }
+    openRun(r.id);
   });
   return row;
 }
@@ -1186,6 +1183,63 @@ function newChat() {
   renderTasks();
   const q = $('q');
   if (q) setTimeout(() => q.focus(), 180);
+}
+
+/* 点左栏任意一条运行记录:有对话就进对话;老记录没有转录,
+   就地展示它当时的统计与发现 —— 不能点了没反应,也不能假装有对话。 */
+async function openRun(runId) {
+  if (!runId) return;
+  closeSheet();
+  showWork();
+  setBusy(false);
+  resetStream('正在打开…', '读取这次运行的记录。');
+  let r;
+  try {
+    r = await api('/api/chats?run=' + encodeURIComponent(runId));
+  } catch (e) {
+    resetStream('这条记录打不开', String((e && e.message) || e));
+    return;
+  }
+  if (r.session) { await openChat(r.session); return; }
+
+  const run = r.run || {};
+  const items = r.findings || [];
+  stream.innerHTML = '';
+
+  const head = el('div', 'msg user');
+  const hb = el('div', 'body');
+  hb.appendChild(el('div', null, runId + ' · ' + (run.triggered_by || '巡检')));
+  hb.appendChild(el('div', 'stopline',
+    `${run.pages_found || 0} 页 · ${run.tools_called || 0} 次调用 · ` +
+    `${run.findings_new || 0} 条新发现 · ${fmtTime(run.started_at)}`));
+  head.appendChild(hb);
+  stream.appendChild(head);
+
+  const wrap = el('div', 'msg agent');
+  wrap.appendChild(el('div', 'who', '运行记录 · ' + runId));
+  const body = el('div', 'body runplain');
+  body.appendChild(el('p', null,
+    '这次运行没有留下对话转录（当时的版本还没记录会话）。下面是它当时交出的结果：'));
+  if (!items.length) {
+    body.appendChild(el('p', 'muted', '这次运行没有产生发现。'));
+  } else {
+    const t = el('table');
+    const hr = el('tr');
+    ['等级', '问题', '目标'].forEach((h) => hr.appendChild(el('th', null, h)));
+    t.appendChild(hr);
+    for (const f of items) {
+      const tr = el('tr');
+      tr.appendChild(el('td', null, f.severity || '—'));
+      tr.appendChild(el('td', null, f.title || f.kind || '—'));
+      tr.appendChild(el('td', null, f.target || '—'));
+      t.appendChild(tr);
+    }
+    body.appendChild(t);
+  }
+  wrap.appendChild(body);
+  stream.appendChild(wrap);
+  if ($('task-title')) $('task-title').textContent = runId + ' · ' + (run.triggered_by || '巡检');
+  scrollBottom(true);
 }
 
 /* 打开某一次历史对话:把后端落下来的转录原样铺回中间，
@@ -2022,10 +2076,6 @@ document.querySelectorAll('.chip-btn').forEach((b) => {
     hq.focus();
   });
 });
-document.querySelectorAll('.hint-btn').forEach((b) => {
-  b.addEventListener('click', () => send(b.dataset.q));
-});
-
 /* 任何 data-goto 都走同一个入口：先切视图，再取数 */
 document.querySelectorAll('[data-goto]').forEach((b) => {
   b.addEventListener('click', () => {

@@ -2221,8 +2221,27 @@ static char *attach_read(const char *sid, const char *id, size_t cap, size_t *ou
   return text;
 }
 
-/* 会话列表与回看:界面左栏点一条,就能回到那次对话 */
+/* 会话列表与回看:界面左栏点一条,就能回到那次对话。
+   ?run=RUN-0001 时返回"这次运行"的详情与它所属的会话 —— 老记录没有会话,
+   也能点进去看当时的统计与发现,而不是掉进一个笼统的历史页。 */
 static void h_chats(const http_req_t *req, http_res_t *res) {
+  char run_id[32];
+  http_query(req, "run", run_id, sizeof(run_id), "");
+  if (run_id[0]) {
+    json_t *r = store_get(g_store, "runs", run_id);
+    json_t *fs = store_findings_of_run(g_store, run_id);
+    json_t *root = j_obj();
+    j_set_bool(root, "ok", 1);
+    j_set_str(root, "session", r ? j_s(r, "session", "") : "");
+    j_set(root, "run", r ? r : j_obj());
+    j_set(root, "findings", fs ? fs : j_arr());
+    char *text = json_dump(root);
+    http_res_json(res, 200, text);
+    free(text);
+    json_free(root);
+    return;
+  }
+
   char sid[64];
   http_query(req, "sid", sid, sizeof(sid), "");
   if (sid[0]) {
