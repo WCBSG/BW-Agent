@@ -61,10 +61,25 @@ code,pre,.mono{font-family:var(--mono)}
 .path{font-size:13px;color:var(--ink-3)}
 
 /* 滚动条：细、无色，不抢视线 */
-*::-webkit-scrollbar{width:9px;height:9px}
+/* 竖滚动条统一交给"框上方那条进度"来表示:横条留着(表格过宽还要靠它) */
+*::-webkit-scrollbar{width:0;height:9px}
 *::-webkit-scrollbar-thumb{background:#d6d6d1;border-radius:5px}
 *::-webkit-scrollbar-thumb:hover{background:#bfbfba}
 *::-webkit-scrollbar-track{background:transparent}
+*{scrollbar-width:none}
+
+/* 顶部进度条本体:一条轨道 + 从左侧长出来的进度(和播放器顶上那条一个意思)。
+   出现时不做淡入 —— 一条蓝线慢慢显影看着别扭;改成蓝色那段从 0 涨到当前位置。
+   由 JS 贴在容器上沿 —— 容器内部的绝对定位会随内容一起滚动,竖向滚动时看不到位置。 */
+.hbar{
+  position:fixed;height:2px;z-index:60;pointer-events:none;
+  background:rgba(25,25,20,.06);opacity:0;
+}
+.hbar.in-modal{z-index:85}
+.hbar > i{
+  position:absolute;left:0;top:0;height:100%;width:0;
+  background:var(--accent);border-radius:0 1px 1px 0;
+}
 
 /* ============================================================
    零 · 层：两屏之间的过渡

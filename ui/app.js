@@ -1320,6 +1320,7 @@ async function loadView(name) {
     const box = document.querySelector('#view-' + name + ' .panel');
     if (box) box.appendChild(el('div', 'note', '取数失败：' + e.message));
   }
+  refreshHBars();          /* 内容刚换过:进度条跟着重算 */
 }
 
 /* 三层壳：起手式 → 任务工作台 → 数据视图（整页抽屉）。
@@ -1341,6 +1342,7 @@ function raise(name, dir) {
     }
   }
   if (name === 'work') renderChats();
+  refreshHBars();            /* 层换了:滚动条的可见性要跟着重算 */
 }
 
 function showHome() {
@@ -1519,8 +1521,9 @@ function openSheet() {
   s.classList.add('enter-down');
   void s.offsetWidth;
   s.classList.add('on');
+  refreshHBars();
 }
-function closeSheet() { $('sheet').classList.remove('on'); }
+function closeSheet() { $('sheet').classList.remove('on'); refreshHBars(); }
 
 function switchView(name) {
   if (name === 'loop') { closeSheet(); return; }
@@ -2337,6 +2340,7 @@ function setRenderPage() {
   form.innerHTML = '';
   for (const f of page.fields || []) form.appendChild(setFieldEl(f));
   if ($('set-msg')) $('set-msg').textContent = '';
+  refreshHBars();
 }
 
 /* 从一组字段里读出值,写进 base 的副本并按 f.k 的路径落位。
@@ -2462,6 +2466,7 @@ function renderRulePage() {
   if ($('rules-domain-note')) $('rules-domain-note').textContent = d.note || '';
   form.innerHTML = '';
   for (const f of ruleFieldsOf(RULE.current)) form.appendChild(setFieldEl(f));
+  refreshHBars();
 }
 
 async function renderRulesView(force) {
@@ -3707,14 +3712,205 @@ for (const [id, act] of [
 }
 
 const scrollTimer = new WeakMap();
-document.querySelectorAll('.main, .stream, .trace, .steps, .table-wrap, .tool-args, .tool-out, .config-side .filelist').forEach((node) => {
-  node.classList.add('scroll-surface');
-  node.addEventListener('wheel', () => {
-    node.classList.add('is-scrolling');
-    clearTimeout(scrollTimer.get(node));
-    scrollTimer.set(node, setTimeout(() => node.classList.remove('is-scrolling'), 700));
-  }, { passive: true });
+
+/* ---------- 滚动指示:框上方一条细进度条,代替右侧那根竖滚动条 ----------
+   为什么这么做:竖滚动条在窄容器里(表单、过程直播、表格)会占掉 9px 宽,
+   而且 Windows 上的默认样式和这套纸白界面完全不搭。
+   改成"框上沿一条线"之后:不占宽度、位置固定、一眼就知道自己在整篇的哪儿。
+   用 fixed 定位贴在容器上沿,是因为滚动容器内部的绝对定位会跟着内容一起滚。 */
+const HBARS = [];
+
+/* 裁剪祖先:祖先里有 overflow 不是 visible 的,会把子元素裁掉。
+   进度条是 fixed 定位,不会自动被裁剪 —— 不手动求交集的话,
+   已经滚出可视区的输入框,它的条还画在屏幕上,叠在别的元素上。 */
+function clipAncestorsOf(node) {
+  const out = [];
+  for (let p = node.parentElement; p && p !== document.documentElement; p = p.parentElement) {
+    const cs = getComputedStyle(p);
+    if (cs.overflowX !== 'visible' || cs.overflowY !== 'visible') out.push(p);
+  }
+  return out;
+}
+
+function attachHBar(node) {
+  if (node.__hbar) return;
+  const rail = document.createElement('i');
+  rail.className = 'hbar';
+  const fill = document.createElement('i');
+  rail.appendChild(fill);
+  document.body.appendChild(rail);
+  node.__hbar = rail;
+  node.__hbarClip = clipAncestorsOf(node);
+
+  const upd = () => {
+    const sh = node.scrollHeight;
+    const h = node.clientHeight;
+    const layer = node.closest('.layer');
+    /* 不用 getComputedStyle 判可见:隐藏的层 rect 宽高会是 0,
+       下面的 canScroll 已经能挡住 —— 每帧 N 次样式查询没必要。 */
+    const modal = document.getElementById('modal');
+    const modalOn = modal && modal.classList.contains('on');
+    const inModal = modal && modal.contains(node);
+    /* 弹窗打开时:外面的条全部让开,里面的照常显示(它是 fixed,不会被遮罩挡住) */
+    const hidden = (layer && !layer.classList.contains('on')) ||
+                   (modalOn && !inModal) || (!modalOn && inModal);
+    const r = node.getBoundingClientRect();
+    let top = r.top, left = r.left, bottom = r.bottom, right = r.right;
+    /* 与裁剪祖先求交集:被滚出去/被裁掉的部分不该还画在屏幕上 */
+    for (const p of node.__hbarClip || []) {
+      const pr = p.getBoundingClientRect();
+      if (pr.top > top) top = pr.top;
+      if (pr.left > left) left = pr.left;
+      if (pr.bottom < bottom) bottom = pr.bottom;
+      if (pr.right < right) right = pr.right;
+    }
+    const visW = right - left;
+    const visH = bottom - top;
+    const canScroll = sh > h + 2 && visW > 60 && visH > 24;
+
+    /* 位置、尺寸、滚动量都没变就别碰 DOM:这个函数是每帧跑的,
+       无脑写 style 会让浏览器每帧重算样式。 */
+    const key = [Math.round(left), Math.round(top), Math.round(visW), h,
+                 node.scrollTop, sh, hidden ? 1 : 0, canScroll ? 1 : 0].join(',');
+    if (node.__hbarKey === key) return;
+    node.__hbarKey = key;
+
+    if (hidden || !canScroll) {
+      if (rail.style.opacity !== '0') {
+        rail.style.opacity = '0';
+        node.__hbarShown = false;    /* 下次出现时重新"长"一遍 */
+      }
+      return;
+    }
+    /* 弹窗里的条要压在遮罩之上(z-index 80),否则会被自己那层的背景盖住 */
+    rail.classList.toggle('in-modal', !!inModal);
+    /* 位置用"读到哪儿了"表示(和播放器顶上那条一样),不是浮动的滑块:
+       视口底部占全文的比例 = 进度。滚到底就是 100%,一眼知道还剩多少。 */
+    const len = Math.min(100, ((node.scrollTop + h) / sh) * 100);
+    const lenStr = len.toFixed(2) + '%';
+    /* 小框(表格单元格里的多行输入)把线调淡:一屏十几条同色的线会很吵 */
+    rail.style.opacity = visW < 220 ? '0.5' : '1';
+    rail.style.left = (left + node.clientLeft) + 'px';
+    rail.style.top = Math.round(top) + 'px';
+    rail.style.width = Math.max(0, Math.min(node.clientWidth, visW)) + 'px';
+
+    if (!node.__hbarShown) {
+      /* 出现:从 0 涨到当前位置(不做淡入 —— 一条蓝线显影比直接长出来更怪)。
+         目标宽度必须放到下一帧再设:同一帧里"设为 0% + 立即设为目标 + 加 transition"
+         会被浏览器合并成一次计算,动画根本不会开始。 */
+      node.__hbarShown = true;
+      node.__hbarGrowUntil = performance.now() + 520;
+      fill.style.transition = 'none';
+      fill.style.width = '0%';
+      void fill.offsetWidth;                       /* 让 0% 先落到样式系统里 */
+      requestAnimationFrame(() => {
+        fill.style.transition = 'width .45s cubic-bezier(.2,.75,.25,1)';
+        fill.style.width = lenStr;
+      });
+    } else if (performance.now() > (node.__hbarGrowUntil || 0) && fill.style.width !== lenStr) {
+      fill.style.transition = 'none';              /* 滚动时跟手,不做缓动 */
+      fill.style.width = lenStr;
+    }
+  };
+
+  node.addEventListener('scroll', upd, { passive: true });
+  if (window.ResizeObserver) new ResizeObserver(upd).observe(node);
+  node.__hbarUpd = upd;
+  HBARS.push(node);
+  upd();
+  startHBars();
+}
+
+/* ---------- 每帧跟一次位置 ----------
+   为什么不用事件驱动:进度条挂在容器上沿,而容器自己会动 —— 侧栏拖动、
+   抽屉升起、输入区高度调整、窗口缩放,这些都不会给容器发 scroll/resize。
+   只靠事件的话,条的坐标就停在原地,看起来像"粘"在屏幕上。
+   每帧算一次 getBoundingClientRect 很便宜(十几个容器),而且下面有变化检测兜着,
+   没变化时一个字节的样式都不写。 */
+let hbarLoop = 0;
+let hbarTick = 0;
+function loopHBars() {
+  if (document.hidden) { hbarLoop = 0; return; }
+  /* 30Hz 足够:位置变化是拖拽/动画带出来的,33ms 的滞后看不出来,
+     但省下一半的布局读取 —— 流式输出时每帧都在改 DOM,这里不该再抢。 */
+  if ((hbarTick++ & 1) === 0) {
+    for (const n of HBARS) if (n.__hbarUpd) n.__hbarUpd();
+  }
+  hbarLoop = requestAnimationFrame(loopHBars);
+}
+function startHBars() {
+  if (hbarLoop) return;
+  if (document.hidden) return;
+  hbarLoop = requestAnimationFrame(loopHBars);
+}
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden) {
+    for (const n of HBARS) { n.__hbarKey = ''; }
+    startHBars();
+  }
 });
+
+function refreshHBars() {
+  for (const n of HBARS) {
+    n.__hbarKey = '';
+    n.__hbarClip = clipAncestorsOf(n);   /* DOM 结构可能变了:裁剪链重新算 */
+    if (n.__hbarUpd) n.__hbarUpd();
+  }
+  startHBars();
+}
+
+/* ---------- 自动发现所有能竖着滚的容器 ----------
+   以前是一张白名单(主区/消息流/表格…),新加的框很容易漏掉;
+   现在按计算样式判定:overflow-y 是 auto/scroll 且内容确实比它高,就给它挂一条。
+   新增节点由 MutationObserver 兜住(消息流、表格都是渲染出来的),不用一处一处登记。 */
+const HBAR_SEEN = new WeakSet();
+
+function scrollsVertically(node) {
+  if (!(node instanceof HTMLElement)) return false;
+  const cs = getComputedStyle(node);
+  const oy = cs.overflowY;
+  if (oy !== 'auto' && oy !== 'scroll' && oy !== 'overlay') return false;
+  return node.scrollHeight > node.clientHeight + 2;
+}
+
+function scanHBars(root) {
+  const scope = root || document.body;
+  if (!scope || scope.nodeType !== 1) return;
+  const list = [scope];
+  if (scope.querySelectorAll) {
+    const all = scope.querySelectorAll('*');
+    for (const n of all) list.push(n);
+  }
+  for (const n of list) {
+    if (!n || n.nodeType !== 1 || HBAR_SEEN.has(n)) continue;
+    if (!scrollsVertically(n)) continue;
+    HBAR_SEEN.add(n);
+    n.classList.add('scroll-surface');       /* 顺带给它隐藏原生竖条 */
+    n.addEventListener('wheel', () => {
+      n.classList.add('is-scrolling');
+      clearTimeout(scrollTimer.get(n));
+      scrollTimer.set(n, setTimeout(() => n.classList.remove('is-scrolling'), 700));
+    }, { passive: true });
+    attachHBar(n);
+  }
+}
+
+let scanTimer = 0;
+function scheduleScan(root) {
+  if (scanTimer) return;
+  scanTimer = setTimeout(() => {
+    scanTimer = 0;
+    scanHBars(root);
+    refreshHBars();               /* 内容变了:已有那些条的长度也要跟着变 */
+  }, 220);
+}
+
+scanHBars(document.body);
+
+if (window.MutationObserver) {
+  new MutationObserver(() => scheduleScan(document.body))
+    .observe(document.body, { childList: true, subtree: true });
+}
 
 document.querySelectorAll('.tab').forEach((t) => {
   t.addEventListener('click', () => {
