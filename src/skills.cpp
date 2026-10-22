@@ -272,7 +272,9 @@ static void join_url(char *out, size_t cap, const char *base, const char *path) 
   }
 }
 
-/* 站点根:https://host(保留原始端口 —— 本地演示靶站常跑在 8899 这类端口上) */
+/* 站点根:https://host[:port][/子路径](保留原始端口 —— 本地靶站常跑在 8081 这类端口上)
+   子路径必须保留:授权范围常常只是"本站的某个栏目"(靶场就是这样,每关挂在 /l1 … /l6 下),
+   把它丢掉就等于从首页开始整站爬,既越界也查不到点上。 */
 static void site_root(const char *url, char *out, size_t cap) {
   if (!url || !*url) { snprintf(out, cap, "%s", ""); return; }
   const char *scheme_end = strstr(url, "://");
@@ -280,15 +282,21 @@ static void site_root(const char *url, char *out, size_t cap) {
   /* 主机部分一直到第一个 / 或 ? */
   size_t n = 0;
   while (p[n] && p[n] != '/' && p[n] != '?' && p[n] != '#') n++;
+  /* 路径部分(去掉 ? # 之后的东西,去掉尾部的 /) */
+  size_t path_len = 0;
+  if (p[n] == '/') {
+    while (p[n + path_len] && p[n + path_len] != '?' && p[n + path_len] != '#') path_len++;
+    while (path_len > 0 && p[n + path_len - 1] == '/') path_len--;
+  }
   if (scheme_end) {
     size_t scheme_len = (size_t)(scheme_end - url) + 3;
-    if (scheme_len + n < cap) {
-      memcpy(out, url, scheme_len + n);
-      out[scheme_len + n] = 0;
+    if (scheme_len + n + path_len < cap) {
+      memcpy(out, url, scheme_len + n + path_len);
+      out[scheme_len + n + path_len] = 0;
       return;
     }
   }
-  snprintf(out, cap, "https://%.*s", (int)n, p);
+  snprintf(out, cap, "https://%.*s%.*s", (int)n, p, (int)path_len, p + n);
 }
 
 /* 把完整 URL 拼出来(用原始端口,别丢) */
@@ -792,10 +800,17 @@ static int s_full_inspection(tool_ctx_t *ctx, json_t *args, skill_result_t *out)
   j_add(steps, s0);
   if (alive.err && !alive.status) {
     out->is_error = 1;
-    buf_printf(&report, "站点当前访问不到(%s),我停止了后续检查 —— "
-                        "把「连不上」当成「没问题」是巡检里最危险的事。"
-                        "请确认站点可达或授权范围是否写对,然后我可以重跑。",
-               alive.err);
+    int blocked_by_policy = alive.err && strstr(alive.err, "授权") != NULL;
+    if (blocked_by_policy) {
+      buf_printf(&report, "目标不在授权范围内(%s),我在发出第一个请求之前就停住了 —— "
+                          "越权探测不是「能力」,是事故。把 %s 加进授权池后我可以重跑。",
+                 alive.err, root);
+    } else {
+      buf_printf(&report, "站点当前访问不到(%s),我停止了后续检查 —— "
+                          "把「连不上」当成「没问题」是巡检里最危险的事。"
+                          "请确认站点可达或授权范围是否写对,然后我可以重跑。",
+                 alive.err);
+    }
     out->summary = buf_take(&report);
     json_t *d = j_obj();
     j_set_str(d, "skill", "skill_full_inspection");
@@ -824,23 +839,39 @@ static int s_full_inspection(tool_ctx_t *ctx, json_t *args, skill_result_t *out)
   if (r1.summary) buf_printf(&report, "\n① 资产:%s", r1.summary);
   /* 资产底账入库:同 url 只刷新 last_seen,报告与界面都从这里取"家底" */
   json_t *scan_targets = j_arr();      /* 带参数的可输入地址:后面拿去做注入验证 */
+  json_t *crawl_pages = j_arr();       /* 已发现的页面:后面逐页查正文里的敏感信息 */
   if (st && r1.data) {
     json_t *assets = j_get(r1.data, "assets");
     for (int i = 0; i < j_len(assets) && i < 60; i++) {
       json_t *a = j_at(assets, i);
       const char *url = j_s(a, "url", "");
+      int code = (int)j_n(a, "status_code", 0);
       store_upsert_asset(st, ctx->task_id, url, j_s(a, "kind", "页面"),
-                         (int)j_n(a, "status_code", 0), (int)j_n(a, "depth", 0),
-                         j_s(a, "parent_url", ""));
+                         code, (int)j_n(a, "depth", 0), j_s(a, "parent_url", ""));
       pages_found++;
       /* 只有带查询参数的地址才有"输入点",注入验证只对这些地址做 */
-      if (url[0] && strchr(url, '?') && strchr(url, '=') && (int)j_n(a, "status_code", 0) > 0) {
+      if (url[0] && strchr(url, '?') && strchr(url, '=') && code > 0) {
         int dup = 0;
         for (int k = 0; k < j_len(scan_targets); k++) {
           if (str_ieq(j_at(scan_targets, k)->str, url)) dup = 1;
         }
         if (!dup && j_len(scan_targets) < 6) j_add(scan_targets, j_str(url));
       }
+    }
+  }
+  /* 页面清单不依赖仓库:第 4 步要按它逐页查正文里的敏感信息 */
+  if (r1.data) {
+    json_t *assets = j_get(r1.data, "assets");
+    for (int i = 0; i < j_len(assets) && i < 60; i++) {
+      json_t *a = j_at(assets, i);
+      const char *url = j_s(a, "url", "");
+      int code = (int)j_n(a, "status_code", 0);
+      if (!url[0] || code <= 0) continue;
+      json_t *pg = j_obj();
+      j_set_str(pg, "url", url);
+      j_set_str(pg, "kind", j_s(a, "kind", "页面"));
+      j_set_num(pg, "status", code);
+      j_add(crawl_pages, pg);
     }
   }
   skill_result_free(&r1);
@@ -871,11 +902,30 @@ static int s_full_inspection(tool_ctx_t *ctx, json_t *args, skill_result_t *out)
   if (r4.summary) buf_printf(&report, "\n③ 暴露面:%s", r4.summary);
   skill_result_free(&r4);
 
-  /* 第 4 步:敏感信息泄露 */
+  /* 第 4 步:敏感信息泄露。两条线一起查:
+     ① 常见落点 + 本轮已经爬到的资产路径 —— 真泄露常常就挂在首页链接里
+        (备份文件、导出表、部署说明),只查出厂清单是查不到的;
+     ② 已抓页面的正文 —— 证件号、手机号、明文口令这类不会体现成文件名。 */
   skill_result_t r3;
   memset(&r3, 0, sizeof(r3));
   json_t *a3 = j_obj();
   j_set_str(a3, "target", root);
+  {
+    size_t root_len = strlen(root);
+    json_t *paths = j_arr();
+    for (int i = 0; i < j_len(crawl_pages) && j_len(paths) < 30; i++) {
+      const char *u = j_s(j_at(crawl_pages, i), "url", "");
+      if (strncmp(u, root, root_len) != 0) continue;   /* 只取范围内的地址 */
+      const char *p = strchr(u + root_len, '/');
+      if (!p) continue;
+      int dup = 0;
+      for (int k = 0; k < j_len(paths); k++) {
+        if (strcmp(j_at(paths, k)->str, p) == 0) dup = 1;
+      }
+      if (!dup) j_add(paths, j_str(p));
+    }
+    if (j_len(paths) > 0) j_set(a3, "paths", paths);
+  }
   s_leak_check(ctx, a3, &r3);
   json_free(a3);
   findings += r3.finding_count;
@@ -885,6 +935,65 @@ static int s_full_inspection(tool_ctx_t *ctx, json_t *args, skill_result_t *out)
   j_add(steps, s3);
   if (r3.summary) buf_printf(&report, "\n④ 敏感信息:%s", r3.summary);
   skill_result_free(&r3);
+
+  /* 4b:页面正文里的敏感信息(逐页取正文交给同样的规则集判定) */
+  {
+    buf_t ev;
+    buf_init(&ev);
+    int scanned = 0, hit_pages = 0, total_hits = 0;
+    json_t *page_rows = j_arr();
+    for (int i = 0; i < j_len(crawl_pages) && scanned < 12; i++) {
+      const char *u = j_s(j_at(crawl_pages, i), "url", "");
+      if (strcmp(j_s(j_at(crawl_pages, i), "kind", ""), "静态资源") == 0) continue;
+      probe_t pg;
+      probe(ctx, u, &pg);
+      scanned++;
+      if (pg.err || pg.status != 200 || !pg.body || !pg.body[0]) { probe_free(&pg); continue; }
+      json_t *sa = j_obj();
+      j_set_str(sa, "text", pg.body);
+      tool_result_t sr;
+      memset(&sr, 0, sizeof(sr));
+      tools_run(ctx, "sensitive_scan", sa, &sr);
+      json_free(sa);
+      probe_free(&pg);
+      int n = (int)j_n(sr.data, "hit_count", 0);
+      if (n > 0) {
+        hit_pages++;
+        total_hits += n;
+        buf_printf(&ev, "%s:%d 处", u, n);
+        json_t *row = j_obj();
+        j_set_str(row, "url", u);
+        j_set_num(row, "hits", n);
+        j_add(page_rows, row);
+        for (int k = 0; k < j_len(j_get(sr.data, "hits")) && k < 3; k++) {
+          json_t *h = j_at(j_get(sr.data, "hits"), k);
+          buf_printf(&ev, " [%s]%s", j_s(h, "kind", ""), j_s(h, "masked", ""));
+        }
+        buf_puts(&ev, ";");
+      }
+      free(sr.text);
+      free(sr.say);
+      json_free(sr.data);
+    }
+    if (total_hits > 0) {
+      record_finding(ctx, "敏感信息", "高", "页面正文存在敏感信息明文", root, ev.data,
+                     "页面里直接出现证件号、手机号或账号口令,任何访问者都能收集,"
+                     "属于个人信息与内控信息双重泄露",
+                     "从页面与源码里移除,改为服务端按权限返回或脱敏展示;"
+                     "同时排查这些内容是从哪个环节写进页面的",
+                     "sensitive_scan", "page-text", NULL, NULL);
+      findings += 1;
+      json_t *s3b = j_obj();
+      j_set_str(s3b, "step", "正文敏感信息");
+      j_set_num(s3b, "pages", hit_pages);
+      j_set_num(s3b, "hits", total_hits);
+      j_add(steps, s3b);
+      buf_printf(&report, "\n④b 正文:%d 个页面共命中 %d 处敏感信息(已在证据里去敏)", hit_pages,
+                 total_hits);
+    }
+    json_free(page_rows);
+    buf_free(&ev);
+  }
 
   /* 第 5 步:配置与漏洞探测 */
   tool_result_t tr;

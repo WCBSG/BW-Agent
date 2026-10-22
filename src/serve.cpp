@@ -531,7 +531,7 @@ static void apply_scope(const char *domain) {
   if (domain && *domain) {
     snprintf(g_domain, sizeof(g_domain), "%s", domain);
     /* 授权范围只认主机名(端口不参与授权判断),但端口要拿去做"地址对齐":
-       否则用户写 127.0.0.1 而站点在 8899 时,请求全会打到 443 上去。 */
+       否则用户写 127.0.0.1 而站点在 8081 时,请求全会打到 443 上去。 */
     char host_only[256];
     net_host_port_of(domain, host_only, sizeof(host_only));
     if (!host_only[0]) snprintf(host_only, sizeof(host_only), "%s", domain);
@@ -2013,7 +2013,7 @@ int serve_run(const char *domain, int port, int open_ui) {
   }
   net_set_readonly(1);
 
-  /* 演示靶站可能带端口:环境变量 TARGET_BASE_URL 指定真实站点地址 */
+  /* 目标可能不是 443/80,也不一定是 https:环境变量 TARGET_BASE_URL 指定真实站点地址 */
   {
     const char *base = getenv("TARGET_BASE_URL");
     if (base && *base) net_set_target_base(base);

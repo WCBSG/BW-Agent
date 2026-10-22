@@ -139,6 +139,33 @@ int net_pool_count(void) {
   return n;
 }
 
+/* 从 pool.json 载入授权池。命令行、技能直跑、常驻服务都走这一个入口 ——
+   边界只有一份,不能因为"这次不是从界面点的"就松掉。 */
+int net_pool_load_file(const char *path) {
+  if (!path || !*path) return -1;
+  size_t len = 0;
+  char *text = file_read_all(path, &len);
+  if (!text) return -1;
+  json_t *root = json_parse(text);
+  free(text);
+  if (!root) return -1;
+  json_t *hosts = j_get(root, "hosts");
+  const char *list[512];
+  int n = 0;
+  for (int i = 0; i < j_len(hosts) && n < 512; i++) {
+    json_t *v = j_at(hosts, i);
+    if (!v) continue;
+    if (v->type == J_STR && v->str) list[n++] = v->str;
+    else if (v->type == J_OBJ) {
+      const char *h = j_s(v, "host", "");
+      if (h[0]) list[n++] = h;
+    }
+  }
+  net_pool_set(list, n);
+  json_free(root);
+  return n;
+}
+
 int net_pool_has(const char *host, int port, const char *path) {
   if (!host || !*host) return 0;
   return host_allowed(host, port, path);
@@ -156,7 +183,7 @@ void net_set_target_base(const char *base) {
 }
 
 /* 把 URL 的"协议+端口"换成 target base 的(仅当主机名相同)。
-   为什么需要:演示靶站跑在 http://127.0.0.1:8899,而用户/模型只会说
+   为什么需要:本地靶站跑在 http://127.0.0.1:8081 这类端口上,而用户/模型只会说
    "127.0.0.1" —— 不对齐就会去请求 443 端口,然后误判成"站点不可达"。 */
 void net_align_url(const char *url, char *out, size_t cap) {
   if (!g_target_base[0] || !url || !*url) {
@@ -418,7 +445,7 @@ void net_request(const char *url, const char *method, const char *content_type,
     resp->error = xstrdup("空 URL");
     return;
   }
-  /* 先做地址对齐(演示靶站的协议/端口),再做授权校验 */
+  /* 先做地址对齐(目标真实在哪个协议/端口),再做授权校验 */
   char aligned[2048];
   net_align_url(url, aligned, sizeof(aligned));
   url = aligned;
@@ -638,12 +665,12 @@ int net_bench(const char *url, int n, int *out_conns, int *out_requests) {
   return (int)(dt / (reqs > 0 ? reqs : 1));
 }
 
-/* ================= 模型端点专用 POST =================
+/* ================= 依赖端点的 POST(模型 / 告警投递) =================
    为什么要单独一个:恒脑要 appKey/sign 两个自定义头,net_request 的头是固定的。
-   它指向的是"我们的依赖",不是被检目标,所以不套被检目标的授权/只读限制;
+   它们指向的是"我们的依赖",不是被检目标,所以不套被检目标的授权/只读限制;
    但失败同样要留审计 —— 调用不通必须能查。 */
-void hn_http_post(const char *url, const char *app_key, const char *sign,
-                  const char *body, http_resp_t *resp) {
+static void post_json(const char *url, const char *headers, int timeout_ms,
+                      const char *body, http_resp_t *resp, const char *audit_tag) {
   memset(resp, 0, sizeof(*resp));
   long long t0 = now_ms();
   if (!g_session) net_init();
@@ -656,7 +683,7 @@ void hn_http_post(const char *url, const char *app_key, const char *sign,
 
   HINTERNET conn = WinHttpConnect(g_session, whost, port, 0);
   if (!conn) {
-    resp->error = xstrdup("连接模型服务失败");
+    resp->error = xstrdup("连接服务失败");
   } else {
     HINTERNET req = WinHttpOpenRequest(conn, L"POST", wpath, NULL,
                                        WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES,
@@ -664,19 +691,14 @@ void hn_http_post(const char *url, const char *app_key, const char *sign,
     if (!req) {
       resp->error = xstrdup("创建请求失败");
     } else {
-      DWORD timeout = 90000;   /* 模型可能要几十秒,给足 */
+      DWORD timeout = (DWORD)(timeout_ms > 0 ? timeout_ms : 20000);
       WinHttpSetOption(req, WINHTTP_OPTION_RECEIVE_TIMEOUT, &timeout, sizeof(timeout));
-
-      buf_t hdrs;
-      buf_init(&hdrs);
-      buf_printf(&hdrs, "Content-Type: application/json\r\nappKey: %s\r\nsign: %s\r\n"
-                        "ext: child_preview:0;reason:1\r\n",
-                 app_key ? app_key : "", sign ? sign : "");
-
-      BOOL ok = WinHttpSendRequest(req, u8_to_w(hdrs.data), (DWORD)-1L,
+      const wchar_t *whdrs = headers && headers[0] ? u8_to_w(headers) : NULL;
+      BOOL ok = WinHttpSendRequest(req, whdrs ? whdrs : WINHTTP_NO_ADDITIONAL_HEADERS,
+                                   whdrs ? (DWORD)-1L : 0,
                                    (LPVOID)body, (DWORD)strlen(body),
                                    (DWORD)strlen(body), 0);
-      buf_free(&hdrs);
+      if (whdrs) free((void *)whdrs);
       if (!ok) {
         buf_t e;
         buf_init(&e);
@@ -714,9 +736,32 @@ void hn_http_post(const char *url, const char *app_key, const char *sign,
     buf_init(&d);
     buf_printf(&d, "POST %d %dms%s%s", resp->status, resp->ms,
                resp->error ? " err=" : "", resp->error ? resp->error : "");
-    net_audit("llm", url, resp->error ? 0 : 1, d.data, NULL);
+    net_audit(audit_tag ? audit_tag : "post", url, resp->error ? 0 : 1, d.data, NULL);
     buf_free(&d);
   }
+}
+
+void hn_http_post(const char *url, const char *app_key, const char *sign,
+                  const char *body, http_resp_t *resp) {
+  buf_t hdrs;
+  buf_init(&hdrs);
+  buf_printf(&hdrs, "Content-Type: application/json\r\nappKey: %s\r\nsign: %s\r\n"
+                    "ext: child_preview:0;reason:1\r\n",
+             app_key ? app_key : "", sign ? sign : "");
+  post_json(url, hdrs.data, 90000, body, resp, "llm");   /* 模型可能要几十秒,给足 */
+  buf_free(&hdrs);
+}
+
+/* 告警投递:只发到使用者自己配的 webhook(rules.json 的 alerts.webhook),
+   与"巡检目标"无关,因此不参与授权池判定;带 Bearer 令牌可选。 */
+void net_webhook_post(const char *url, const char *token, const char *body,
+                      http_resp_t *resp) {
+  buf_t hdrs;
+  buf_init(&hdrs);
+  buf_puts(&hdrs, "Content-Type: application/json\r\n");
+  if (token && token[0]) buf_printf(&hdrs, "Authorization: Bearer %s\r\n", token);
+  post_json(url, hdrs.data, 15000, body, resp, "notify");
+  buf_free(&hdrs);
 }
 
 /* ================= 给工具层的取数通道 =================

@@ -384,6 +384,10 @@ static int s_report(tool_ctx_t *ctx, json_t *args, skill_result_t *out) {
   int alert_now_rank = (int)rules_number("alerts.immediate_rank", 3);
   const char *ch_now = rules_text("alerts.channel_immediate", "邮件");
   const char *ch_normal = rules_text("alerts.channel_normal", "站内");
+  /* 投递地址由使用者自己配(自己的邮件网关/IM 机器人),不配就只落盘 */
+  const char *webhook = rules_text("alerts.webhook", "");
+  const char *webhook_token = rules_text("alerts.webhook_token", "");
+  int delivered = 0;
   json_t *alerts = j_arr();
   json_t *existing_alerts = store_all(st, "alerts");
   for (int i = 0; i < j_len(findings); i++) {
@@ -417,6 +421,38 @@ static int s_report(tool_ctx_t *ctx, json_t *args, skill_result_t *out) {
     j_set_str(row, "channel", j_s(a, "channel", ""));
     j_set_str(row, "severity", j_s(a, "severity", ""));
     j_add(alerts, row);
+
+    /* 真投递:规则里配了 alerts.webhook 就把这条告警发出去。没配就只落盘
+       (界面「告警」页能看到),文案里也不许写成"已发邮件"。 */
+    if (webhook[0]) {
+      buf_t payload;
+      buf_init(&payload);
+      buf_puts(&payload, "{\"type\":\"alert\",\"task_id\":");
+      buf_json_str(&payload, ctx->task_id ? ctx->task_id : "");
+      buf_puts(&payload, ",\"id\":");
+      buf_json_str(&payload, aid);
+      buf_puts(&payload, ",\"severity\":");
+      buf_json_str(&payload, j_s(f, "severity", ""));
+      buf_puts(&payload, ",\"title\":");
+      buf_json_str(&payload, j_s(f, "title", ""));
+      buf_puts(&payload, ",\"target\":");
+      buf_json_str(&payload, j_s(f, "target", ""));
+      buf_puts(&payload, ",\"fix\":");
+      buf_json_str(&payload, j_s(f, "fix", ""));
+      buf_puts(&payload, ",\"report_id\":");
+      buf_json_str(&payload, rid);
+      buf_puts(&payload, "}");
+      http_resp_t hr;
+      net_webhook_post(webhook, webhook_token, payload.data, &hr);
+      if (!hr.error && hr.status >= 200 && hr.status < 300) {
+        delivered++;
+        j_set_bool(a, "delivered", 1);
+      } else {
+        j_set_str(a, "deliver_error", hr.error ? hr.error : "webhook 返回非 2xx");
+      }
+      http_resp_free(&hr);
+      buf_free(&payload);
+    }
     free(aid);
     json_free(a);
   }
@@ -430,6 +466,8 @@ static int s_report(tool_ctx_t *ctx, json_t *args, skill_result_t *out) {
   j_set(data, "finding_ids", json_parse(json_dump(ids)));
   j_set(data, "alerts", alerts);
   j_set_str(data, "rules_source", rules_source());
+  j_set_num(data, "delivered", delivered);
+  j_set_bool(data, "webhook_configured", webhook[0] ? 1 : 0);
   out->data = data;
 
   buf_t s;
@@ -439,7 +477,10 @@ static int s_report(tool_ctx_t *ctx, json_t *args, skill_result_t *out) {
   } else {
     buf_printf(&s, "报告已生成(%s),共 %d 条发现", rid, total);
     if (n_crit || n_high) buf_printf(&s, ",其中严重 %d 条、高危 %d 条", n_crit, n_high);
-    buf_printf(&s, ";已推送 %d 条告警(严重/高危走邮件,中危走站内)", j_len(alerts));
+    buf_printf(&s, ";已生成 %d 条告警", j_len(alerts));
+    if (delivered) buf_printf(&s, "(其中 %d 条已投递到配置的 webhook)", delivered);
+    else if (!webhook[0]) buf_puts(&s, "(严重/高危标为立即推送;配了 alerts.webhook 会自动投递)");
+    else buf_puts(&s, "(webhook 投递失败,详见告警记录里的交付状态)");
     buf_puts(&s, "。");
   }
   out->summary = buf_take(&s);

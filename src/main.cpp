@@ -1058,6 +1058,13 @@ int app_main(int argc, char **argv) {
     char host[256];
     net_host_of(target, host, sizeof(host));
     net_align_base_from(target);      /* 地址里带端口时自动对齐协议与端口 */
+    /* 授权池:技能直跑也受同一个池约束 —— 否则"界面上被拦住的路径"换个入口就能绕过去 */
+    {
+      char pool_path[MAX_PATH * 2];
+      app_data_path(pool_path, sizeof(pool_path), "pool.json");
+      int pn = net_pool_load_file(pool_path);
+      if (pn > 0) printf("授权池:%d 条(含 ! 不允许条目)\n", pn);
+    }
     const char *doms[1];
     int nd = 0;
     if (host[0]) { doms[0] = host; nd = 1; }
@@ -1123,7 +1130,7 @@ int app_main(int argc, char **argv) {
 
   if (str_ieq(cmd, "tool")) {
     /* 单工具直跑:验收与排障用 —— 不经过模型,只看这个工具对目标做了什么判断。
-       用法: agent.exe tool dir_probe 127.0.0.1:8899 */
+       用法: agent.exe tool dir_probe 127.0.0.1:8081 */
     const char *tname = (argc > 2) ? argv[2] : "sensitive_file_probe";
     const char *target = (argc > 3) ? argv[3] : "";
     int args_start = 4;
@@ -1185,28 +1192,8 @@ int app_main(int argc, char **argv) {
     {
       char pool_path[MAX_PATH * 2];
       app_data_path(pool_path, sizeof(pool_path), "pool.json");
-      size_t plen = 0;
-      char *ptext = file_read_all(pool_path, &plen);
-      if (ptext) {
-        json_t *root = json_parse(ptext);
-        if (root) {
-          json_t *hosts = j_get(root, "hosts");
-          const char *list[512];
-          int pn = 0;
-          for (int i = 0; i < j_len(hosts) && pn < 512; i++) {
-            json_t *v = j_at(hosts, i);
-            if (!v) continue;
-            if (v->type == J_STR && v->str) list[pn++] = v->str;
-            else if (v->type == J_OBJ) list[pn++] = j_s(v, "host", "");
-          }
-          if (pn > 0) {
-            net_pool_set(list, pn);
-            printf("授权池:%d 条(含 ! 不允许条目)\n", pn);
-          }
-          json_free(root);
-        }
-        free(ptext);
-      }
+      int pn = net_pool_load_file(pool_path);
+      if (pn > 0) printf("授权池:%d 条(含 ! 不允许条目)\n", pn);
     }
 
     json_t *args = args_from_argv(argc, argv, args_start, target, tname);
@@ -1325,7 +1312,7 @@ int app_main(int argc, char **argv) {
     net_set_audit_path(audit_path);
     net_set_readonly(1);
     {
-      /* 目标地址对齐:命令行第三个参数可指定靶站地址(如 http://127.0.0.1:8899) */
+      /* 目标地址对齐:命令行第三个参数可指定靶站地址(如 http://127.0.0.1:8081) */
       const char *base = getenv("TARGET_BASE_URL");
       if (base && *base) net_set_target_base(base);
     }
@@ -1477,7 +1464,7 @@ int app_main(int argc, char **argv) {
       "\n"
       "环境变量(或程序目录下的 .env):\n"
       "  DAS_APP_KEY / DAS_APP_SECRET / DAS_AGENT_ID   恒脑平台凭证与智能体\n"
-      "  TARGET_BASE_URL          巡检起点对齐到指定站点(如 http://127.0.0.1:8899)\n"
+      "  TARGET_BASE_URL          巡检起点对齐到指定站点(如 http://127.0.0.1:8081)\n"
       "  UI_MODE                  界面形态: auto(默认) / app / browser / off\n"
       "  BW_AGENT_DEBUG=1         等同于 --debug\n"
       "  BW_AGENT_HOME            改数据目录(默认 C:\\Users\\<用户名>\\.bw_agent)\n");

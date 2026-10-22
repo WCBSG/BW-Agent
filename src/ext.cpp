@@ -238,6 +238,13 @@ static int run_capture(const char *cmdline, const char *workdir, int timeout_ms,
   return timed_out ? -2 : 0;
 }
 
+/* 对外暴露"跑一条命令收输出"的能力:外部工具、技能包与内置的开源工具编排共用同一套
+   进程/管道实现,免得两处超时与回收逻辑各写一遍。 */
+int ext_run_capture(const char *cmdline, const char *workdir, int timeout_ms,
+                    char **out_text, int *out_exit) {
+  return run_capture(cmdline, workdir, timeout_ms, out_text, out_exit);
+}
+
 /* ---------- 参数替换:$name / ${name} ---------- */
 static void expand_cmd(buf_t *out, const char *tmpl, json_t *args) {
   for (const char *p = tmpl; *p; p++) {
@@ -971,11 +978,28 @@ static void write_skill_md(const char *file, skill_t *sk) {
   buf_free(&b);
 }
 
+/* 内置技能改过名/被删掉时,数据目录里那份旧说明会作为"外部技能"继续被载入 ——
+   使用者看到的就是一个早就没有实现的技能。这里按名字清掉这些过时的导出文件。 */
+static void drop_deprecated_skills(const char *dir) {
+  static const char *GONE[] = {"skill_evaluate", NULL};   /* → skill_evidence */
+  for (int i = 0; GONE[i]; i++) {
+    char file[MAX_PATH * 2];
+    snprintf(file, sizeof(file), "%s\\%s.md", dir, GONE[i]);
+    if (file_size(file) < 0) continue;
+    wchar_t *w = u8_to_w(file);
+    if (w) {
+      DeleteFileW(w);
+      free(w);
+    }
+  }
+}
+
 /* 导出内置技能说明(已存在的文件不覆盖 —— 使用者改过的内容不能被程序冲掉) */
 static int export_builtin_skills(void) {
   char dir[MAX_PATH * 2];
   ext_dir(dir, sizeof(dir), "skills");
   ensure_dir(dir);
+  drop_deprecated_skills(dir);
   int written = 0;
   int total = skills_count();
   for (int i = 0; i < total; i++) {

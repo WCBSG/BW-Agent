@@ -11,6 +11,7 @@
 #include "regex.h"
 #include "profile.h"
 
+#include "ext.h"
 #include "net.h"
 #include "rules.h"
 #include "store.h"
@@ -86,20 +87,22 @@ static tool_t g_registry[] = {
      "内置", "", t_page_diff},
 
     {"nuclei_scan",
-     "安全配置检查:安全响应头、Cookie 安全属性、版本信息泄露、错误回显、"
-     "允许的 HTTP 方法、目录索引、混合内容。结论全部来自响应头与正文的客观事实。",
+     "安全配置与漏洞模板检查:安全响应头、Cookie 安全属性、版本信息泄露、错误回显、"
+     "允许的 HTTP 方法、目录索引、混合内容;本机装了 nuclei 时还会自动调它跑一轮"
+     "信息收集/弱配置类模板并归并结果。非破坏性,不做爆破、不做带外探测。",
      "{\"type\":\"object\",\"properties\":{\"target\":{\"type\":\"string\"},"
      "\"templates\":{\"type\":\"string\"}},"
      "\"required\":[\"target\"],\"additionalProperties\":false}",
-     "开源工具", "https://github.com/projectdiscovery/nuclei", t_nuclei_scan},
+     "内置 · 可选调 nuclei", "https://github.com/projectdiscovery/nuclei", t_nuclei_scan},
 
     {"sqli_probe",
      "对带参数的地址做注入验证:对每个参数分别发恒真与恒假条件比对响应差异,"
-     "并单独验证错误回显特征;只确认是否存在注入,不取数据、不修改数据。",
+     "并单独验证错误回显特征;只确认是否存在注入,不取数据、不修改数据。"
+     "判定思路参照 sqlmap 的布尔盲注比对,实现是自研的只读版本。",
      "{\"type\":\"object\",\"properties\":{\"target\":{\"type\":\"string\"},"
      "\"param\":{\"type\":\"string\",\"description\":\"只测这个参数(不传则测地址里的参数)\"}},"
      "\"required\":[\"target\"],\"additionalProperties\":false}",
-     "开源工具", "https://github.com/sqlmapproject/sqlmap", t_sqli_probe},
+     "内置(思路参照 sqlmap)", "https://github.com/sqlmapproject/sqlmap", t_sqli_probe},
 };
 
 void tools_init(void) {
@@ -531,9 +534,146 @@ static const char *classify_kind(const char *url) {
   return "页面";
 }
 
+/* ---- URL 处理:爬虫要会跟相对链接,而且要守住"本次巡检范围"这个子路径 ---- */
+
+/* 取 URL 的路径+查询(到主机名之后为止) */
+static void url_path_query(const char *url, char *out, size_t cap) {
+  const char *p = strstr(url, "://");
+  p = p ? strchr(p + 3, '/') : strchr(url, '/');
+  snprintf(out, cap, "%s", p && p[0] ? p : "/");
+}
+
+/* 取"协议://主机[:端口]" */
+static void url_origin(const char *url, char *out, size_t cap) {
+  const char *scheme = strstr(url, "://");
+  const char *hoststart = scheme ? scheme + 3 : url;
+  size_t n = (size_t)(hoststart - url) + strcspn(hoststart, "/?#");
+  if (n >= cap) n = cap - 1;
+  memcpy(out, url, n);
+  out[n] = 0;
+}
+
+/* 归一化路径:折叠 ./ ../ 与重复的 /(不处理查询串) */
+static void path_normalize(const char *in, char *out, size_t cap) {
+  char tmp[2048];
+  snprintf(tmp, sizeof(tmp), "%s", in && in[0] ? in : "/");
+  char *q = strpbrk(tmp, "?#");
+  if (q) *q = 0;
+  int want_dir = tmp[0] && tmp[strlen(tmp) - 1] == '/';
+  const char *seg[128];
+  int n = 0;
+  for (char *s = tmp; *s;) {
+    while (*s == '/') s++;
+    if (!*s) break;
+    char *e = s + strcspn(s, "/");
+    char save = *e;
+    *e = 0;
+    if (strcmp(s, ".") == 0) {
+      /* 当前目录,丢掉 */
+    } else if (strcmp(s, "..") == 0) {
+      if (n > 0) n--;
+    } else if (n < 128) {
+      seg[n++] = s;
+    }
+    if (!save) break;
+    s = e + 1;
+  }
+  buf_t b;
+  buf_init(&b);
+  for (int i = 0; i < n; i++) {
+    buf_putc_(&b, '/');
+    buf_puts(&b, seg[i]);
+  }
+  if (n == 0) buf_putc_(&b, '/');
+  else if (want_dir) buf_putc_(&b, '/');
+  snprintf(out, cap, "%s", b.data ? b.data : "/");
+  buf_free(&b);
+}
+
+/* 把链接解析成绝对 URL(按 base_url 所在目录)。解析不了就返回空串。 */
+static void url_resolve(const char *base_url, const char *link, char *out, size_t cap) {
+  out[0] = 0;
+  if (!link || !*link) return;
+  char origin[512];
+  url_origin(base_url, origin, sizeof(origin));
+  if (str_startswith(link, "http://") || str_startswith(link, "https://")) {
+    snprintf(out, cap, "%s", link);
+    return;
+  }
+  if (str_startswith(link, "//")) {
+    const char *scheme_end = strstr(base_url, "://");
+    snprintf(out, cap, "%.*s%s", (int)(scheme_end ? scheme_end - base_url : 0), base_url, link);
+    return;
+  }
+  if (link[0] == '#') {                      /* 纯锚点:同一页,不必再取一遍 */
+    return;
+  }
+  if (link[0] == '?') {
+    char bq[2048];
+    url_path_query(base_url, bq, sizeof(bq));
+    char *q = strpbrk(bq, "?#");
+    if (q) *q = 0;
+    snprintf(out, cap, "%s%s%s", origin, bq, link);
+    return;
+  }
+  char base_path[2048];
+  url_path_query(base_url, base_path, sizeof(base_path));
+  char *q = strpbrk(base_path, "?#");
+  if (q) *q = 0;
+  char joined[2048];
+  if (link[0] == '/') {
+    snprintf(joined, sizeof(joined), "%s", link);
+  } else {
+    /* 相对链接的基准是"当前页面的目录":/l1/index.html + news.html = /l1/news.html */
+    char *slash = strrchr(base_path, '/');
+    size_t dlen = slash ? (size_t)(slash - base_path) + 1 : 1;
+    if (dlen >= sizeof(joined)) dlen = sizeof(joined) - 1;
+    memcpy(joined, base_path, dlen);
+    joined[dlen] = 0;
+    snprintf(joined + dlen, sizeof(joined) - dlen, "%s", link);
+  }
+  char norm[2048];
+  path_normalize(joined, norm, sizeof(norm));
+  snprintf(out, cap, "%s%s", origin, norm);
+}
+
+/* 目标路径是否落在本次巡检范围内(按"段"比较,/l1 不误伤 /l10) */
+static int path_in_scope(const char *path, const char *scope) {
+  if (!scope || !scope[0] || strcmp(scope, "/") == 0) return 1;
+  size_t pl = strlen(scope), ql = path ? strlen(path) : 0;
+  if (ql < pl) return 0;
+  if (strncmp(path, scope, pl) != 0) return 0;
+  if (scope[pl - 1] == '/') return 1;
+  return path[pl] == 0 || path[pl] == '/' || path[pl] == '?';
+}
+
 static int t_site_crawl(tool_ctx_t *ctx, json_t *args, tool_result_t *out) {
   char target[1024] = {0};
   normalize_target(j_s(args, "target", ""), target, sizeof(target));
+  /* 目标里给了子路径(如 http://host/l1)时:
+     ① 补成目录形式 /l1/ —— 否则相对链接会按"上层的文件"解析,全跟丢;
+     ② 记下这个子路径作为本次巡检范围,不往范围外爬(越界请求会被取数通道拒掉,
+        但爬虫本来就不该主动去踩)。 */
+  char scope[1024] = "/";
+  {
+    char pq[2048];
+    url_path_query(target, pq, sizeof(pq));
+    char *q = strpbrk(pq, "?#");
+    if (q) *q = 0;
+    if (pq[0] && strcmp(pq, "/") != 0) {
+      size_t n = strlen(target);
+      if (target[n - 1] != '/') {
+        const char *last = strrchr(pq, '/');
+        const char *segname = last ? last + 1 : pq;
+        if (!strchr(segname, '.')) snprintf(target + n, sizeof(target) - n, "/");
+      }
+      char p2[2048];
+      url_path_query(target, p2, sizeof(p2));
+      q = strpbrk(p2, "?#");
+      if (q) *q = 0;
+      snprintf(scope, sizeof(scope), "%s", p2);
+    }
+  }
   int max_depth = (int)j_n(args, "max_depth", 1);
   int max_pages = (int)j_n(args, "max_pages", 12);
   if (max_depth < 0) max_depth = 0;
@@ -585,35 +725,19 @@ static int t_site_crawl(tool_ctx_t *ctx, json_t *args, tool_result_t *out) {
       extract_links(body, links);
       char host[256];
       net_host_of(cur.url, host, sizeof(host));
-      /* 相对链接必须按"当前页面的协议+主机+端口"补全 ——
-         写死 https://主机 会把 http 站点、非 80 端口的站点全部跟丢
-         (看起来"6 个地址都连不上",其实是爬虫自己拼错了地址)。 */
-      char base_origin[512];
-      snprintf(base_origin, sizeof(base_origin), "%s", cur.url);
-      char *bo_slash = strstr(base_origin, "://");
-      if (bo_slash) {
-        char *p = bo_slash + 3 + strcspn(bo_slash + 3, "/?#");
-        *p = 0;                                  /* 只留 协议://主机[:端口] */
-      }
       for (int i = 0; i < j_len(links); i++) {
         const char *link = j_at(links, i)->str;
         char abs[2048];
-        if (str_startswith(link, "http://") || str_startswith(link, "https://")) {
-          snprintf(abs, sizeof(abs), "%s", link);
-        } else if (str_startswith(link, "//")) {
-          const char *scheme = strstr(base_origin, "://");
-          snprintf(abs, sizeof(abs), "%.*s%s", (int)(scheme ? scheme - base_origin : 0),
-                   base_origin, link);
-        } else if (link[0] == '/') {
-          snprintf(abs, sizeof(abs), "%s%s", base_origin, link);
-        } else if (link[0] == '?' || link[0] == '#') {
-          snprintf(abs, sizeof(abs), "%s%s", cur.url, link);     /* 同页参数 */
-        } else {
-          continue;                       /* 目录相对路径先不展开,避免过度爬取 */
-        }
+        /* 相对链接按"当前页面所在目录"补全:写死 https://主机 会把 http 站点、
+           非 80 端口的站点全部跟丢,不展开相对路径又会只剩首页一个资产。 */
+        url_resolve(cur.url, link, abs, sizeof(abs));
+        if (!abs[0]) continue;
         char lh[256];
         net_host_of(abs, lh, sizeof(lh));
-        if (!str_ieq(lh, host)) continue;  /* 只跟同域 */
+        if (!str_ieq(lh, host)) continue;       /* 只跟同域 */
+        char lpq[2048];
+        url_path_query(abs, lpq, sizeof(lpq));
+        if (!path_in_scope(lpq, scope)) continue;   /* 不往巡检范围外爬 */
         if (qtail < qcap) {
           queue[qtail].url = xstrdup(abs);
           queue[qtail].depth = cur.depth + 1;
@@ -717,18 +841,25 @@ static void fetch_free2(fetch_t *f) {
 /* 站点根(协议 + 主机 + 端口):路径探测必须以它为基准。
    注意:模型可能只给"example.com"这种写法,所以先补协议再取根 —— 直接拿裸域名去
    请求会得到一个不明不白的失败,那不是站点的问题,是我们没把地址准备好。 */
+/* 探测根:协议+主机+端口,再加"目标里给出的子路径"。
+   子路径不能丢 —— 靶场每关挂在 /l1 … /l6 下,丢了路径就变成从首页开始探测,
+   既不属于授权范围,也检不到关卡里的东西。 */
 static void probe_root(const char *url, char *out, size_t cap) {
   const char *p = url ? url : "";
-  if (!strstr(p, "://")) {
-    snprintf(out, cap, "https://%s", p);
-    char *slash = strpbrk(out + 8, "/?#");
-    if (slash) *slash = 0;                     /* 只留协议+主机,路径交给调用方 */
+  const char *scheme = strstr(p, "://");
+  const char *hoststart = scheme ? scheme + 3 : p;
+  const char *end = hoststart + strcspn(hoststart, "/?#");
+  size_t path_len = 0;
+  if (*end == '/') {
+    while (end[path_len] && end[path_len] != '?' && end[path_len] != '#') path_len++;
+    while (path_len > 0 && end[path_len - 1] == '/') path_len--;
+  }
+  if (!scheme) {
+    int n = snprintf(out, cap, "https://%.*s%.*s", (int)(end - p), p, (int)path_len, end);
+    if (n < 0) out[0] = 0;
     return;
   }
-  const char *scheme = strstr(p, "://");
-  const char *hoststart = scheme + 3;
-  const char *end = hoststart + strcspn(hoststart, "/?#");
-  size_t n = (size_t)(end - p);
+  size_t n = (size_t)(end - p) + path_len;
   if (n >= cap) n = cap - 1;
   memcpy(out, p, n);
   out[n] = 0;
@@ -882,7 +1013,7 @@ static int t_sensitive_file_probe(tool_ctx_t *ctx, json_t *args, tool_result_t *
 
   json_t *hits = j_arr();
   json_t *pending = j_arr();        /* 有内容但没匹配到已知特征:如实列成"待确认" */
-  int tested = 0, unreachable = 0, suppressed = 0, blocked = 0;
+  int tested = 0, unreachable = 0, suppressed = 0, blocked = 0, out_of_scope = 0;
 
   for (int i = 0; i < j_len(paths); i++) {
     const char *path = j_at(paths, i)->str;
@@ -891,7 +1022,13 @@ static int t_sensitive_file_probe(tool_ctx_t *ctx, json_t *args, tool_result_t *
     fetch_t f;
     t_fetch(ctx, url, &f);
     tested++;
-    if (f.err && !f.status) { unreachable++; fetch_free2(&f); continue; }
+    if (f.err && !f.status) {
+      /* 被授权池拦下 ≠ 站点连不上:前者是合规闸门生效,必须如实区分 */
+      if (strstr(f.err, "授权")) out_of_scope++;
+      unreachable++;
+      fetch_free2(&f);
+      continue;
+    }
     if (f.status == 401 || f.status == 403) { blocked++; fetch_free2(&f); continue; }
     if (f.status != 200 && f.status != 206) { fetch_free2(&f); continue; }
     if (calib_matches(&calib, f.status, f.body)) {
@@ -948,6 +1085,7 @@ static int t_sensitive_file_probe(tool_ctx_t *ctx, json_t *args, tool_result_t *
   j_set_str(data, "target", root);
   j_set_num(data, "tested", tested);
   j_set_num(data, "unreachable", unreachable);
+  j_set_num(data, "out_of_scope", out_of_scope);
   j_set_num(data, "suppressed_as_default_page", suppressed);
   j_set_num(data, "blocked_401_403", blocked);
   j_set_bool(data, "calibrated", calib.valid);
@@ -972,7 +1110,12 @@ static int t_sensitive_file_probe(tool_ctx_t *ctx, json_t *args, tool_result_t *
 
   buf_t s;
   buf_init(&s);
-  if (tested > 0 && unreachable == tested) {
+  if (tested > 0 && out_of_scope == tested) {
+    buf_printf(&s, "%s 不在授权池内:%d 个请求全部被合规通道拦下(一个包都没发出去)。"
+                   "这不是站点故障,也不产生任何结论 —— 要查它,先把主机加进授权池。",
+               root, tested);
+    out->is_error = 1;
+  } else if (tested > 0 && unreachable == tested) {
     buf_printf(&s, "这次没法给结论:%s 的 %d 个落点全部请求失败。"
                    "我没把「连不上」当成「没问题」,请确认站点可达后我再来一次。",
                root, tested);
@@ -1305,7 +1448,149 @@ static int t_page_diff(tool_ctx_t *ctx, json_t *args, tool_result_t *out) {
   return 0;
 }
 
-/* ---- 7. 弱配置与漏洞模板探测(全部结论都来自响应头/正文的客观事实) ---- */
+/* ---- 7. 弱配置 + 漏洞模板(内置检查为底,本机装了 nuclei 就叠加它) ----
+ *
+ * "调用并编排合规的开源工具"这条如果只写在文档里是空的,所以这里真去调 nuclei:
+ *   找 nuclei.exe(exe 同目录 → 数据目录 tools\ → 数据目录 bin\ → PATH)
+ *   → 用它跑一轮收窄过的模板 → 把命中并进同一份检查清单 → 交给技能层统一成案。
+ *
+ * 参数是刻意收窄的,让"编排开源工具"与"非破坏性"同时成立:
+ *   -c 1 -rl 2          单并发、2 请求/秒(与内置通道同一档限速)
+ *   -tags exposure,misconfig,tech   只跑信息收集与弱配置类模板
+ *   -etags intrusive,dos,fuzz,brute-force,headless  排除会改动/压垮目标的那几类
+ *   -ni                 关掉 interactsh(不做带外回连,避免把第三方牵进来)
+ *   -duc                不在巡检时联网更新模板(不额外往外发包)
+ * 找不到 nuclei 或模板没装时,如实说明"这次只有内置检查",不假装跑过。
+ */
+static int find_nuclei(char *out, size_t cap) {
+  out[0] = 0;
+  char p[MAX_PATH * 2];
+  const char *dirs[3] = {app_dir(), NULL, NULL};
+  char tools_dir[MAX_PATH * 2];
+  char bin_dir[MAX_PATH * 2];
+  path_join(tools_dir, sizeof(tools_dir), app_data_dir(), "tools");
+  path_join(bin_dir, sizeof(bin_dir), app_data_dir(), "bin");
+  dirs[1] = tools_dir;
+  dirs[2] = bin_dir;
+  for (int i = 0; i < 3; i++) {
+    if (!dirs[i] || !dirs[i][0]) continue;
+    if (path_join(p, sizeof(p), dirs[i], "nuclei.exe") != 0) continue;
+    if (file_size(p) >= 0) {
+      snprintf(out, cap, "%s", p);
+      return 1;
+    }
+  }
+  /* 最后看 PATH:直接问系统要,比自己拆 PATH 靠谱 */
+  wchar_t found[MAX_PATH * 2];
+  DWORD n = SearchPathW(NULL, L"nuclei.exe", NULL, MAX_PATH * 2, found, NULL);
+  if (n > 0 && n < MAX_PATH * 2) {
+    char *u = w_to_u8(found);
+    if (u && u[0]) {
+      snprintf(out, cap, "%s", u);
+      free(u);
+      return 1;
+    }
+    if (u) free(u);
+  }
+  return 0;
+}
+
+/* nuclei 的等级 → 我们用的中文等级(与发现分级同一套词,别出现两套) */
+static const char *nuclei_severity_cn(const char *in) {
+  if (!in) return "低";
+  if (str_ieq(in, "critical")) return "严重";
+  if (str_ieq(in, "high")) return "高";
+  if (str_ieq(in, "medium")) return "中";
+  if (str_ieq(in, "low")) return "低";
+  return "信息";
+}
+
+/* 跑 nuclei 并把命中并入 checks;返回命中条数。没装则返回 -1。 */
+static int nuclei_merge(const char *target, json_t *checks, int *timed_out) {
+  if (timed_out) *timed_out = 0;
+  char exe[MAX_PATH * 2];
+  if (!find_nuclei(exe, sizeof(exe))) return -1;
+
+  buf_t cmd;
+  buf_init(&cmd);
+  buf_printf(&cmd,
+             "\"%s\" -u \"%s\" -jsonl -silent -nc -duc -ni -c 1 -rl 2 -timeout 8 -retries 1 "
+             "-severity low,medium,high,critical -tags exposure,misconfig,tech "
+             "-etags intrusive,dos,fuzz,brute-force,headless -stats=false",
+             exe, target);
+
+  char *out_text = NULL;
+  int code = -1;
+  int rc = ext_run_capture(cmd.data, NULL, 60000, &out_text, &code);
+  buf_free(&cmd);
+  if (timed_out && rc == -2) *timed_out = 1;
+
+  int hits = 0;
+  if (out_text) {
+    char **lines = NULL;
+    int n = str_split(out_text, '\n', &lines, 0);
+    for (int i = 0; i < n && hits < 40; i++) {
+      char *line = str_trim(lines[i]);
+      if (!line[0] || line[0] != '{') continue;
+      json_t *o = json_parse(line);
+      if (!o) continue;
+      const char *tid = j_s(o, "template-id", "");
+      json_t *info = j_get(o, "info");
+      const char *name = info ? j_s(info, "name", tid) : tid;
+      if (!tid[0] && !name[0]) { json_free(o); continue; }
+
+      /* 同一模板打到同一地址只留一条 —— nuclei 会因为多个 matcher 重复报 */
+      int dup = 0;
+      for (int k = 0; k < j_len(checks); k++) {
+        if (str_ieq(j_s(j_at(checks, k), "id", ""), name)) { dup = 1; break; }
+      }
+      if (dup) { json_free(o); continue; }
+
+      const char *matched = j_s(o, "matched-at", target);
+      const char *matcher = j_s(o, "matcher-name", "");
+      buf_t ev;
+      buf_init(&ev);
+      buf_printf(&ev, "%s", matched);
+      if (matcher[0]) buf_printf(&ev, " · 匹配 %s", matcher);
+
+      const char *desc = info ? j_s(info, "description", "") : "";
+      const char *rem = info ? j_s(info, "remediation", "") : "";
+      buf_t impact;
+      buf_init(&impact);
+      if (desc[0]) {
+        buf_puts(&impact, desc);                 /* 模板作者写的影响说明,原样转述 */
+        if (impact.len > 240) { impact.data[240] = 0; impact.len = 240; }
+      } else {
+        buf_puts(&impact, "该模板命中说明目标存在对应组件的已知问题或暴露面");
+      }
+      buf_t fix;
+      buf_init(&fix);
+      if (rem[0]) buf_puts(&fix, rem);
+      else buf_printf(&fix, "按模板 %s 的说明升级/收敛暴露面后复测", tid);
+
+      json_t *c = j_obj();
+      j_set_str(c, "id", name);
+      j_set_str(c, "title", name);
+      j_set_str(c, "severity", nuclei_severity_cn(info ? j_s(info, "severity", "") : ""));
+      j_set_str(c, "evidence", ev.data);
+      j_set_str(c, "impact", impact.data);
+      j_set_str(c, "fix", fix.data);
+      j_set_str(c, "from", "nuclei");
+      j_set_str(c, "template", tid);
+      j_add(checks, c);
+      buf_free(&ev);
+      buf_free(&impact);
+      buf_free(&fix);
+      json_free(o);
+      hits++;
+    }
+    str_free_list(lines, n);
+    free(out_text);
+  }
+  (void)code;
+  return hits;
+}
+
 static int t_nuclei_scan(tool_ctx_t *ctx, json_t *args, tool_result_t *out) {
   char target_buf[1024];
   normalize_target(j_s(args, "target", ""), target_buf, sizeof(target_buf));
@@ -1529,10 +1814,24 @@ static int t_nuclei_scan(tool_ctx_t *ctx, json_t *args, tool_result_t *out) {
     j_add(checks, c);
   }
 
+  /* 内置检查做完,再叠一层开源工具:nuclei 装了就跑,没装就只报内置结果 */
+  int nuclei_timeout = 0;
+  int nuclei_hits = nuclei_merge(target, checks, &nuclei_timeout);
+
   json_t *data = j_obj();
   j_set_str(data, "target", target);
   j_set_num(data, "status_code", f.status);
-  j_set_str(data, "engine", "内置非破坏性模板");
+  j_set_str(data, "engine", nuclei_hits >= 0 ? "内置非破坏性模板 + nuclei 模板"
+                                             : "内置非破坏性模板");
+  j_set_num(data, "nuclei_hits", nuclei_hits < 0 ? 0 : nuclei_hits);
+  j_set_bool(data, "nuclei_used", nuclei_hits >= 0 ? 1 : 0);
+  if (nuclei_hits < 0) {
+    j_set_str(data, "nuclei_note",
+              "本机没找到 nuclei.exe;把 nuclei.exe 放到程序同目录或数据目录的 tools\\ 下,"
+              "下次巡检就会自动调用它并归并结果。本次结论只来自内置检查。");
+  } else if (nuclei_timeout) {
+    j_set_str(data, "nuclei_note", "nuclei 在 60 秒内没跑完,已中止;本次只有已产出的命中。");
+  }
   j_set_bool(data, "headers_available", web_headers_available(f.headers) ? 1 : 0);
   j_set(data, "checks", checks);
   j_set(data, "missing_headers", missing);
@@ -1544,6 +1843,7 @@ static int t_nuclei_scan(tool_ctx_t *ctx, json_t *args, tool_result_t *out) {
   buf_init(&t);
   buf_printf(&t, "弱配置与漏洞模板探测 %s → HTTP %d%s;共 %d 项需要关注。",
              target, f.status, web_headers_available(f.headers) ? "" : "(本次未取到响应头)", j_len(checks));
+  if (nuclei_hits > 0) buf_printf(&t, "(其中 %d 项来自 nuclei 模板)", nuclei_hits);
   for (int i = 0; i < j_len(checks); i++) {
     buf_printf(&t, "\n- [%s] %s —— %s", j_s(j_at(checks, i), "severity", ""),
                j_s(j_at(checks, i), "title", ""), j_s(j_at(checks, i), "evidence", ""));
@@ -1565,7 +1865,9 @@ static int t_nuclei_scan(tool_ctx_t *ctx, json_t *args, tool_result_t *out) {
       if (strcmp(sev, "严重") == 0 || strcmp(sev, "高") == 0) crit++;
     }
     buf_printf(&s, "配置检查完成:%s 共发现 %d 项需要关注", target, j_len(checks));
-    if (crit) buf_printf(&s, "(其中 %d 项为高及以上)", crit);
+    if (crit) buf_printf(&s, "(其中 %d 项为高及以上", crit);
+    if (crit && nuclei_hits > 0) buf_printf(&s, ",含 nuclei 模板命中 %d 项", nuclei_hits);
+    if (crit) buf_puts(&s, ")");
     buf_puts(&s, ",详见结果卡片。");
   }
   out->say = buf_take(&s);

@@ -28,6 +28,8 @@ void net_set_scope(const char *task_id, const char **domains, int count);
 /* 授权池:允许访问的主机白名单(条目可写 host 或 host:port)。
    池子非空时它是唯一边界 —— "这一轮看哪个站"只是焦点,不是边界。 */
 void net_pool_set(const char **entries, int count);
+/* 从 pool.json 读授权池(返回条目数,读不到返回 -1) */
+int net_pool_load_file(const char *path);
 int  net_pool_count(void);
 /* path 传 URL 的路径(可传 "/")。条目里可写 !host 或 !host/path 表示"不允许",
    不允许优先于允许 —— 用来表达"允许 exp.com,但除了 exp.com/admin/"。 */
@@ -37,7 +39,7 @@ int  net_scope_violation(void);
 void net_scope_violation_clear(void);
 void net_set_audit_path(const char *path);
 void net_set_rate_limit(double qps);
-/* 目标地址对齐:演示/评测时把巡检起点指向本地靶站(如 http://127.0.0.1:8899)。
+/* 目标地址对齐:把巡检起点指向本地靶站(如 http://127.0.0.1:8081)或非默认端口的站点。
    只改"协议+端口",主机名不变 —— 授权校验只认域名,不受影响。
    不设置时该功能完全不生效(生产环境就是 https://<授权域名>)。 */
 void net_set_target_base(const char *base);
@@ -66,6 +68,10 @@ int  net_bench(const char *url, int n, int *out_conns, int *out_requests);
 /* 模型端点专用 POST:带 appKey/sign 自定义头(见 net.c 说明) */
 void hn_http_post(const char *url, const char *app_key, const char *sign,
                   const char *body, http_resp_t *resp);
+
+/* 告警投递:POST JSON 到使用者配的 webhook(可选 Bearer 令牌) */
+void net_webhook_post(const char *url, const char *token, const char *body,
+                      http_resp_t *resp);
 
 /* 兼容 tools.h 的取数回调形状 */
 void *net_io(void);

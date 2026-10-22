@@ -39,4 +39,9 @@ const char *ext_dir(char *out, size_t cap, const char *child);
 /* 首次运行:建立 tools\ skills\ 目录与示例、mcp.json 示例 */
 void ext_bootstrap(void);
 
+/* 跑一条外部命令并把 stdout+stderr 收回来(与外部工具用的是同一套进程/管道实现)。
+   成功返回 0,超时 -2,起不来 -1;out_text 用 free 释放。给"编排开源工具"用。 */
+int  ext_run_capture(const char *cmdline, const char *workdir, int timeout_ms,
+                     char **out_text, int *out_exit);
+
 #endif /* AGENT_EXT_H */
