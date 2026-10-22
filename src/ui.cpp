@@ -249,7 +249,6 @@ static int launch_shell(int port) {
 static DWORD WINAPI open_thread(LPVOID param) {
   int port = (int)(INT_PTR)param;
   const char *force = getenv("UI_MODE");
-  int want_app = force && str_ieq(force, "app");
   int want_browser = force && str_ieq(force, "browser");
   /* UI_MODE=off/none:只起服务不开窗口(定时任务、无人值守、自动化测试用) */
   if (force && (str_ieq(force, "off") || str_ieq(force, "none"))) {

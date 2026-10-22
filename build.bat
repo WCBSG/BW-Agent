@@ -70,7 +70,7 @@ echo.
     -DAGENT_GUI_BUILD -mwindows -static -s ^
     -I src ^
     -o build\agent.exe !SRC! !EXTRA! ^
-    -lws2_32 -lwinhttp -lbcrypt -lcrypt32 -lole32 -loleaut32 -luuid -luser32 -lgdi32 -lshell32 -ladvapi32
+    -lws2_32 -lwinhttp -lbcrypt -lcrypt32 -lole32 -loleaut32 -luuid -luser32 -lgdi32 -lgdiplus -lshell32 -ladvapi32
 
 if errorlevel 1 (
     echo.

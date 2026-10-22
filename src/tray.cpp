@@ -15,6 +15,7 @@
 
 #include "common.h"
 #include "http.h"
+#include "native_ui.h"
 #include "ui.h"
 
 #define TRAY_WM   (WM_APP + 7)
@@ -29,8 +30,10 @@ static HICON g_icon = NULL;
 static volatile LONG g_ready = 0;
 
 static void reopen_ui(void) {
-  if (g_port <= 0) return;
-  ui_open_url_async(g_port);
+  /* 原生窗口在自己进程里:直接叫回前台;
+     网页形态只能重新拉起一个应用窗口。 */
+  if (native_ui_active()) { native_ui_show(); return; }
+  if (g_port > 0) ui_open_url_async(g_port);
 }
 
 /* 右键菜单:打开界面 / 彻底退出。只有两项 —— 托盘菜单越短越不容易点错。 */

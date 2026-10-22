@@ -26,6 +26,7 @@
 #include "ext.h"
 #include "http.h"
 #include "llm.h"
+#include "native_ui.h"
 #include "net.h"
 #include "profile.h"
 #include "res.h"
@@ -2853,14 +2854,23 @@ int serve_run(const char *domain, int port, int open_ui) {
     /* 先挂托盘,再开窗口 —— 顺序反了的话,窗口一关就找不到"留在托盘"这条路,
        程序会当场退出(托盘还没建好)。 */
     tray_start(port, "网站安全巡检智能体");
-    /* 界面用系统浏览器的 --app 窗口打开:零额外依赖,观感也够用。 */
-    ui_open_url_async(port);
+    /* UI_MODE=native:本进程内的原生窗口(正在逐块搭建,尚未到达功能对等)。
+       默认仍开系统的 --app 应用窗口,保证任何时候都有一个能用的界面。 */
+    const char *ui_mode = getenv("UI_MODE");
+    int want_native = ui_mode && str_ieq(ui_mode, "native");
+    int native_ok = 0;
+    if (want_native) {
+      native_ok = (native_ui_start(port, "网站安全巡检") == 0);
+      if (!native_ok) log_warn("原生窗口起不来,回退到 --app 应用窗口");
+    }
+    if (!native_ok) ui_open_url_async(port);
   }
 
   int serve_rc = http_serve(NULL, port, router, NULL);
 
   sched_stop();
   printf("服务已停止。\n");
+  native_ui_stop();
   ui_close();
   tray_stop();
   int port_busy = (serve_rc != 0) && str_icontains(http_last_error(), "占用");
