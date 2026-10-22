@@ -85,6 +85,12 @@ void api_caps(const http_req_t *req, http_res_t *res) {
             "字段:name(小写字母数字下划线,动词_名词)、description(一句话说明它做什么、什么时候用)、\n"
             "command(要执行的命令行,参数用 $参数名 占位)、schema(JSON Schema 对象,描述参数)、\n"
             "timeout_ms(整数,默认 20000)。\n用户需求:");
+      } else if (str_ieq(kind, "mcp")) {
+        buf_puts(&prompt,
+            "你在写一条 Model Context Protocol(MCP)服务器配置,会被放进 mcp.json 的 mcpServers 里。\n"
+            "只输出一个 JSON 对象,不要解释、不要代码块。字段:name(服务器名,小写字母数字连字符)、\n"
+            "command(可执行程序,如 npx / uvx / python)、args(字符串数组)、env(可选,字符串到字符串的对象)。\n"
+            "只写标准 MCP 服务器的启动方式,不要编造不存在的包。\n用户需求:");
       } else {
         buf_puts(&prompt,
             "你在为一个网站安全巡检智能体写「技能」的定义。只输出一个 JSON 对象,不要解释、不要代码块。\n"
@@ -121,6 +127,14 @@ void api_caps(const http_req_t *req, http_res_t *res) {
           j_set_str(t, "command", "powershell -NoProfile -Command \"$u='$target'; ...\"");
           j_set_str(t, "schema", "{\"type\":\"object\",\"properties\":{\"target\":{\"type\":\"string\"}},\"required\":[\"target\"]}");
           j_set_num(t, "timeout_ms", 20000);
+        } else if (str_ieq(kind, "mcp")) {
+          j_set_str(t, "name", "my-mcp");
+          j_set_str(t, "command", "npx");
+          json_t *args = j_arr();
+          j_add(args, j_str("-y"));
+          j_add(args, j_str("@modelcontextprotocol/server-filesystem"));
+          j_add(args, j_str("C:\\data"));
+          j_set(t, "args", args);
         } else {
           j_set_str(t, "name", "skill_my_check");
           j_set_str(t, "title", "自定义检查");
