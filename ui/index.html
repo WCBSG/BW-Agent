@@ -119,7 +119,6 @@
       <span class="path">任务 /</span>
       <h1 id="task-title">巡检会话</h1>
       <div class="head-right">
-        <select class="target-select policy-select" id="approval-select" title="工具调用的审批策略"></select>
         <span class="chip" id="work-scope" title="边界是授权池；具体看哪个站由你在指令里说">目标由指令决定</span>
         <span class="chip" id="work-model">离线规则</span>
         <button class="ghost" id="btn-refresh" title="刷新数据">刷新</button>
@@ -137,8 +136,7 @@
     <form class="compose" id="form">
       <!-- 审批条：贴在输入框上方浮着，和主流 agent 一样 ——
            它属于"你现在要做的决定"，不属于历史记录，所以不进流 -->
-      <div class="approval-bar" id="approval-bar" role="alertdialog" aria-live="polite">
-        <div class="ab-row">
+      <div class="approval-bar" id="approval-bar" role="alertdialog" aria-live="polite">        <div class="ab-row">
           <span class="ab-tag">需要你确认</span>
           <span class="ab-tool" id="ab-tool"></span>
           <span class="ab-policy" id="ab-policy"></span>
@@ -161,11 +159,25 @@
         <button type="submit" id="btn-send">执行</button>
       </div>
       <div class="attach-list" id="attach-list"></div>
+      <!-- 审批策略贴着输入框:它是"这一句话要怎么执行"的开关，
+           不属于页面顶部的全局设置 -->
+      <div class="compose-foot">
+        <select class="target-select policy-select" id="approval-select" title="工具调用的审批策略"></select>
+        <span class="foot-note">工具调用审批策略 · 执行中也能切</span>
+      </div>
     </form>
   </div>
 
   <aside class="rail">
-    <div class="rail-head"><span>产物</span><b id="rail-count">本轮</b></div>
+    <div class="rail-head">
+      <span class="rh-title">产物</span>
+      <span class="rh-right">
+        <b id="rail-count">本轮</b>
+        <button class="rail-toggle" id="btn-rail" type="button" title="收起侧边栏">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m14 6-6 6 6 6"/></svg>
+        </button>
+      </span>
+    </div>
     <div class="rail-body">
       <section class="card rail-card">
         <div class="k"><span>报告</span><em id="rail-report-state">未生成</em></div>

@@ -1017,39 +1017,83 @@ async function renderRecent() {
   }
 }
 
+/* 分组折叠状态记在本机 —— 关掉页面再回来，还是你上次展开的样子 */
+const GROUP_KEY = 'bw-groups';
+function groupOpen(key) {
+  try {
+    const m = JSON.parse(localStorage.getItem(GROUP_KEY) || '{}');
+    return m[key] !== false;
+  } catch (e) { return true; }
+}
+function toggleGroup(key) {
+  try {
+    const m = JSON.parse(localStorage.getItem(GROUP_KEY) || '{}');
+    m[key] = m[key] === false;
+    localStorage.setItem(GROUP_KEY, JSON.stringify(m));
+  } catch (e) { /* 隐私模式也能用 */ }
+}
+
+/* 归档状态:存在后端(换浏览器也还在),前端只负责分组 */
+async function archiveState() {
+  try {
+    const r = await api('/api/chats?archived=1');
+    const m = {};
+    for (const x of r.items || []) m[x.id] = !!x.archived;
+    return m;
+  } catch (e) { return {}; }
+}
+async function setArchived(id, on) {
+  return api('/api/chats', {
+    method: 'POST',
+    body: JSON.stringify({ action: on ? 'archive' : 'unarchive', id })
+  });
+}
+
 async function renderTasks() {
   const box = $('tasks');
   if (!box) return;
-  const { list, taskMap } = await recentData();
+  const [{ list, taskMap }, arch] = await Promise.all([recentData(), archiveState()]);
   box.innerHTML = '';
   if (!list.length) {
     box.appendChild(el('div', 'grp', '还没有运行记录'));
     return;
   }
+  const archivedRows = list.filter((r) => arch[r.id]);
+  const active = list.filter((r) => !arch[r.id]);
+
   const groups = [['running', '进行中'], ['paused', '待复核'], ['failed', '失败'], ['done', '已完成']];
-  const other = list.filter((r) => !groups.some(([k]) => k === (r.status || 'done')));
+  const known = groups.map(([k]) => k);
+  const other = active.filter((r) => !known.includes(r.status || 'done'));
+
+  const addGroup = (key, label, rows, isArchived) => {
+    const head = el('button', 'grp');
+    head.type = 'button';
+    head.title = groupOpen(key) ? '收起这一组' : '展开这一组';
+    const gl = el('span', 'gl');
+    gl.innerHTML = '<svg class="cv" viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>';
+    gl.appendChild(el('span', null, label));
+    head.appendChild(gl);
+    head.appendChild(el('b', null, String(rows.length)));
+    if (!groupOpen(key)) head.classList.add('closed');
+    head.addEventListener('click', () => { toggleGroup(key); renderTasks(); });
+    box.appendChild(head);
+    if (!groupOpen(key)) return;
+    for (const r of rows) box.appendChild(taskRow(r, taskMap[r.task_id], isArchived));
+  };
+
   for (const [key, label] of groups) {
-    const rows = list.filter((r) => (r.status || 'done') === key);
-    if (!rows.length) continue;
-    const g = el('div', 'grp');
-    g.appendChild(el('span', null, label));
-    g.appendChild(el('b', null, String(rows.length)));
-    box.appendChild(g);
-    for (const r of rows) box.appendChild(taskRow(r, taskMap[r.task_id]));
+    const rows = active.filter((r) => (r.status || 'done') === key);
+    if (rows.length) addGroup(key, label, rows, false);
   }
-  if (other.length) {
-    const g = el('div', 'grp');
-    g.appendChild(el('span', null, '其它'));
-    g.appendChild(el('b', null, String(other.length)));
-    box.appendChild(g);
-    for (const r of other) box.appendChild(taskRow(r, taskMap[r.task_id]));
-  }
+  if (other.length) addGroup('other', '其它', other, false);
+  if (archivedRows.length) addGroup('archived', '已归档', archivedRows, true);
+
   const first = box.querySelector('.titem');
   if (first) first.setAttribute('aria-current', 'true');
 }
 
-function taskRow(r, t) {
-  const row = el('button', 'titem');
+function taskRow(r, t, archived) {
+  const row = el('button', 'titem' + (archived ? ' archived' : ''));
   row.type = 'button';
   const r1 = el('span', 'r1');
   r1.appendChild(el('span', 't', `${r.id} · ${(t && t.name) || r.triggered_by || '巡检'}`));
@@ -1064,6 +1108,26 @@ function taskRow(r, t) {
     r2.appendChild(df);
   }
   row.appendChild(r2);
+
+  /* 归档:悬停才出现，不抢注意力；点一下挪进/挪出「已归档」 */
+  const ab = el('button', 'ar');
+  ab.type = 'button';
+  ab.title = archived ? '取消归档' : '归档';
+  ab.innerHTML = archived
+    ? '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v9"/><path d="m8 10 4 4 4-4"/><path d="M5 19h14"/></svg>'
+    : '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16"/><path d="M9 7V5h6v2"/><path d="M6.5 7 7.5 20h9L17.5 7"/></svg>';
+  ab.addEventListener('click', async (ev) => {
+    ev.stopPropagation();
+    ab.disabled = true;
+    try {
+      await setArchived(r.id, !archived);
+      state.cache = {};
+      await renderTasks();
+    } catch (e) { /* 失败就保持原样 */ }
+    ab.disabled = false;
+  });
+  row.appendChild(ab);
+
   row.addEventListener('click', () => {
     document.querySelectorAll('.titem').forEach((x) => x.setAttribute('aria-current', 'false'));
     row.setAttribute('aria-current', 'true');
@@ -2000,6 +2064,26 @@ $('q').addEventListener('keydown', (e) => {
     send($('q').value);
   }
 });
+
+/* 右栏收起/展开:窄栏里也留一个能点回来的按钮 */
+const RAIL_KEY = 'bw-rail';
+let railCollapsed = false;
+try { railCollapsed = localStorage.getItem(RAIL_KEY) === '1'; } catch (e) { /* 忽略 */ }
+function applyRail() {
+  const work = $('work');
+  if (work) work.classList.toggle('rail-collapsed', railCollapsed);
+  const b = $('btn-rail');
+  if (b) b.title = railCollapsed ? '展开侧边栏' : '收起侧边栏';
+}
+const railBtn = $('btn-rail');
+if (railBtn) {
+  railBtn.addEventListener('click', () => {
+    railCollapsed = !railCollapsed;
+    try { localStorage.setItem(RAIL_KEY, railCollapsed ? '1' : '0'); } catch (e) { /* 忽略 */ }
+    applyRail();
+  });
+}
+applyRail();
 
 /* 附件:选了就先传上去,拿到 id 挂在这一轮里 */
 const attachBtn = $('btn-attach');

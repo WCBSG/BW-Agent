@@ -2225,6 +2225,53 @@ static char *attach_read(const char *sid, const char *id, size_t cap, size_t *ou
    ?run=RUN-0001 时返回"这次运行"的详情与它所属的会话 —— 老记录没有会话,
    也能点进去看当时的统计与发现,而不是掉进一个笼统的历史页。 */
 static void h_chats(const http_req_t *req, http_res_t *res) {
+  /* 归档/取消归档:记在 chats 集合里(id 就是那条运行/会话的编号)。
+     换浏览器、换标签页都还在 —— 归档是用户的决定,不该只活在一个页面里。 */
+  if (strcmp(req->method, "POST") == 0) {
+    json_t *body = req->body ? json_parse(req->body) : NULL;
+    const char *action = body ? j_s(body, "action", "") : "";
+    const char *id = body ? j_s(body, "id", "") : "";
+    if (!id[0] || (!str_ieq(action, "archive") && !str_ieq(action, "unarchive"))) {
+      if (body) json_free(body);
+      http_res_json(res, 400, "{\"ok\":false,\"error\":\"需要 id 与 action(archive/unarchive)\"}");
+      return;
+    }
+    int on = str_ieq(action, "archive") ? 1 : 0;
+    json_t *rec = store_get(g_store, "chats", id);
+    if (!rec) rec = j_obj();
+    j_set_str(rec, "id", id);
+    j_set_bool(rec, "archived", on);
+    char ts[40];
+    now_iso(ts, sizeof(ts));
+    j_set_str(rec, "updated_at", ts);
+    store_save(g_store, "chats", rec);
+    json_free(rec);
+    if (body) json_free(body);
+    json_t *root = j_obj();
+    j_set_bool(root, "ok", 1);
+    j_set_str(root, "id", id);
+    j_set_bool(root, "archived", on);
+    char *text = json_dump(root);
+    http_res_json(res, 200, text);
+    free(text);
+    json_free(root);
+    return;
+  }
+
+  char arch[8];
+  http_query(req, "archived", arch, sizeof(arch), "");
+  if (arch[0]) {
+    json_t *all = store_all(g_store, "chats");
+    json_t *root = j_obj();
+    j_set_bool(root, "ok", 1);
+    j_set(root, "items", all ? all : j_arr());
+    char *text = json_dump(root);
+    http_res_json(res, 200, text);
+    free(text);
+    json_free(root);
+    return;
+  }
+
   char run_id[32];
   http_query(req, "run", run_id, sizeof(run_id), "");
   if (run_id[0]) {

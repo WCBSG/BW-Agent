@@ -379,13 +379,29 @@ code,pre,.mono{font-family:var(--mono)}
 .side-foot [data-ready="false"]{color:var(--bad)}
 
 .grp{
-  display:flex;justify-content:space-between;align-items:center;
+  display:flex;justify-content:space-between;align-items:center;width:100%;
   padding:12px 8px 5px;font-size:11.5px;letter-spacing:.06em;color:var(--ink-3);
+  text-align:left;border-radius:5px;
 }
+.grp:hover{color:var(--ink-2)}
+.grp .gl{display:flex;align-items:center;gap:5px}
+.grp .cv{width:10px;height:10px;fill:none;stroke:currentColor;stroke-width:1.8;
+  stroke-linecap:round;stroke-linejoin:round;transition:transform .15s var(--ease)}
+.grp.closed .cv{transform:rotate(-90deg)}
 .grp b{font-weight:500;font-family:var(--mono)}
-.titem{display:flex;flex-direction:column;gap:2px;width:100%;padding:7px 9px;border-radius:6px;text-align:left}
+.titem{position:relative;display:flex;flex-direction:column;gap:2px;width:100%;padding:7px 26px 7px 9px;border-radius:6px;text-align:left}
 .titem:hover{background:#ececea}
 .titem[aria-current="true"]{background:#e7e7e4}
+.titem.archived .t{color:var(--ink-3)}
+.titem .ar{
+  position:absolute;right:5px;top:6px;width:20px;height:20px;border-radius:4px;
+  display:flex;align-items:center;justify-content:center;color:var(--ink-3);
+  opacity:0;transition:opacity .12s var(--ease);
+}
+.titem:hover .ar,.titem .ar:focus-visible{opacity:1}
+.titem .ar:hover{background:#dededa;color:var(--ink)}
+.titem .ar svg{width:13px;height:13px;fill:none;stroke:currentColor;stroke-width:1.7;
+  stroke-linecap:round;stroke-linejoin:round}
 .titem .r1{display:flex;align-items:center;gap:7px}
 .titem .t{flex:1;min-width:0;font-size:13.5px;line-height:1.35;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .titem .r2{display:flex;align-items:baseline;gap:8px}
@@ -485,6 +501,12 @@ code,pre,.mono{font-family:var(--mono)}
 .attach-chip b{font-weight:500;color:var(--ink-3)}
 .attach-chip button{color:var(--ink-3);font-size:13px;line-height:1;padding:0 1px}
 .attach-chip button:hover{color:#a33}
+/* 审批策略那一行:贴着输入框,不像页面顶部的全局设置 */
+.compose-foot{
+  max-width:760px;margin:7px auto 0;display:flex;align-items:center;gap:8px;
+  font-size:11.5px;color:var(--ink-3);
+}
+.compose-foot .foot-note{font-size:11.5px;color:var(--ink-3)}
 .hints{max-width:760px;margin:7px auto 0;display:flex;align-items:center;gap:14px;font-size:12px;color:var(--ink-3);flex-wrap:wrap}
 .hint-btn{color:var(--ink-2);font-size:12px;text-decoration:underline;text-underline-offset:3px}
 .hint-btn:hover{color:var(--ink)}
@@ -503,6 +525,21 @@ code,pre,.mono{font-family:var(--mono)}
   display:flex;justify-content:space-between;align-items:center;font-size:12px;color:var(--ink-3);
 }
 .rail-head b{color:var(--ink-2);font-weight:500;font-size:12.5px;font-family:var(--mono)}
+.rh-right{display:flex;align-items:center;gap:6px}
+.rail-toggle{
+  display:flex;align-items:center;justify-content:center;width:22px;height:22px;
+  border-radius:5px;color:var(--ink-3);
+}
+.rail-toggle svg{width:15px;height:15px;fill:none;stroke:currentColor;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round}
+.rail-toggle:hover{background:#f1f1ec;color:var(--ink)}
+
+/* 收起：右栏缩成一条窄栏，只留一个"展开"按钮 —— 不藏起来，随时能点回来 */
+.work.rail-collapsed{grid-template-columns:252px minmax(0,1fr) 42px}
+.work.rail-collapsed .rail-body{display:none}
+.work.rail-collapsed .rail-head{flex-direction:column;gap:10px;padding:10px 0}
+.work.rail-collapsed .rh-title,
+.work.rail-collapsed #rail-count{display:none}
+.work.rail-collapsed .rail-toggle svg{transform:rotate(180deg)}
 .rail-body{flex:1;overflow:auto;padding:13px;display:flex;flex-direction:column;gap:11px;min-height:0}
 
 .card{border:1px solid var(--line-2);border-radius:var(--r);background:var(--panel);padding:12px 13px}
