@@ -1367,7 +1367,8 @@ int app_main(int argc, char **argv) {
     h.on_answer = on_ans;
     agent_set_hooks(a, &h);
 
-    printf("模型:%s\n", llm_enabled() ? "恒脑真模型已就绪" : "未配置(走本地规则降级)");
+    printf("模型:%s\n", providers_display_name());
+    printf("配置:%s\n", providers_path());
     printf("授权域名:%s\n", nd ? domains[0] : "(未设置 —— 不会对外发请求)");
     printf("输入问题,回车执行;输入 exit 退出。\n\n");
 
@@ -1438,7 +1439,7 @@ int app_main(int argc, char **argv) {
 
   if (str_ieq(cmd, "serve")) {
     /* 起后端服务:内置 HTTP + SSE,界面在浏览器里跑(见 serve.c / ui.c)。
-       用法: agent.exe serve [授权域名] [端口] [--no-ui] */
+       用法: agent.exe serve [授权域名] [端口] [--no-ui]  (也认 --port 8765) */
     const char *domain = NULL;
     int port = 8765;
     int open_ui = 1;
@@ -1449,6 +1450,8 @@ int app_main(int argc, char **argv) {
       }
       if (str_ieq(argv[i], "--no-ui")) {
         open_ui = 0;
+      } else if (str_ieq(argv[i], "--port") && i + 1 < argc) {
+        port = atoi(argv[++i]);
       } else if (all_digit) {
         port = atoi(argv[i]);
       } else {
@@ -1477,8 +1480,13 @@ int app_main(int argc, char **argv) {
       "\n"
       "  --debug                 显示命令行窗口与实时日志(排查问题用;双击运行时才有意义)\n"
       "\n"
-      "环境变量(或程序目录下的 .env):\n"
+      "模型:\n"
+      "  界面的「设置 → 模型」里配,支持恒脑 / OpenAI 兼容 / Anthropic 三类接口,\n"
+      "  可同时配多家并按顺序兜底;配置存在数据目录的 models.json 里,不内置任何密钥。\n"
+      "  下面这些环境变量(或 .env)只是给老配置兜底用的,界面上配了就不看它们:\n"
       "  DAS_APP_KEY / DAS_APP_SECRET / DAS_AGENT_ID   恒脑平台凭证与智能体\n"
+      "\n"
+      "环境变量(或程序目录下的 .env):\n"
       "  TARGET_BASE_URL          巡检起点对齐到指定站点(如 http://127.0.0.1:8081)\n"
       "  UI_MODE                  界面形态: auto(默认) / app / browser / off\n"
       "  BW_AGENT_DEBUG=1         等同于 --debug\n"

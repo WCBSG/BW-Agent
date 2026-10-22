@@ -34,6 +34,7 @@
 #include "skills.h"
 #include "store.h"
 #include "tools.h"
+#include "thread_store.h"
 #include "tray.h"
 #include "ui.h"
 
@@ -79,6 +80,7 @@ typedef struct {
   int tool_open;             /* 当前是否有打开的 tool_use 块 */
   char pending_note[512];    /* 比动作先到的状态说明,等卡片开出来再填 */
   int aborted;
+  char session[128];         /* 这一条流属于哪个会话(事件的 sessionId 用它) */
   buf_t answer;              /* 本轮说给用户的最终话(要落进会话转录) */
 } sse_ctx_t;
 
@@ -101,7 +103,7 @@ static void ev_message_start(sse_ctx_t *c) {
   buf_puts(&b, "{\"type\":\"message_start\",\"messageId\":");
   buf_json_str(&b, c->message_id);
   buf_puts(&b, ",\"sessionId\":");
-  buf_json_str(&b, g_session);
+  buf_json_str(&b, c->session[0] ? c->session : g_session);
   buf_puts(&b, ",\"timestamp\":");
   buf_json_str(&b, ts);
   buf_puts(&b, "}");
@@ -696,7 +698,7 @@ static char *build_status_json(void) {
   buf_printf(&b, ",\"allowAll\":%s}", approval_is_allow_all() ? "true" : "false");
   buf_printf(&b, ",\"model\":%s", llm_enabled() ? "true" : "false");
   buf_puts(&b, ",\"modelName\":");
-  buf_json_str(&b, llm_enabled() ? "恒脑智能体(在线)" : "本地规则降级(离线可用)");
+  buf_json_str(&b, providers_display_name());
   /* 为什么降级:把平台给的原因(如"租户不存在")如实带给界面,而不是只说"离线" */
   buf_puts(&b, ",\"modelError\":");
   buf_json_str(&b, llm_last_error());
@@ -1949,12 +1951,17 @@ static void h_pool(const http_req_t *req, http_res_t *res) {
 static char *attach_read(const char *sid, const char *id, size_t cap, size_t *out_len);
 
 static void h_chat(const http_req_t *req, http_res_t *res) {
+  /* 会话 id 先读出来:附件与历史都按会话存,拼输入时要用。
+     查询串和 JSON 体都认 —— 界面走查询串,脚本调接口时更顺手的是 body。 */
   char q[4096];
+  char sid[64];
   http_query(req, "q", q, sizeof(q), "");
-  if (!q[0] && req->body) {
+  http_query(req, "sid", sid, sizeof(sid), "");
+  if ((!q[0] || !sid[0]) && req->body) {
     json_t *body = json_parse(req->body);
     if (body) {
-      snprintf(q, sizeof(q), "%s", j_s(body, "q", ""));
+      if (!q[0]) snprintf(q, sizeof(q), "%s", j_s(body, "q", ""));
+      if (!sid[0]) snprintf(sid, sizeof(sid), "%s", j_s(body, "sid", ""));
       json_free(body);
     }
   }
@@ -1962,10 +1969,6 @@ static void h_chat(const http_req_t *req, http_res_t *res) {
     http_res_json(res, 400, "{\"ok\":false,\"error\":\"缺少参数 q\"}");
     return;
   }
-
-  /* 会话 id 先读出来:附件是按会话存的,拼输入时要用 */
-  char sid[64];
-  http_query(req, "sid", sid, sizeof(sid), "");
 
   /* 附件:文本内容拼进这一轮输入(模型能读),图片只存档并如实注明(模型读不了)。
      把"贴日志"变成一句话的事 —— 让人自己转述是给使用者添麻烦。 */
@@ -2051,6 +2054,7 @@ static void h_chat(const http_req_t *req, http_res_t *res) {
   sse_ctx_t ctx;
   memset(&ctx, 0, sizeof(ctx));
   ctx.res = res;
+  snprintf(ctx.session, sizeof(ctx.session), "%s", sid[0] ? sid : g_session);
   buf_init(&ctx.answer);
   EnterCriticalSection(&g_lock);
   snprintf(ctx.message_id, sizeof(ctx.message_id), "msg-%04d", ++g_turn_seq);
@@ -2058,19 +2062,29 @@ static void h_chat(const http_req_t *req, http_res_t *res) {
   ev_message_start(&ctx);
 
   /* 会话转录:先记"用户说了什么"。这样即使这一轮中途崩掉,
-     历史里也不会只剩半句话 —— 用户回看时能看出是从哪儿断的。 */
+     历史里也不会只剩半句话 —— 用户回看时能看出是从哪儿断的。
+     结构按主流 Agent 的做法来:消息有稳定 id、序号、父指针,内容是块数组。 */
   {
-    json_t *ev = j_obj();
-    char ts[40];
-    now_iso(ts, sizeof(ts));
-    j_set_str(ev, "role", "user");
-    j_set_str(ev, "text", q);
-    j_set_str(ev, "time", ts);
-    if (target[0]) j_set_str(ev, "target", target);
-    if (j_len(att_list) > 0) j_set(ev, "attachments", att_list);
-    else json_free(att_list);
-    store_transcript(g_store, sid, ev);
-    json_free(ev);
+    thread_ensure(sid, NULL);
+    json_t *blocks = j_arr();
+    json_t *b = j_obj();
+    j_set_str(b, "type", "text");
+    j_set_str(b, "text", q);
+    j_add(blocks, b);
+    if (j_len(att_list) > 0) {
+      json_t *ab = j_obj();
+      j_set_str(ab, "type", "attachment");
+      j_set(ab, "items", att_list);      /* 所有权交给这个块 */
+      j_add(blocks, ab);
+    } else {
+      json_free(att_list);
+    }
+    json_t *meta = j_obj();
+    if (target[0]) j_set_str(meta, "target", target);
+    j_set(meta, "client", j_str("web"));
+    json_t *msg = thread_append(sid, "user", blocks, NULL, NULL);
+    json_free(msg);
+    json_free(meta);
   }
   store_set_chat(sid);
 
@@ -2165,19 +2179,30 @@ static void h_chat(const http_req_t *req, http_res_t *res) {
   if (st.steps) json_free(st.steps);
 
   /* 会话转录:再记"智能体说了什么",以及这一轮为什么停 ——
-     点开历史对话时,能原样看到当时的结论,而不是只有一条运行记录。 */
+     点开历史对话时,能原样看到当时的结论,而不是只有一条运行记录。
+     正文是一块 text,停止原因与步数进事件流:两者用途不同,不该混在一条里。 */
   {
+    json_t *blocks = j_arr();
+    json_t *b = j_obj();
+    j_set_str(b, "type", "text");
+    j_set_str(b, "text", ctx.answer.data ? ctx.answer.data : "");
+    j_add(blocks, b);
+
+    json_t *usage = j_obj();
+    j_set_num(usage, "steps", st.step_count);
+    j_set_num(usage, "http_calls", net_http_calls() - calls_before_chat);
+    j_set_str(usage, "stop_reason", reason);
+
+    json_t *msg = thread_append(sid, "assistant", blocks, usage, NULL);
+    json_free(msg);
+
     json_t *ev = j_obj();
-    char ts[40];
-    now_iso(ts, sizeof(ts));
-    j_set_str(ev, "role", "assistant");
-    j_set_str(ev, "text", ctx.answer.data ? ctx.answer.data : "");
-    j_set_str(ev, "time", ts);
-    j_set_str(ev, "stop", reason);
+    j_set_str(ev, "type", "turn_end");
+    j_set_str(ev, "stop_reason", reason);
     j_set_num(ev, "steps", st.step_count);
+    j_set_num(ev, "stop_code", st.stop_code);
     if (target[0]) j_set_str(ev, "target", target);
-    store_transcript(g_store, sid, ev);
-    json_free(ev);
+    thread_append_event(sid, ev);
   }
   store_set_chat("");
   buf_free(&ctx.answer);
@@ -2287,15 +2312,11 @@ static void h_chats(const http_req_t *req, http_res_t *res) {
       return;
     }
     int on = str_ieq(action, "archive") ? 1 : 0;
-    json_t *rec = store_get(g_store, "chats", id);
-    if (!rec) rec = j_obj();
-    j_set_str(rec, "id", id);
-    j_set_bool(rec, "archived", on);
-    char ts[40];
-    now_iso(ts, sizeof(ts));
-    j_set_str(rec, "updated_at", ts);
-    store_save(g_store, "chats", rec);
-    json_free(rec);
+    int pinned = (int)j_n(body, "pinned", -1);
+    json_t *cur = thread_get(id);
+    int cur_pinned = cur ? (int)j_b(cur, "pinned", 0) : 0;
+    json_free(cur);
+    thread_set_flags(id, on, pinned >= 0 ? pinned : cur_pinned);
     if (body) json_free(body);
     json_t *root = j_obj();
     j_set_bool(root, "ok", 1);
@@ -2311,10 +2332,21 @@ static void h_chats(const http_req_t *req, http_res_t *res) {
   char arch[8];
   http_query(req, "archived", arch, sizeof(arch), "");
   if (arch[0]) {
-    json_t *all = store_all(g_store, "chats");
+    /* 归档状态现在存在会话 meta 里,按 id 拼成 {id: archived} 给界面用 */
+    json_t *all = thread_list();
+    json_t *items = j_arr();
+    for (int i = 0; i < j_len(all); i++) {
+      json_t *m = j_at(all, i);
+      json_t *o = j_obj();
+      j_set_str(o, "id", j_s(m, "id", ""));
+      j_set_bool(o, "archived", j_b(m, "archived", 0));
+      j_set_bool(o, "pinned", j_b(m, "pinned", 0));
+      j_add(items, o);
+    }
+    json_free(all);
     json_t *root = j_obj();
     j_set_bool(root, "ok", 1);
-    j_set(root, "items", all ? all : j_arr());
+    j_set(root, "items", items);
     char *text = json_dump(root);
     http_res_json(res, 200, text);
     free(text);
@@ -2342,18 +2374,21 @@ static void h_chats(const http_req_t *req, http_res_t *res) {
   char sid[64];
   http_query(req, "sid", sid, sizeof(sid), "");
   if (sid[0]) {
-    json_t *msgs = store_transcript_read(g_store, sid);
+    json_t *msgs = thread_messages(sid, 0);
+    json_t *meta = thread_get(sid);
     json_t *root = j_obj();
     j_set_bool(root, "ok", 1);
     j_set_str(root, "id", sid);
+    j_set_str(root, "title", j_s(meta, "title", ""));
     j_set(root, "messages", msgs);
+    json_free(meta);
     char *text = json_dump(root);
     http_res_json(res, 200, text);
     free(text);
     json_free(root);
     return;
   }
-  json_t *list = store_transcript_list(g_store);
+  json_t *list = thread_list();
   json_t *root = j_obj();
   j_set_bool(root, "ok", 1);
   j_set(root, "items", list);
@@ -2456,6 +2491,120 @@ static void h_settings(const http_req_t *req, http_res_t *res) {
      · 用大模型生成(给一句话描述,模型产出草稿,人再改)
      · 从市场导入(粘贴一段技能/工具文本,校验后落盘)
    落盘格式与手写完全一致 —— 想手改随时还能改。 */
+/* 把内存里的配置拍成 JSON(带密钥明文,只在本机内存里流转) */
+static json_t *models_snapshot(void) {
+  char *dump = providers_json(0);
+  json_t *root = dump ? json_parse(dump) : NULL;
+  free(dump);
+  return root;
+}
+
+static void models_ok(http_res_t *res, int code, const char *msg) {
+  json_t *o = j_obj();
+  j_set_bool(o, "ok", code == 200);
+  if (msg && *msg) j_set_str(o, code == 200 ? "note" : "error", msg);
+  char *dump = providers_json(1);
+  if (dump) {
+    json_t *cur = json_parse(dump);
+    if (cur) j_set(o, "models", cur);
+    free(dump);
+  }
+  char *out = json_dump(o);
+  http_res_json(res, code, out);
+  free(out);
+  json_free(o);
+}
+
+/* /api/models —— 模型配置的读写与连通性测试
+     GET  列表(密钥只回显后四位)
+     POST action=save      整份写回(密钥空着或仍是掩码 = 不改)
+          action=activate  只切换当前使用的那一条
+          action=test      真发一句话,验证地址和 key 到底通不通
+          action=delete    删掉一条
+   "测试"单独做一个动作的原因:保存只需要格式合法,通不通只有真发一次才知道;
+   让用户点一下就能看到"钥匙错了"还是"地址错了",比等到对话时才失败强。 */
+static void h_models(const http_req_t *req, http_res_t *res) {
+  if (strcmp(req->method, "GET") == 0) {
+    char *dump = providers_json(1);
+    http_res_json(res, 200, dump);
+    free(dump);
+    return;
+  }
+  json_t *body = req->body ? json_parse(req->body) : NULL;
+  if (!body) {
+    http_res_json(res, 400, "{\"ok\":false,\"error\":\"请求体不是合法 JSON\"}");
+    return;
+  }
+  char action[32];
+  snprintf(action, sizeof(action), "%s", j_s(body, "action", "save"));
+  char id[80];
+  snprintf(id, sizeof(id), "%s", j_s(body, "id", ""));
+  char err[512] = {0};
+  int rc = -1;
+
+  if (str_ieq(action, "test")) {
+    if (!id[0]) {
+      json_free(body);
+      http_res_json(res, 400, "{\"ok\":false,\"error\":\"没指定测哪一条\"}");
+      return;
+    }
+    char detail[1024] = {0};
+    long long t0 = now_ms();
+    int trc = providers_test(id, detail, sizeof(detail));
+    long long ms = now_ms() - t0;
+    json_t *o = j_obj();
+    j_set_bool(o, "ok", trc == 0);
+    j_set_num(o, "ms", (double)ms);
+    j_set_str(o, "detail", detail[0] ? detail : (trc == 0 ? "通了" : "没有响应"));
+    /* 测试结果本身是"通/不通"两种正常结果,不是请求出错 —— 一律 200,
+       界面照 ok 字段渲染。之前通不通用 HTTP 状态码表达,前端只能看到
+       "HTTP 400",把"哪一步不通"这句最有用的话丢了。 */
+    char *dump = json_dump(o);
+    http_res_json(res, 200, dump);
+    free(dump);
+    json_free(o);
+    json_free(body);
+    return;
+  } else if (str_ieq(action, "save")) {
+    rc = providers_apply(body, err, sizeof(err));
+  } else if (str_ieq(action, "activate") || str_ieq(action, "delete")) {
+    json_t *root = models_snapshot();
+    if (!root) root = j_obj();
+    int is_delete = str_ieq(action, "delete");
+    if (is_delete) {
+      json_t *arr = j_get(root, "providers");
+      json_t *kept = j_arr();
+      int n = arr ? j_len(arr) : 0;
+      for (int i = 0; i < n; i++) {
+        json_t *it = j_at(arr, i);
+        if (!it) continue;
+        if (str_ieq(j_s(it, "id", ""), id)) continue;
+        char *d = json_dump(it);
+        json_t *cp = d ? json_parse(d) : NULL;
+        free(d);
+        if (cp) j_add(kept, cp);
+      }
+      j_set(root, "providers", kept);       /* j_set 接管所有权 */
+    } else {
+      j_set_str(root, "active", id);
+    }
+    rc = providers_apply(root, err, sizeof(err));
+    json_free(root);
+  } else {
+    snprintf(err, sizeof(err), "不认识的动作:%s", action);
+  }
+  json_free(body);
+
+  if (rc != 0) {
+    char msg[640];
+    snprintf(msg, sizeof(msg), "{\"ok\":false,\"error\":\"%s\"}",
+             err[0] ? err : "配置没有通过校验");
+    http_res_json(res, 400, msg);
+    return;
+  }
+  models_ok(res, 200, str_ieq(action, "save") ? "已保存" : "已生效");
+}
+
 static void h_caps(const http_req_t *req, http_res_t *res) {
   if (strcmp(req->method, "POST") == 0) {
     json_t *body = req->body ? json_parse(req->body) : NULL;
@@ -2735,6 +2884,7 @@ static void router(const http_req_t *req, http_res_t *res, void *ud) {
     if (!strcmp(p, "/api/attach")) { h_attach(req, res); return; }
     if (!strcmp(p, "/api/settings")) { h_settings(req, res); return; }
     if (!strcmp(p, "/api/caps")) { h_caps(req, res); return; }
+  if (!strcmp(p, "/api/models")) { h_models(req, res); return; }
     if (!strcmp(p, "/api/quit")) { h_quit(req, res); return; }
     if (!strcmp(p, "/api/chat")) { h_chat(req, res); return; }    if (!strcmp(p, "/api/config/list")) { h_config_list(req, res); return; }
     if (!strcmp(p, "/api/config")) {
@@ -2787,6 +2937,13 @@ int serve_run(const char *domain, int port, int open_ui) {
   res_bootstrap_data_dir();          /* 首次运行:把可改的规则与说明落一份到数据目录 */
   snprintf(g_data_dir, sizeof(g_data_dir), "%s", ddir);
   g_store = store_open(g_data_dir);
+  /* 对话存储:新结构(threads/<id>/{meta,messages,events})。
+     启动时把旧的 transcripts/*.jsonl 迁进来,只迁一次(迁过的改名 .migrated)。 */
+  thread_store_init(g_data_dir);
+  {
+    int migrated = thread_migrate_legacy();
+    if (migrated > 0) log_info("[对话] 已迁移 %d 个旧会话到 threads/ 结构", migrated);
+  }
   /* 授权池先load:边界必须在任何请求之前就位。
      首次升级时池子是空的 —— 把启动参数里的域名当作第一条授权收进去,
      否则老用户一升级就"什么都不能查",会以为程序坏了。 */
@@ -2829,7 +2986,7 @@ int serve_run(const char *domain, int port, int open_ui) {
   printf("  网站安全巡检智能体(C 版) · 后端服务已启动\n");
   printf("════════════════════════════════════════════════════════\n");
   printf("  界面地址 : http://127.0.0.1:%d/\n", port);
-  printf("  决策模型 : %s\n", llm_enabled() ? "恒脑智能体(在线)" : "本地规则降级(离线可用)");
+  printf("  决策模型 : %s\n", providers_display_name());
   printf("  授权域名 : %s\n", g_domain[0] ? g_domain : "(未授权 —— 不会对外发请求)");
   printf("  工具/技能: %d 个 / %d 个\n", tools_count(), skills_count());
   /* 单文件交付:界面与默认规则已经在 exe 里,这里把来源说清楚(磁盘上有同名文件则优先用磁盘) */

@@ -145,7 +145,7 @@ async function api(path, opts) {
   if (o.body && !o.headers['Content-Type']) o.headers['Content-Type'] = 'application/json';
   const r = await fetch(path, o);
   const j = await r.json().catch(() => null);
-  if (!r.ok) throw new Error((j && j.error) || ('HTTP ' + r.status));
+  if (!r.ok) throw new Error((j && (j.error || j.detail)) || ('HTTP ' + r.status));
   return j;
 }
 
@@ -1282,12 +1282,30 @@ async function openChat(sid) {
   stream.innerHTML = '';
   let title = '';
   for (const m of msgs) {
+    /* 新结构:正文在 blocks[] 里(text / attachment),停止原因在 usage 里。
+       老数据只有 m.text,这里一并兼容 —— 迁移前后的会话都能打开。 */
+    const blocks = Array.isArray(m.blocks) ? m.blocks : null;
+    const textOf = (x) => {
+      if (!blocks) return x.text || '';
+      return blocks.filter((b) => b.type === 'text').map((b) => b.text || '').join('\n');
+    };
+    const attsOf = (x) => {
+      if (!blocks) return x.attachments || [];
+      const out = [];
+      for (const b of blocks) if (b.type === 'attachment') out.push(...(b.items || []));
+      return out;
+    };
+    const usage = m.usage || {};
+    const stop = m.stop || usage.stop_reason || '';
+    const steps = m.steps || usage.steps || 0;
+
     if (m.role === 'user') {
-      if (!title && m.text) title = m.text;
+      const utext = textOf(m);
+      if (!title && utext) title = utext;
       const wrap = el('div', 'msg user');
       const ub = el('div', 'body');
-      ub.appendChild(el('div', null, m.text || '（只说附件）'));
-      for (const a of m.attachments || []) {
+      ub.appendChild(el('div', null, utext || '（只说附件）'));
+      for (const a of attsOf(m)) {
         const chip = el('span', 'attach-chip');
         chip.appendChild(el('span', 'nm', a.id || a.name || '附件'));
         chip.appendChild(el('b', null, a.kind === 'image' ? '图片' : '文本'));
@@ -1297,12 +1315,12 @@ async function openChat(sid) {
       stream.appendChild(wrap);
     } else if (m.role === 'assistant') {
       const wrap = el('div', 'msg agent');
-      wrap.appendChild(el('div', 'who', '智能体 · ' + (m.target || '')));
+      wrap.appendChild(el('div', 'who', '智能体 · ' + (usage.target || m.target || '')));
       const body = el('div', 'body');
-      body.appendChild(el('div', null, m.text || '(这一轮没有给出结论)'));
-      if (m.stop) {
+      body.appendChild(el('div', null, textOf(m) || '(这一轮没有给出结论)'));
+      if (stop) {
         body.appendChild(el('div', 'stopline',
-          '停止原因 ' + m.stop + (m.steps ? ' · ' + m.steps + ' 步' : '')));
+          '停止原因 ' + stop + (steps ? ' · ' + steps + ' 步' : '')));
       }
       wrap.appendChild(body);
       stream.appendChild(wrap);
@@ -1960,6 +1978,7 @@ const SET_SCHEMA = [
     fields: [{ k: 'tamper.report_external_hosts', label: '外链超过多少算异常', type: 'number' }] },
   { id: 'skills', title: '技能', desc: '智能体的专业能力' },
   { id: 'tools', title: '工具', desc: '智能体能做的动作' },
+  { id: 'models', title: '模型', desc: '接哪家的模型（可多家兜底）' },
   { id: 'advanced', title: '高级 · 文件', desc: '直接编辑原始文件' },
 ];
 
@@ -2108,18 +2127,22 @@ function setRenderPage() {
   const isUi = page.id === 'ui';
   const isSkills = page.id === 'skills';
   const isTools = page.id === 'tools';
+  const isModels = page.id === 'models';
   if ($('set-title')) $('set-title').textContent = page.title;
   if ($('set-desc')) $('set-desc').textContent = page.desc || '';
   if (head) head.style.display = '';
-  if (foot) foot.style.display = (isAdv || isUi || isSkills || isTools) ? 'none' : '';
-  if (form) form.style.display = (isAdv || isUi || isSkills || isTools) ? 'none' : '';
+  if (foot) foot.style.display = (isAdv || isUi || isSkills || isTools || isModels) ? 'none' : '';
+  if (form) form.style.display = (isAdv || isUi || isSkills || isTools || isModels) ? 'none' : '';
   if (adv) adv.style.display = isAdv ? 'block' : 'none';
   const uiPanel = $('ui-panel');
   if (uiPanel) uiPanel.style.display = isUi ? 'block' : 'none';
   const capPanel = $('cap-panel');
   if (capPanel) capPanel.style.display = (isSkills || isTools) ? 'block' : 'none';
+  const modelPanel = $('model-panel');
+  if (modelPanel) modelPanel.style.display = isModels ? 'block' : 'none';
   if (isUi) return;
   if (isSkills || isTools) { capsOpen(isSkills ? 'skill' : 'tool'); return; }
+  if (isModels) { modelsOpen(); return; }
   if (isAdv) {
     renderConfigFiles().catch(() => {});
     return;
@@ -2611,6 +2634,304 @@ function capsBind() {
   if (mkt) mkt.addEventListener('click', () => capsAux('market'));
 }
 capsBind();
+
+/* ===== 模型:接哪一家的模型 =====
+   三类协议覆盖了绝大多数情况,所以界面上先选"协议",地址和字段跟着变;
+   不内置任何厂商的密钥和地址,填什么就连什么。 */
+const MODELS = { data: null, editing: null, index: -1 };
+
+const MODEL_PRESETS = {
+  das: {
+    title: '恒脑智能体', url: 'https://www.das-ai.com', model: '',
+    hint: '填 appKey / appSecret / 智能体 ID；接口地址填平台首页即可，路径会自动补全'
+  },
+  openai: {
+    title: 'OpenAI 兼容', url: 'https://api.openai.com/v1', model: 'gpt-4o-mini',
+    hint: 'DeepSeek、Kimi、通义、智谱、硅基流动、OneAPI、vLLM、Ollama 都走这一类，地址填到 /v1 为止'
+  },
+  anthropic: {
+    title: 'Anthropic', url: 'https://api.anthropic.com', model: 'claude-3-5-sonnet-latest',
+    hint: 'Messages 接口，只需要 API Key 和模型名'
+  }
+};
+
+function modelApi(body) {
+  return api('/api/models', { method: 'POST', body: JSON.stringify(body) });
+}
+
+async function modelsOpen() {
+  try { MODELS.data = await api('/api/models'); }
+  catch (e) { MODELS.data = { providers: [], active: '', path: '' }; }
+  modelsRenderList();
+  modelsRenderForm(MODELS.editing);
+}
+
+function modelKindLabel(kind) {
+  const k = MODEL_PRESETS[kind];
+  return k ? k.title : (kind || '');
+}
+
+function modelsRenderList() {
+  const box = $('model-list');
+  if (!box) return;
+  box.innerHTML = '';
+  const d = MODELS.data || {};
+  const list = d.providers || [];
+  const active = d.active || '';
+  if ($('model-stat')) {
+    const ready = list.filter((x) => x.ready).length;
+    $('model-stat').textContent = list.length
+      ? `${list.length} 家（${ready} 家可用）` : '还没接模型';
+  }
+  if ($('model-note')) {
+    $('model-note').textContent = list.length
+      ? `配置存在 ${d.path || 'models.json'}。当前优先用「${(list.find((x) => x.id === active) || {}).name || '未指定'}」，它调不通时自动顺延下一家。`
+      : '接一家模型后，智能体就能自己判断下一步做什么；不接也不影响使用，会走本地规则。';
+  }
+  if (!list.length) {
+    box.appendChild(el('div', 'muted', '还没有接入任何模型。'));
+    return;
+  }
+  for (const x of list) {
+    const row = el('div', 'cap-item');
+    const main = el('div', 'ci-main');
+    const head = el('div');
+    head.appendChild(el('span', 'ci-name', x.name || x.id));
+    head.appendChild(el('span', 'ci-tag', modelKindLabel(x.kind)));
+    if (x.id === active) head.appendChild(el('span', 'ci-tag mine', '当前'));
+    if (!x.enabled) head.appendChild(el('span', 'ci-tag', '已停用'));
+    if (x.ready) head.appendChild(el('span', 'ci-tag ext', '可用'));
+    main.appendChild(head);
+    const bits = [x.model, x.base_url].filter(Boolean).join(' · ');
+    main.appendChild(el('div', 'ci-desc', bits || '（还没填地址）'));
+    row.appendChild(main);
+
+    const act = el('div', 'ci-act');
+    const test = el('button', null, '测试');
+    test.type = 'button';
+    test.addEventListener('click', () => modelsTest(x.id, test));
+    act.appendChild(test);
+    if (x.id !== active) {
+      const use = el('button', null, '设为当前');
+      use.type = 'button';
+      use.addEventListener('click', () => modelsActivate(x.id));
+      act.appendChild(use);
+    }
+    const edit = el('button', null, '编辑');
+    edit.type = 'button';
+    edit.addEventListener('click', () => {
+      MODELS.index = list.indexOf(x);
+      MODELS.editing = Object.assign({}, x);
+      modelsRenderForm(MODELS.editing);
+    });
+    act.appendChild(edit);
+    const del = el('button', null, '删除');
+    del.type = 'button';
+    del.addEventListener('click', () => modelsDelete(x));
+    act.appendChild(del);
+    row.appendChild(act);
+    box.appendChild(row);
+  }
+}
+
+function modelsRenderForm(m) {
+  const box = $('model-edit');
+  if (!box) return;
+  box.innerHTML = '';
+  if (!m) { box.classList.remove('on'); return; }
+  box.classList.add('on');
+
+  const grid = el('div', 'cap-grid');
+  grid.appendChild(capField('名字（自己认得出就行）', 'model-name', m.name, { ph: 'DeepSeek 主力' }));
+
+  const kindWrap = el('div', 'cap-field');
+  const kindLabel = document.createElement('label');
+  kindLabel.textContent = '协议';
+  kindLabel.setAttribute('for', 'model-kind');
+  kindWrap.appendChild(kindLabel);
+  const sel = document.createElement('select');
+  sel.id = 'model-kind';
+  for (const k of ['das', 'openai', 'anthropic']) {
+    const o = document.createElement('option');
+    o.value = k;
+    o.textContent = modelKindLabel(k);
+    if ((m.kind || 'openai') === k) o.selected = true;
+    sel.appendChild(o);
+  }
+  kindWrap.appendChild(sel);
+  grid.appendChild(kindWrap);
+
+  grid.appendChild(capField('接口地址', 'model-url', m.base_url, { wide: true, ph: MODEL_PRESETS[m.kind || 'openai'].url }));
+  grid.appendChild(capField('模型名', 'model-model', m.model, { ph: MODEL_PRESETS[m.kind || 'openai'].model }));
+  grid.appendChild(capField('API Key / appKey', 'model-key', m.api_key, { ph: '留空或保持掩码 = 不改' }));
+  grid.appendChild(capField('appSecret（恒脑用）', 'model-secret', m.api_secret, { ph: '留空或保持掩码 = 不改' }));
+  grid.appendChild(capField('userAppKey（可信配置 5.1 可选）', 'model-userkey', m.user_app_key));
+  grid.appendChild(capField('智能体 ID（恒脑用）', 'model-agent', m.agent_id));
+  grid.appendChild(capField('智能体关键词（恒脑按名字找）', 'model-keyword', m.agent_keyword));
+  grid.appendChild(capField('附加请求头（一行一个 Name: value）', 'model-headers', m.headers, { wide: true, area: true, rows: 2 }));
+  grid.appendChild(capField('超时（毫秒）', 'model-timeout', m.timeout_ms || 45000, { num: true, step: '1000' }));
+  grid.appendChild(capField('温度（-1 = 不带）', 'model-temp', m.temperature === undefined ? 0.2 : m.temperature, { num: true, step: '0.1' }));
+  grid.appendChild(capField('最大 tokens（0 = 不带）', 'model-maxtok', m.max_tokens || 0, { num: true }));
+  grid.appendChild(capField('启用这一条', 'model-enabled', m.enabled !== false, { check: true }));
+  box.appendChild(grid);
+
+  const hint = el('div', 'set-hint', MODEL_PRESETS[m.kind || 'openai'].hint);
+  box.appendChild(hint);
+
+  const foot = el('div', 'cap-foot');
+  const save = el('button', null, '保存并生效');
+  save.type = 'button';
+  save.id = 'model-save';
+  save.addEventListener('click', modelsSave);
+  foot.appendChild(save);
+  const test = el('button', 'ghost', '保存并测试');
+  test.type = 'button';
+  test.addEventListener('click', () => { modelsSave(test, true); });
+  foot.appendChild(test);
+  const cancel = el('button', 'ghost', '取消');
+  cancel.type = 'button';
+  cancel.addEventListener('click', () => { MODELS.editing = null; modelsRenderForm(null); });
+  foot.appendChild(cancel);
+  const msg = el('span', 'cap-msg');
+  msg.id = 'model-msg';
+  foot.appendChild(msg);
+  box.appendChild(foot);
+
+  sel.addEventListener('change', () => {
+    const p = MODEL_PRESETS[sel.value] || MODEL_PRESETS.openai;
+    const url = $('model-url');
+    const mdl = $('model-model');
+    /* 地址/模型名还是空的、或者还是上一套模板的,就换成新协议的建议值;
+       用户自己填过的不动 */
+    const old = MODEL_PRESETS[m.kind || 'openai'];
+    if (url && (!url.value.trim() || url.value.trim() === old.url)) url.value = p.url;
+    if (mdl && (!mdl.value.trim() || mdl.value.trim() === old.model)) mdl.value = p.model;
+    m.kind = sel.value;
+    const h = box.querySelector('.set-hint');
+    if (h) h.textContent = p.hint;
+  });
+}
+
+function modelsCollect() {
+  const val = (id) => { const n = $(id); return n ? n.value : ''; };
+  const chk = (id) => { const n = $(id); return n ? !!n.checked : false; };
+  const base = Object.assign({}, MODELS.editing || {});
+  return Object.assign(base, {
+    name: val('model-name').trim(),
+    kind: val('model-kind'),
+    base_url: val('model-url').trim(),
+    model: val('model-model').trim(),
+    api_key: val('model-key').trim(),
+    api_secret: val('model-secret').trim(),
+    user_app_key: val('model-userkey').trim(),
+    agent_id: val('model-agent').trim(),
+    agent_keyword: val('model-keyword').trim(),
+    headers: val('model-headers').trim(),
+    timeout_ms: Number(val('model-timeout')) || 45000,
+    temperature: val('model-temp') === '' ? 0.2 : Number(val('model-temp')),
+    max_tokens: Number(val('model-maxtok')) || 0,
+    enabled: chk('model-enabled') ? 1 : 0
+  });
+}
+
+/* save 之后再 test 是有意的:测试打的是"刚填进去的这份",不是上一次保存的旧值 */
+async function modelsSave(btn, thenTest) {
+  const msg = $('model-msg');
+  if (btn) btn.disabled = true;
+  if (msg) msg.textContent = '正在保存…';
+  try {
+    const cur = MODELS.data || { providers: [] };
+    const list = (cur.providers || []).map((x) => Object.assign({}, x));
+    const item = modelsCollect();
+    if (MODELS.index >= 0 && MODELS.index < list.length) list[MODELS.index] = item;
+    else list.push(item);
+    const r = await modelApi({ action: 'save', active: cur.active || '', providers: list });
+    MODELS.data = (r && r.models) || cur;
+    const idx = MODELS.index;
+    await modelsOpen();
+    const after = MODELS.data.providers || [];
+    const saved = (idx >= 0 && after[idx]) ? after[idx] : (after[after.length - 1] || item);
+    MODELS.editing = null;
+    modelsRenderForm(null);
+    if (thenTest) { await modelsTest(saved.id, null); return; }
+    if ($('model-msg')) $('model-msg').textContent = '';
+  } catch (e) {
+    if (msg) msg.textContent = '保存失败：' + e.message;
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+async function modelsTest(id, btn) {
+  if (btn) btn.disabled = true;
+  const msg = $('model-msg') || $('model-note');
+  if (msg) msg.textContent = '正在测试…';
+  try {
+    const r = await modelApi({ action: 'test', id });
+    if (msg) {
+      msg.textContent = r.ok
+        ? `通了（${r.ms} ms）：${r.detail || ''}`
+        : `没通：${r.detail || '没有响应'}`;
+    }
+  } catch (e) {
+    if (msg) msg.textContent = '没通：' + e.message;
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+async function modelsActivate(id) {
+  try {
+    const r = await modelApi({ action: 'activate', id });
+    MODELS.data = (r && r.models) || MODELS.data;
+    modelsRenderList();
+    await api('/api/status').then(renderStatus).catch(() => {});
+  } catch (e) {
+    if ($('model-note')) $('model-note').textContent = '切换失败：' + e.message;
+  }
+}
+
+async function modelsDelete(x) {
+  if (!confirm(`删除「${x.name || x.id}」？密钥也会一起删掉。`)) return;
+  try {
+    const r = await modelApi({ action: 'delete', id: x.id });
+    MODELS.data = (r && r.models) || MODELS.data;
+    MODELS.editing = null;
+    modelsRenderForm(null);
+    modelsRenderList();
+  } catch (e) {
+    if ($('model-note')) $('model-note').textContent = '删除失败：' + e.message;
+  }
+}
+
+function modelsBind() {
+  const mk = $('model-btn-new');
+  if (mk) {
+    mk.addEventListener('click', () => {
+      MODELS.index = -1;
+      MODELS.editing = {
+        name: '', kind: 'openai', base_url: MODEL_PRESETS.openai.url,
+        model: MODEL_PRESETS.openai.model, api_key: '', api_secret: '',
+        user_app_key: '', agent_id: '', agent_keyword: '', headers: '',
+        timeout_ms: 45000, temperature: 0.2, max_tokens: 0, enabled: 1
+      };
+      modelsRenderForm(MODELS.editing);
+      const n = $('model-name');
+      if (n) n.focus();
+    });
+  }
+  const t = $('model-btn-test');
+  if (t) {
+    t.addEventListener('click', () => {
+      const d = MODELS.data || {};
+      const list = d.providers || [];
+      const cur = list.find((x) => x.id === d.active) || list[0];
+      if (!cur) { if ($('model-note')) $('model-note').textContent = '还没接模型，先接一家再测。'; return; }
+      modelsTest(cur.id, t);
+    });
+  }
+}
+modelsBind();
 
 async function renderConfigView() {
   await setLoad(false);

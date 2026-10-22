@@ -42,9 +42,10 @@
 会额外开一个命令行窗口，实时日志就显示在那里。不带 `--debug` 时日志写到
 `C:\Users\<用户名>\.bw_agent\agent.log`（UTF-8，超过 2MB 自动轮转一份 `agent.log.1`）。
 
-**第一次会看到界面窗口弹出**（Edge 应用窗口）。这是设计选择：本机实测 WebView2
-**嵌入模式**只能建出环境对象却起不来渲染进程（取证见 `exp\probe.c`），而 Edge 的 `--app`
+**第一次会看到界面窗口弹出**（Edge 应用窗口）。这是设计选择：内嵌浏览器控件这条路
+本机实测走不通（只能建出环境对象却起不来渲染进程，相关代码已删），而 Edge 的 `--app`
 应用窗口渲染正常、外观几乎一样 —— 所以默认走这条更可靠的路。
+另有原生窗口（`UI_MODE=native`，Win32 + GDI+，不依赖浏览器）在逐步接管界面。
 
 ### 数据放哪
 
@@ -60,7 +61,7 @@
 
 ```
 build\网站安全巡检智能体.exe            零参数 = 启动服务并打开界面
-build\agent.exe selftest                自检（当前 94 项，应全过）
+build\agent.exe selftest                自检（当前 113 项，应全过）
 build\agent.exe run skill_full_inspection 127.0.0.1:8081    单跑一个技能，结论可复核
 build\agent.exe tool dir_probe 127.0.0.1:8081               单跑一个工具
 build\agent.exe chat 127.0.0.1:8081     在终端里对话
@@ -68,12 +69,21 @@ build\agent.exe rules                   导出当前生效规则
 build\build.bat                          重新编译（需要 g++ / MinGW-w64）
 ```
 
-> `UI_MODE=off` 只起服务不开窗口（定时任务/自动化用）。
-> 依赖只有 Windows 自带 DLL：`WINHTTP / bcrypt / WS2_32 / SHELL32 / ADVAPI32` + 系统 UCRT。
+> `UI_MODE=off` 只起服务不开窗口（定时任务/自动化用）；`UI_MODE=native` 用原生窗口。
+> 依赖只有 Windows 自带 DLL：`WINHTTP / bcrypt / WS2_32 / SHELL32 / ADVAPI32 / GDIPLUS` + 系统 UCRT。
 
-### 大模型配置（可选）
+### 大模型（可接多家，可在界面里配）
 
-在数据目录放一个 `.env`（照根目录的 `.env.example` 填），或者在 exe 旁边放一份：
+**程序里不带任何厂商的密钥。** 用哪家、用哪个 key，全在「配置 → 模型」里填：
+
+- 三类协议：**OpenAI 兼容**（DeepSeek / Kimi / 通义 / 智谱 / 硅基流动 / OneAPI / vLLM / Ollama …）、
+  **Anthropic**（Messages 接口）、**恒脑开放服务**（appKey + appSecret + 智能体 ID，地址填平台首页即可）；
+- 可以接入多条，**设一条"当前"**，它调不通时按顺序自动顺延下一条（日志里会写「模型已切到备用通道」）；
+- 每条都能**单独测试**：真发一句话，把"地址对不对 / key 对不对 / 模型名对不对"当场说清楚；
+- 配置存在数据目录的 `models.json` 里，密钥**读出来是掩码**（`••••xxxx`），界面保存时留空或保持掩码就表示不改。
+
+也可以不用界面：在数据目录或 exe 旁边放一个 `.env`（照根目录的 `.env.example` 填），
+首次启动会自动把它变成 `models.json` 里的一条恒脑通道 —— 老部署升级不用重新填一遍。
 
 ```
 DAS_BASE_URL=https://www.das-ai.com
@@ -494,7 +504,8 @@ build\agent.exe run skill_我的技能
 ├─ 启动.bat / start.bat            启动入口(可选;exe 本身也能直接双击)
 ├─ tools/mkres.cpp                构建期小工具:把界面与规则转成 C++ 数组编进 exe
 ├─ .env.example                   大模型凭证样例(复制成 .env 填自己的密钥)
-├─ src/                           后端源码(约 1.3 万行, C++20, 零第三方依赖)│   ├─ main.cpp                   入口:零参数启动 / selftest / run / tool / chat / serve / rules
+├─ src/                           后端源码(约 1.3 万行, C++20, 零第三方依赖)
+│   ├─ main.cpp                   入口:零参数启动 / selftest / run / tool / chat / serve / rules
 │   ├─ agent.cpp                  循环:决策、执行、观察、反思、收敛
 │   ├─ ext.cpp ext.h                扩展层:外部工具、技能包、MCP 客户端(都在数据目录里读)
 │   ├─ skills.cpp skills_closure.cpp 技能:检查类 + 收尾类(复测/报告/证据核对)
@@ -503,7 +514,10 @@ build\agent.exe run skill_我的技能
 │   ├─ res.cpp embed.h              资源层:磁盘优先、exe 内置兜底
 │   ├─ webutil.cpp                通用网页处理:指纹、归一、响应头、链接、URL 参数
 │   ├─ net.cpp                    取数通道:WinHTTP + 授权/限速/审计
-│   ├─ llm.cpp                    大模型接入(恒脑)与本地规则降级
+│   ├─ llm_provider.cpp           模型接入层:三类协议(OpenAI 兼容 / Anthropic / 恒脑)、models.json、按顺序兜底
+│   ├─ llm.cpp                    决策与提问:调 provider、解析动作、本地规则降级
+│   ├─ thread_store.cpp           对话存储:threads/<id>/{meta,messages,events} + 索引流水
+│   ├─ native_ui.cpp tray.cpp     原生窗口(Win32 + GDI+)与托盘
 │   ├─ store.cpp                  落盘层:业务对象、去重、状态机、快照
 │   ├─ http.cpp serve.c             自写 HTTP/1.1 + SSE + 路由与只读数据接口
 │   ├─ json.cpp common.c            自写 JSON、缓冲、编码、时间、路径、数据目录解析
@@ -518,6 +532,10 @@ build\agent.exe run skill_我的技能
 ```
 ~\.bw_agent\
 ├─ rules.json            本次适用的检测范围(改这里就换检测口径)
+├─ models.json           接哪几家的模型(界面「配置→模型」写它;密钥不内置,留空=不改)
+├─ pool.json             授权池:哪些主机/路径允许检查
+├─ approval.json         审批策略与槽位
+├─ threads\              对话:index.jsonl(流水) + <会话 id>/{meta.json,messages.jsonl,events.jsonl}
 ├─ agent.log             运行日志(无控制台时/长驻运行都写这里)
 ├─ skills\skill_*.md     内置技能的说明(可改:何时用/解决什么/用到哪些工具)
 ├─ tools\               自己加的外部工具(空的,自己按格式建 <工具名>.json)
@@ -527,12 +545,18 @@ build\agent.exe run skill_我的技能
 └─ audit.jsonl           全量请求审计(时间/目标/方法/状态/是否放行)
 ```
 
+对话是"只追加"的：`messages.jsonl` 一行一条消息（稳定 id、序号、父指针、内容块数组），
+`meta.json` 是快照、`index.jsonl` 是变更流水 —— 列表页不用扫全部消息，写一半崩了也只丢最后一行。
+旧版的 `transcripts\*.jsonl` 第一次启动会自动迁进新结构（迁过的改名 `.migrated`）。
+
 ### 关于界面窗口
 
-宿主只有一档：Edge `--app` 应用窗口，找不到 Chromium 才退回默认浏览器。
+默认宿主是 Edge `--app` 应用窗口（找不到 Chromium 才退回默认浏览器），观感与桌面程序一致。
+另外有一条原生窗口的路（`UI_MODE=native`：Win32 + GDI+，不依赖任何浏览器），
+目前是骨架（三栏布局、可拖拽分隔、托盘常驻），功能正往里搬；**默认仍是 `--app`，保证界面随时可用**。
+
 内嵌浏览器控件这条路已放弃：本机实测只能创建环境对象却起不来渲染进程（~1.1 秒后整棵树退出，无崩溃转储；
-而系统 Edge 以 `--app` 方式同样渲染正常，说明不是沙箱/HVCI 层面的问题），因此默认走 `--app` 应用窗口，
-观感与桌面程序一致。`exp\probe.c` 是当时的取证程序。
+而系统 Edge 以 `--app` 方式同样渲染正常，说明不是沙箱/HVCI 层面的问题），相关代码已全部删除。
 
 应用窗口的**浏览器数据目录放在用户数据目录下**（`%USERPROFILE%\.bw_agent\ui-profile`）：
 程序目录可能不可写（U 盘只读、Program Files、网络共享），也不该在程序旁边留垃圾；

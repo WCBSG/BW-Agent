@@ -696,8 +696,31 @@ std::vector<std::string> fs_list_files(const char *dir, const char *ext) {
   return out;
 }
 
-void fs_remove_tree(const char *dir) {
-  if (!dir || !*dir) return;
+std::vector<std::string> fs_list_dirs(const char *dir) {
+  std::vector<std::string> out;
+  if (!dir || !*dir) return out;
+  char pattern[MAX_PATH * 2];
+  snprintf(pattern, sizeof(pattern), "%s\\*", dir);
+  wchar_t *wpat = u8_to_w(pattern);
+  if (!wpat) return out;
+  WIN32_FIND_DATAW fd;
+  HANDLE h = FindFirstFileW(wpat, &fd);
+  free(wpat);
+  if (h == INVALID_HANDLE_VALUE) return out;
+  do {
+    if (wcscmp(fd.cFileName, L".") == 0 || wcscmp(fd.cFileName, L"..") == 0) continue;
+    if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) continue;
+    char *name8 = w_to_u8(fd.cFileName);
+    if (!name8) continue;
+    out.push_back(name8);
+    free(name8);
+  } while (FindNextFileW(h, &fd));
+  FindClose(h);
+  std::sort(out.begin(), out.end());
+  return out;
+}
+
+void fs_remove_tree(const char *dir) {  if (!dir || !*dir) return;
   /* 先递归删子项,再删自己;删不掉就算了(文件被占用等),不抛异常、不中断 */
   char pattern[MAX_PATH * 2];
   snprintf(pattern, sizeof(pattern), "%s\\*", dir);

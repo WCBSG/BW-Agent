@@ -5,46 +5,12 @@
 
 #include <ctype.h>
 
+#include "llm_provider.h"
 #include "net.h"
 #include "skills.h"
 #include "tools.h"
 
-#include <bcrypt.h>
 
-static llm_config_t g_cfg;
-
-/* ================= 签名 ================= */
-void llm_make_sign(const char *app_key, const char *app_secret, char *out, size_t cap) {
-  out[0] = 0;
-  if (!app_key || !app_secret) return;
-  long long ts = now_ms();
-  buf_t data;
-  buf_init(&data);
-  buf_printf(&data, "%lld\n%s\n%s", ts, app_secret, app_key);
-
-  unsigned char digest[32] = {0};
-  BCRYPT_ALG_HANDLE alg = NULL;
-  BCRYPT_HASH_HANDLE hash = NULL;
-  if (BCryptOpenAlgorithmProvider(&alg, BCRYPT_SHA256_ALGORITHM, NULL,
-                                  BCRYPT_ALG_HANDLE_HMAC_FLAG) == 0) {
-    if (BCryptCreateHash(alg, &hash, NULL, 0, (PUCHAR)app_secret,
-                         (ULONG)strlen(app_secret), 0) == 0) {
-      BCryptHashData(hash, (PUCHAR)data.data, (ULONG)data.len, 0);
-      BCryptFinishHash(hash, digest, sizeof(digest), 0);
-      BCryptDestroyHash(hash);
-    }
-    BCryptCloseAlgorithmProvider(alg, 0);
-  }
-  buf_free(&data);
-
-  buf_t b64;
-  buf_init(&b64);
-  b64_encode(digest, sizeof(digest), &b64);
-  snprintf(out, cap, "%lld%s", ts, b64.data);
-  buf_free(&b64);
-}
-
-/* ================= 配置 ================= */
 /* 最近一次调用模型失败的原因(界面/命令行可以据此说明"为什么降级了") */
 static char *g_last_error = NULL;
 /* 失败冷却截止时刻(毫秒时间戳):失败后短时间内不再重试,避免每步都白等一次超时 */
@@ -57,75 +23,13 @@ void llm_set_last_error(const char *msg) {
 
 const char *llm_last_error(void) { return g_last_error ? g_last_error : ""; }
 
-static void cfg_set(char *dst, size_t cap, const char *value) {
-  strncpy_s(dst, cap, value ? value : "", _TRUNCATE);
-  char *t = str_trim(dst);
-  if (t != dst) memmove(dst, t, strlen(t) + 1);
-}
-
+/* 模型配置全交给 llm_provider:这里只保留"哪一条在生效"的问法 */
 void llm_init(const char *env_dir) {
-  memset(&g_cfg, 0, sizeof(g_cfg));
-  cfg_set(g_cfg.base_url, sizeof(g_cfg.base_url), getenv("DAS_BASE_URL"));
-  if (!g_cfg.base_url[0]) strcpy_s(g_cfg.base_url, sizeof(g_cfg.base_url), "https://www.das-ai.com");
-  cfg_set(g_cfg.app_key, sizeof(g_cfg.app_key), getenv("DAS_APP_KEY"));
-  cfg_set(g_cfg.app_secret, sizeof(g_cfg.app_secret), getenv("DAS_APP_SECRET"));
-  cfg_set(g_cfg.user_app_key, sizeof(g_cfg.user_app_key), getenv("DAS_USER_APP_KEY"));
-  cfg_set(g_cfg.agent_id, sizeof(g_cfg.agent_id), getenv("DAS_AGENT_ID"));
-  cfg_set(g_cfg.agent_keyword, sizeof(g_cfg.agent_keyword), getenv("DAS_AGENT_KEYWORD"));
-  if (!g_cfg.agent_keyword[0]) strcpy_s(g_cfg.agent_keyword, sizeof(g_cfg.agent_keyword), "安全助手");
-  g_cfg.timeout = 90.0;
-  g_cfg.enabled = (g_cfg.app_key[0] && g_cfg.app_secret[0]);
-
-  /* 没有环境变量时,尝试读程序目录下的 .env(部署时最省事的一种) */
-  if (!g_cfg.enabled && env_dir) {
-    char path[MAX_PATH * 2];
-    size_t len = 0;
-    char *text = NULL;
-    /* 先找程序目录;构建产物在 build\ 下,所以再往上找一层 ——
-       部署时把 .env 放在 exe 旁边或项目根目录都能生效 */
-    for (int level = 0; level < 2 && !text; level++) {
-      char dir[MAX_PATH * 2];
-      snprintf(dir, sizeof(dir), "%s", env_dir);
-      for (int k = 0; k < level; k++) {
-        size_t l = strlen(dir);
-        while (l > 0 && (dir[l - 1] == '\\' || dir[l - 1] == '/')) dir[--l] = 0;
-        char *slash = strrchr(dir, '\\');
-        if (!slash) slash = strrchr(dir, '/');
-        if (slash) *slash = 0; else break;
-      }
-      path_join(path, sizeof(path), dir, ".env");
-      text = file_read_all(path, &len);
-    }
-    if (text) {
-      char **lines = NULL;
-      int n = str_split(text, '\n', &lines, 0);
-      for (int i = 0; i < n; i++) {
-        char *line = str_trim(lines[i]);
-        if (!line[0] || line[0] == '#') continue;
-        char *eq = strchr(line, '=');
-        if (!eq) continue;
-        *eq = 0;
-        char *k = str_trim(line);
-        char *v = str_trim(eq + 1);
-        size_t vl = strlen(v);
-        if (vl >= 2 && v[0] == '"' && v[vl - 1] == '"') { v[vl - 1] = 0; v++; }
-        if (str_ieq(k, "DAS_BASE_URL")) cfg_set(g_cfg.base_url, sizeof(g_cfg.base_url), v);
-        else if (str_ieq(k, "DAS_APP_KEY")) cfg_set(g_cfg.app_key, sizeof(g_cfg.app_key), v);
-        else if (str_ieq(k, "DAS_APP_SECRET")) cfg_set(g_cfg.app_secret, sizeof(g_cfg.app_secret), v);
-        else if (str_ieq(k, "DAS_USER_APP_KEY")) cfg_set(g_cfg.user_app_key, sizeof(g_cfg.user_app_key), v);
-        else if (str_ieq(k, "DAS_AGENT_ID")) cfg_set(g_cfg.agent_id, sizeof(g_cfg.agent_id), v);
-        else if (str_ieq(k, "DAS_AGENT_KEYWORD")) cfg_set(g_cfg.agent_keyword, sizeof(g_cfg.agent_keyword), v);
-      }
-      str_free_list(lines, n);
-      free(text);
-      g_cfg.enabled = (g_cfg.app_key[0] && g_cfg.app_secret[0]);
-    }
-  }
+  (void)env_dir;              /* 路径统一由 providers 决定(数据目录下的 models.json) */
+  providers_init();
 }
 
-const llm_config_t *llm_config(void) { return &g_cfg; }
-int llm_enabled(void) { return g_cfg.enabled; }
-
+int llm_enabled(void) { return providers_ready_count() > 0; }
 /* ================= 决策解析(容错) ================= */
 /* 模型爱加解释、爱包代码块、爱把 JSON 写坏。这里从最可信到最宽泛逐级尝试。 */
 static const char *find_json_span(const char *s, size_t *out_len) {
@@ -414,148 +318,69 @@ static void build_prompt(buf_t *out, agent_t *a, const char *user_text,
       "args 只填必需参数,不要枚举长列表。\n");
 }
 
-/* 解析 JSON 里的 SSE 数据行 */
+/* 一次补全:按"当前厂商优先,其余就绪的顺延"依次尝试。
+   这么排的原因很实际 —— 用户把某家设成当前,是希望优先用它;
+   但它限流或欠费时,这一轮不该就此失败,顺延到下一家还能把活干完。 */
 typedef struct {
-  buf_t line;       /* 行缓冲:一次 read 可能只到半行 */
-  agent_t *agent;   /* 用来把正文增量推给界面 */
-  int suppress;     /* 判定为决策 JSON 后,这一轮不再往外播 */
-} sse_stream_t;
+  agent_t *agent;     /* 用来把正文增量推给界面 */
+  int suppress;       /* 判定为决策 JSON 后,这一轮不再往外播 */
+} emit_ctx_t;
 
-static void sse_emit_prose(sse_stream_t *st, const char *content) {
-  if (st->suppress || !content || !*content) return;
-  const char *p = content;
+static void emit_prose(void *ud, const char *text) {
+  emit_ctx_t *c = (emit_ctx_t *)ud;
+  if (!c || c->suppress || !text || !*text) return;
+  const char *p = text;
   while (*p == ' ' || *p == '\n' || *p == '\r' || *p == '\t') p++;
   /* 决策本身是 JSON(或 JSON 的前半截),不是给人读的正文 —— 别一个字一个字地抖 */
-  if (*p == '{' || *p == '[' || *p == '"') { st->suppress = 1; return; }
-  agent_emit_delta(st->agent, content);
+  if (*p == '{' || *p == '[' || *p == '"') { c->suppress = 1; return; }
+  if (c->agent) agent_emit_delta(c->agent, text);
 }
 
-static void sse_on_chunk(void *ud, const char *data, size_t n) {
-  sse_stream_t *st = (sse_stream_t *)ud;
-  for (size_t i = 0; i < n; i++) {
-    char c = data[i];
-    if (c != '\n') { buf_putc_(&st->line, c); continue; }
-    char *ln = str_trim(st->line.data ? st->line.data : (char *)"");
-    /* 先解析再清空:buf_clear 会把缓冲首字节置 0,先清后读等于什么都没读 */
-    if (ln[0] && str_startswith(ln, "data:")) {
-      char *js = str_trim(ln + 5);
-      if (js[0] && js[0] != '[') {
-        json_t *o = json_parse(js);
-        if (o) {
-          json_t *d = j_get(o, "data");
-          const char *content = j_s(d, "content", NULL);
-          sse_emit_prose(st, content);
-          json_free(o);
-        }
-      }
+static int llm_call(agent_t *a, const char *prompt, buf_t *answer_out) {
+  buf_clear(answer_out);
+  int total = providers_count();
+  if (total <= 0 || !prompt || !*prompt) return -1;
+
+  int start = providers_active_index();
+  if (start < 0) start = 0;
+
+  char last[512] = "";
+  int tried = 0;
+  for (int k = 0; k < total; k++) {
+    int idx = (start + k) % total;
+    provider_t *p = provider_at(idx);
+    if (!provider_ready(p)) continue;
+    tried++;
+
+    emit_ctx_t ec;
+    memset(&ec, 0, sizeof(ec));
+    ec.agent = a;
+    char err[512] = "";
+    int rc = provider_chat(p, prompt, emit_prose, &ec, answer_out, err, sizeof(err));
+    if (rc == 0 && answer_out->len > 0) {
+      if (k > 0) log_info("模型已切到备用通道:%s", p->name);
+      return 0;
     }
-    buf_clear(&st->line);
+    snprintf(last, sizeof(last), "%s:%s", p->name, err[0] ? err : "没有返回内容");
+    log_warn("模型 %s 调用失败(%s),尝试下一条", p->name, err[0] ? err : "空回复");
+    /* 失败时可能已经有半截输出,清掉再换下一条,免得两家的回答接在一起 */
+    buf_clear(answer_out);
   }
-}
-
-static int hn_call(agent_t *a, const char *prompt, buf_t *answer_out) {
-  if (!g_cfg.enabled) return -1;
-  char sign[512];
-  llm_make_sign(g_cfg.app_key, g_cfg.app_secret, sign, sizeof(sign));
-
-  buf_t payload;
-  buf_init(&payload);
-  buf_puts(&payload, "{\"id\":");
-  buf_json_str(&payload, g_cfg.agent_id);
-  buf_puts(&payload, ",\"sid\":\"");
-  /* sid 必须是 UUID 格式:用时间戳拼一个稳定且合规的伪 UUID */
-  {
-    unsigned int r = (unsigned int)(now_ms() & 0xFFFFFFFF);
-    buf_printf(&payload, "%08x-0000-4000-8000-%08x%04x", r, r,
-               (unsigned)(now_ms() & 0xFFFF));
+  if (tried == 0) {
+    llm_set_last_error("没有可用的模型配置");
+  } else {
+    llm_set_last_error(last);
   }
-  buf_puts(&payload, "\",\"input\":");
-  buf_json_str(&payload, prompt);
-  buf_puts(&payload, ",\"stream\":true,\"order\":\"routine\",\"debugSwitch\":false}");
-
-  char url[512];
-  snprintf(url, sizeof(url), "%s/open/api/v2/agent/execute", g_cfg.base_url);
-
-  http_resp_t resp;
-  /* 模型端点是"我们的依赖",不是"被检目标",所以不套用被检目标的只读限制;
-     但它同样要留审计 —— 调用失败必须能查。 */
-  sse_stream_t st;
-  memset(&st, 0, sizeof(st));
-  buf_init(&st.line);
-  st.agent = a;
-  hn_http_post_stream(url, g_cfg.app_key, sign, payload.data, sse_on_chunk, &st, &resp);
-  buf_free(&st.line);
-  buf_free(&payload);
-
-  int rc = -1;
-  if (resp.error) {
-    log_warn("恒脑调用失败: %s", resp.error);
-    llm_set_last_error(resp.error);
-  } else if (resp.status != 200) {
-    log_warn("恒脑返回 HTTP %d", resp.status);
-    llm_set_last_error("接口返回非 200");
-  } else if (resp.body && resp.body[0] == '{') {
-    /* 平台在鉴权/参数不对时也是 HTTP 200,但在体里给错误:
-         {"msg":"请求头中缺少appKey或sign","code":-402,...}
-       这种必须原样说出来 —— 否则用户只看到「解析失败」,不知道该去填 .env。 */
-    json_t *o = json_parse(resp.body);
-    const char *msg = o ? j_s(o, "msg", NULL) : NULL;
-    if (msg && *msg) {
-      double code = o ? j_n(o, "code", 0) : 0;
-      log_warn("恒脑接口拒绝请求: %s(code=%.0f)。检查数据目录或 exe 旁的 .env 里的 "
-               "DAS_APP_KEY / DAS_APP_SECRET / DAS_AGENT_ID", msg, code);
-      llm_set_last_error(msg);
-    }
-    json_free(o);
-  } else if (resp.body) {
-    /* SSE:逐行取 data:{...};答案类内容(execute_result/react_answer)优先 */
-    char **lines = NULL;
-    int n = str_split(resp.body, '\n', &lines, 0);
-    buf_t answer;
-    buf_init(&answer);
-    buf_t fallback;
-    buf_init(&fallback);
-    for (int i = 0; i < n; i++) {
-      char *line = str_trim(lines[i]);
-      if (!str_startswith(line, "data:")) continue;
-      char *js = str_trim(line + 5);
-      if (!js[0]) continue;
-      json_t *o = json_parse(js);
-      if (!o) continue;
-      json_t *data = j_get(o, "data");
-      const char *content = j_s(data, "content", NULL);
-      const char *from = j_s(data, "from", "");
-      if (content && *content) {
-        int is_answer = (strcmp(from, "execute_result") == 0 ||
-                         strcmp(from, "react_answer") == 0 ||
-                         strcmp(from, "restful_answer") == 0);
-        if (is_answer) buf_puts(&answer, content);
-        else buf_puts(&fallback, content);
-      }
-      json_free(o);
-    }
-    str_free_list(lines, n);
-    buf_puts(answer_out, answer.len ? answer.data : fallback.data);
-    rc = answer_out->len ? 0 : -1;
-    buf_free(&answer);
-    buf_free(&fallback);
-  }
-  http_resp_free(&resp);
-  return rc;
+  return -1;
 }
 
 int llm_decide(agent_t *a, const char *user_text, json_t *observations,
                const char *scope_note, decision_t *out) {
   memset(out, 0, sizeof(*out));
-  if (!g_cfg.enabled) return -1;
-  /* 端点刚失败过就先别试:一轮要决策 6 次,每次都白等一次超时的话,
+  if (!llm_enabled()) { llm_set_last_error("没有可用的模型配置"); return -1; }
+  /* 全都失败过就先别试:一轮要决策 6 次,每次都白等一次超时的话,
      用户看到的就是"智能体在发呆"。冷却期内直接走本地规则,并保留失败原因。 */
   if (g_fail_until_ms > 0 && now_ms() < g_fail_until_ms) return -1;
-  if (!g_cfg.agent_id[0]) {
-    /* 没配智能体 ID 就按关键词检索一个 —— 与 Python 版同样的策略 */
-    log_warn("未配置 DAS_AGENT_ID,本次先用本地规则路由");
-    return -1;
-  }
 
   buf_t prompt;
   buf_init(&prompt);
@@ -563,32 +388,33 @@ int llm_decide(agent_t *a, const char *user_text, json_t *observations,
 
   buf_t answer;
   buf_init(&answer);
-  int rc = hn_call(a, prompt.data, &answer);
+  int rc = llm_call(a, prompt.data, &answer);
   buf_free(&prompt);
 
   if (rc != 0) {
     buf_free(&answer);
-    g_fail_until_ms = now_ms() + 120000;      /* 两分钟内不再重试同一个端点 */
+    g_fail_until_ms = now_ms() + 120000;      /* 两分钟内不再重试 */
     return -1;
   }
 
   int pr = llm_extract_action(answer.data, out);
   if (pr != 0) {
     log_warn("模型输出无法解析为决策(rc=%d),长度 %zu", pr, answer.len);
-    net_audit("llm_bad_output", "hn", 0, answer.data ? answer.data : "", NULL);
+    net_audit("llm_bad_output", providers_active_id(), 0,
+              answer.data ? answer.data : "", NULL);
   } else {
     g_fail_until_ms = 0;
+    llm_set_last_error("");
   }
   buf_free(&answer);
   return pr == 0 ? 0 : -2;
 }
 
 int llm_ask(const char *prompt, buf_t *out) {
-  if (!g_cfg.enabled) return -1;
+  if (!llm_enabled()) return -1;
   if (g_fail_until_ms > 0 && now_ms() < g_fail_until_ms) return -1;
-  if (!g_cfg.agent_id[0]) return -1;
   if (!prompt || !*prompt) return -1;
-  int rc = hn_call(NULL, prompt, out);
+  int rc = llm_call(NULL, prompt, out);
   if (rc != 0) {
     g_fail_until_ms = now_ms() + 120000;
     return -1;

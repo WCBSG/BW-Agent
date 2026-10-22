@@ -1,4 +1,4 @@
-﻿/* app.css —— 三段式界面
+/* app.css —— 三段式界面
  *
  *   起手式（#home）    只问一句「要巡检哪个站」，纸白底。
  *   任务工作台（#work） 左任务 / 中执行经过 / 右产物，同一套纸白。
@@ -862,13 +862,13 @@ body.no-motion *{animation:none !important;transition:none !important}
 .cap-field{display:flex;flex-direction:column;gap:4px}
 .cap-field.wide{grid-column:1/-1}
 .cap-field label{font-size:11.5px;color:var(--ink-3)}
-.cap-field input,.cap-field textarea{border:1px solid var(--line-2);border-radius:6px;padding:6px 9px;
+.cap-field input,.cap-field textarea,.cap-field select{border:1px solid var(--line-2);border-radius:6px;padding:6px 9px;
   font-size:12.5px;outline:none;background:var(--panel)}
 .cap-field textarea{font-family:var(--mono);font-size:11.5px;line-height:1.55;resize:vertical}
-.cap-field input:focus,.cap-field textarea:focus{border-color:#bdbdb5}
+.cap-field input:focus,.cap-field textarea:focus,.cap-field select:focus{border-color:#bdbdb5}
 .cap-foot{display:flex;align-items:center;gap:10px;margin-top:12px}
-.cap-foot #cap-save{background:var(--ink);color:#fdfcf9;border-radius:6px;padding:6px 14px;font-size:12.5px;font-weight:600}
-.cap-foot #cap-save:disabled{opacity:.55;cursor:default}
+.cap-foot #cap-save,.cap-foot #model-save{background:var(--ink);color:#fdfcf9;border-radius:6px;padding:6px 14px;font-size:12.5px;font-weight:600}
+.cap-foot #cap-save:disabled,.cap-foot #model-save:disabled{opacity:.55;cursor:default}
 .cap-foot .cap-msg{font-size:11.5px;color:var(--ink-3)}
 
 /* 窄屏：分类改成横向滚动条，表单收成一列 */

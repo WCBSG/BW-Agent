@@ -136,6 +136,8 @@ int  file_append(const char *path, const char *data, size_t len);
      · std::filesystem 只有一套 Unicode 语义,这类 bug 从根上不会再有。
    返回文件名(不含目录),按名字排序,方便复现与测试。 */
 std::vector<std::string> fs_list_files(const char *dir, const char *ext);
+/* 只列子目录名(线程目录这种"一个会话一个文件夹"的形态要用) */
+std::vector<std::string> fs_list_dirs(const char *dir);
 /* 递归删除目录(尽力而为:删不掉的就留着,不抛异常、不中断) */
 void fs_remove_tree(const char *dir);
 
