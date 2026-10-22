@@ -247,7 +247,9 @@ function renderStatus(s) {
   const sideStatus = $('side-scope-status');
   const sideName = $('side-scope-name');
   if (sideStatus) {
-    sideStatus.textContent = poolSize ? `授权池 ${poolSize} 个主机` : '授权池为空';
+    /* 两行各说一件事:上面是"边界有多大",下面是"边界怎么起作用" ——
+       都写成"授权池 N 个主机"等于重复了一遍。 */
+    sideStatus.textContent = poolSize ? '池外目标一律拦下' : '确认授权后开始巡检';
     sideStatus.dataset.ready = poolSize ? 'true' : 'false';
   }
   if (sideName) sideName.textContent = poolSize ? `授权池 ${poolSize} 个主机` : '先加一个授权主机';
@@ -573,7 +575,7 @@ function endTurn() {
   api('/api/status').then(renderStatus).catch(() => {});
   renderRail();
   renderRecent();
-  renderTasks();
+  renderChats();
 }
 
 function send(text) {
@@ -606,7 +608,7 @@ function send(text) {
   $('q').style.height = 'auto';
   setBusy(true);
   /* 后端建好这一轮再刷新左栏，否则新任务不会出现在列表里 */
-  setTimeout(() => { renderTasks().catch(() => {}); }, 900);
+  setTimeout(() => { renderChats().catch(() => {}); }, 900);
   trace.textContent = '';
   if (stepsBox) stepsBox.innerHTML = '<div class="muted">执行后按步列出。</div>';
 
@@ -1004,31 +1006,7 @@ async function renderRecent() {
   }
 }
 
-/* 分组折叠状态记在本机 —— 关掉页面再回来，还是你上次展开的样子 */
-const GROUP_KEY = 'bw-groups';
-function groupOpen(key) {
-  try {
-    const m = JSON.parse(localStorage.getItem(GROUP_KEY) || '{}');
-    return m[key] !== false;
-  } catch (e) { return true; }
-}
-function toggleGroup(key) {
-  try {
-    const m = JSON.parse(localStorage.getItem(GROUP_KEY) || '{}');
-    m[key] = m[key] === false;
-    localStorage.setItem(GROUP_KEY, JSON.stringify(m));
-  } catch (e) { /* 隐私模式也能用 */ }
-}
-
-/* 归档状态:存在后端(换浏览器也还在),前端只负责分组 */
-async function archiveState() {
-  try {
-    const r = await api('/api/chats?archived=1');
-    const m = {};
-    for (const x of r.items || []) m[x.id] = !!x.archived;
-    return m;
-  } catch (e) { return {}; }
-}
+/* 归档状态:存在后端(换浏览器也还在);会话列表按它过滤 */
 async function setArchived(id, on) {
   return api('/api/chats', {
     method: 'POST',
@@ -1036,93 +1014,91 @@ async function setArchived(id, on) {
   });
 }
 
-async function renderTasks() {
-  const box = $('tasks');
+/* 「已归档」那一组是展开还是收起(默认收起) */
+let CHAT_ARCH_OPEN = (() => {
+  try { return localStorage.getItem('bw-chat-arch') === '1'; } catch (e) { return false; }
+})();
+
+async function renderChats() {
+  const box = $('chats');
   if (!box) return;
-  const [{ list, taskMap }, arch] = await Promise.all([recentData(), archiveState()]);
+  let r;
+  try { r = await api('/api/chats'); } catch (e) { return; }
+  const all = (r.items || []).filter((m) => m.id || m.thread_id);
+  const byTime = (a, b) =>
+    String(b.updated_at || '').localeCompare(String(a.updated_at || ''));
+  const rows = all.filter((m) => !m.archived).sort(byTime);
+  const archived = all.filter((m) => m.archived).sort(byTime);
+
   box.innerHTML = '';
-  if (!list.length) {
-    box.appendChild(el('div', 'grp', '还没有运行记录'));
-    return;
+  const head = el('div', 'grp');
+  const gl = el('span', 'gl');
+  gl.appendChild(el('span', null, '会话'));
+  head.appendChild(gl);
+  head.appendChild(el('b', null, String(rows.length)));
+  box.appendChild(head);
+  if (!rows.length) {
+    box.appendChild(el('div', 'side-empty', '还没有会话。说一句话就会出现在这里。'));
+  } else {
+    for (const m of rows.slice(0, 30)) box.appendChild(chatRow(m));
   }
-  const archivedRows = list.filter((r) => arch[r.id]);
-  const active = list.filter((r) => !arch[r.id]);
 
-  const groups = [['running', '进行中'], ['paused', '待复核'], ['failed', '失败'], ['done', '已完成']];
-  const known = groups.map(([k]) => k);
-  const other = active.filter((r) => !known.includes(r.status || 'done'));
-
-  const addGroup = (key, label, rows, isArchived) => {
-    const head = el('button', 'grp');
-    head.type = 'button';
-    head.title = groupOpen(key) ? '收起这一组' : '展开这一组';
-    const gl = el('span', 'gl');
-    gl.innerHTML = '<svg class="cv" viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>';
-    gl.appendChild(el('span', null, label));
-    head.appendChild(gl);
-    head.appendChild(el('b', null, String(rows.length)));
-    if (!groupOpen(key)) head.classList.add('closed');
-    head.addEventListener('click', () => { toggleGroup(key); renderTasks(); });
-    box.appendChild(head);
-    if (!groupOpen(key)) return;
-    for (const r of rows) box.appendChild(taskRow(r, taskMap[r.task_id], isArchived));
-  };
-
-  for (const [key, label] of groups) {
-    const rows = active.filter((r) => (r.status || 'done') === key);
-    if (rows.length) addGroup(key, label, rows, false);
+  /* 归档不是删除:折叠在下面,想找回来随时点开 —— 不给人"点一下就没了"的感觉 */
+  if (archived.length) {
+    const ah = el('button', 'grp');
+    ah.type = 'button';
+    const agl = el('span', 'gl');
+    agl.innerHTML = '<svg class="cv" viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>';
+    agl.appendChild(el('span', null, '已归档'));
+    ah.appendChild(agl);
+    ah.appendChild(el('b', null, String(archived.length)));
+    if (!CHAT_ARCH_OPEN) ah.classList.add('closed');
+    ah.addEventListener('click', () => {
+      CHAT_ARCH_OPEN = !CHAT_ARCH_OPEN;
+      try { localStorage.setItem('bw-chat-arch', CHAT_ARCH_OPEN ? '1' : '0'); } catch (e) { /* 隐私模式 */ }
+      renderChats();
+    });
+    box.appendChild(ah);
+    if (CHAT_ARCH_OPEN) for (const m of archived.slice(0, 30)) box.appendChild(chatRow(m));
   }
-  if (other.length) addGroup('other', '其它', other, false);
-  if (archivedRows.length) addGroup('archived', '已归档', archivedRows, true);
-
-  const first = box.querySelector('.titem');
-  if (first) first.setAttribute('aria-current', 'true');
 }
 
-function taskRow(r, t, archived) {
-  const row = el('button', 'titem' + (archived ? ' archived' : ''));
+function chatRow(m) {
+  const id = m.id || m.thread_id;
+  const cur = id === BW_SID;
+  const row = el('button', 'titem' + (m.archived ? ' archived' : ''));
   row.type = 'button';
+  if (cur) row.setAttribute('aria-current', 'true');
+
   const r1 = el('span', 'r1');
-  r1.appendChild(el('span', 't', `${r.id} · ${(t && t.name) || r.triggered_by || '巡检'}`));
-  const dot = el('span', 'sdot ' + (r.status || 'done'));
-  r1.appendChild(dot);
+  const title = el('span', 't', m.title || '未命名对话');
+  title.title = m.title || '';
+  r1.appendChild(title);
   row.appendChild(r1);
+
   const r2 = el('span', 'r2');
-  r2.appendChild(el('span', 'sub', `${r.pages_found || 0} 页 · ${r.tools_called || 0} 次调用 · ${fmtTime(r.started_at)}`));
-  if (r.findings_new) {
-    const df = el('span', 'df');
-    df.appendChild(el('em', null, '+' + r.findings_new));
-    r2.appendChild(df);
-  }
+  r2.appendChild(el('span', 'sub',
+    `${m.message_count || 0} 条 · ${fmtTime(m.updated_at || m.created_at)}`));
   row.appendChild(r2);
 
-  /* 归档:悬停才出现，不抢注意力；点一下挪进/挪出「已归档」 */
+  /* 归档/取回:悬停才出现，不抢注意力 */
   const ab = el('button', 'ar');
   ab.type = 'button';
-  ab.title = archived ? '取消归档' : '归档';
-  ab.innerHTML = archived
+  ab.title = m.archived ? '取消归档' : '归档这条会话';
+  ab.innerHTML = m.archived
     ? '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v9"/><path d="m8 10 4 4 4-4"/><path d="M5 19h14"/></svg>'
     : '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16"/><path d="M9 7V5h6v2"/><path d="M6.5 7 7.5 20h9L17.5 7"/></svg>';
   ab.addEventListener('click', async (ev) => {
     ev.stopPropagation();
     ab.disabled = true;
-    try {
-      await setArchived(r.id, !archived);
-      state.cache = {};
-      await renderTasks();
-    } catch (e) { /* 失败就保持原样 */ }
+    try { await setArchived(id, !m.archived); renderChats(); } catch (e) { /* 失败就保持原样 */ }
     ab.disabled = false;
   });
   row.appendChild(ab);
 
-  row.addEventListener('click', () => {
-    document.querySelectorAll('.titem').forEach((x) => x.setAttribute('aria-current', 'false'));
-    row.setAttribute('aria-current', 'true');
-    openRun(r.id);
-  });
+  row.addEventListener('click', () => openChat(id));
   return row;
 }
-
 /* 右栏的"产物"：报告卡直接来自最新一份报告，没有就写成未生成 */
 async function renderRail() {
   const [rep, fl] = await Promise.all([
@@ -1194,7 +1170,7 @@ function raise(name, dir) {
       node.classList.remove('on', 'enter-down');
     }
   }
-  if (name === 'work') renderTasks();
+  if (name === 'work') renderChats();
 }
 
 function showHome() {
@@ -1230,7 +1206,7 @@ function newChat() {
   clearAttachments();
   resetStream();
   showWork();
-  renderTasks();
+  renderChats();
   const q = $('q');
   if (q) setTimeout(() => q.focus(), 180);
 }
@@ -3617,6 +3593,7 @@ document.addEventListener('keydown', (e) => {
     console.warn('连不上后端服务：' + e.message);
   }
   renderRecent();
+  renderChats();
   renderRail();
   renderAutomationView().catch(() => {});
   renderApprovals().catch(() => {});

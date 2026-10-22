@@ -383,6 +383,7 @@ body.col-resizing *{cursor:col-resize !important}
 }
 .new:hover{border-color:#bfbfba}
 .side-list{flex:1;overflow:auto;padding:4px 8px 10px;min-height:0}
+.side-empty{padding:10px 9px;font-size:12px;color:var(--ink-3);line-height:1.5}
 .side-foot{border-top:1px solid var(--line);padding:9px 14px;font-size:12px;color:var(--ink-3)}
 .side-foot b{display:block;color:var(--ink-2);font-weight:500;font-size:12.5px}
 .side-foot [data-ready="false"]{color:var(--bad)}

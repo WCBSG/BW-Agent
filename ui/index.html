@@ -93,7 +93,9 @@
       </div>
       <button class="new" id="btn-new" type="button">＋ 新建巡检</button>
     </div>
-    <div class="side-list" id="tasks"></div>
+    <!-- 会话在上、运行记录在下:主流 agent 的左栏先给"聊过什么",
+         运行记录是另一条轴(巡检轮次),两者混在一列里会看不出区别 -->
+    <div class="side-list" id="chats"></div>
     <div class="side-foot">
       <b id="side-scope-name">未设置目标</b>
       <span id="side-scope-status">确认授权后开始巡检</span>
