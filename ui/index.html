@@ -298,40 +298,25 @@
         <div class="cards" id="eval-missing"></div>
       </section>
     </section><!-- 配置编辑 -->
-    <!-- 规则（可编辑，按 6 个域分开存） -->
+    <!-- 规则（可编辑，按 6 个域分开存）— 结构与「设置」一致：左导航 + 右表单 + 底部保存 -->
     <section class="view" id="view-rules">
-      <section class="panel">
-        <div class="panel-head">
-          <div><h2>检测规则</h2></div>
-          <span class="hint" id="rules-hint"></span>
-        </div>
-        <p class="note" id="rules-source"></p>
-        <div class="config-grid">
-          <div class="config-side">
-            <div class="config-side-head"><span>按域编辑</span></div>
-            <div class="filelist" id="rules-domains"></div>
+      <div class="set-shell">
+        <nav class="set-nav" id="rules-domains" aria-label="规则域"></nav>
+        <div class="set-main">
+          <div class="set-head">
+            <h2 id="rules-title">检测口径</h2>
+            <span id="rules-domain-note"></span>
           </div>
-          <div class="config-main">
-            <div class="config-main-head">
-              <code id="rules-domain-file">detect.json</code>
-              <span class="muted" id="rules-domain-note"></span>
-              <span class="grow"></span>
-              <button class="ghost" id="rules-reload">重新载入</button>
-              <button id="rules-save">保存这一域</button>
-            </div>
-            <div class="set-form" id="rules-form"></div>
-            <div class="config-foot">
-              <span class="note" id="rules-msg"></span>
-              <span class="muted">保存后立即生效，不用重启</span>
-            </div>
+          <div class="set-form" id="rules-form"></div>
+          <div class="set-foot">
+            <button id="rules-save">保存这一域</button>
+            <button class="ghost" id="rules-reload">重新载入</button>
+            <span id="rules-msg"></span>
+            <span class="grow"></span>
+            <span class="set-msg" id="rules-hint"></span>
           </div>
         </div>
-      </section>
-      <section class="panel">
-        <div class="panel-head"><div><h2>当前生效（合并后）</h2></div>
-          <span class="hint">只读：6 个域合并起来到底是什么，一眼核对</span></div>
-        <div class="table-wrap"><pre class="rules-preview" id="rules-preview"></pre></div>
-      </section>
+      </div>
     </section>
 
     <!-- 自动化（周期巡检） -->

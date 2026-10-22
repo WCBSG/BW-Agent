@@ -177,8 +177,8 @@ static int cfg_allowed(const char *name) {
   int js = str_endswith(name, ".json");
   if (!md && !js) return 0;
   if (slash == 0) {
-    return strcmp(name, "rules.json") == 0 || strcmp(name, "mcp.json") == 0 ||
-           strcmp(name, "rules.default.json") == 0;
+    /* 旧的 rules.json 不再参与:规则已拆到 rules\ 下,留着入口只会让人改一个不生效的文件 */
+    return strcmp(name, "mcp.json") == 0 || strcmp(name, "rules.default.json") == 0;
   }
   if (slash != 1) return 0;
   if (str_startswith(name, "skills\\") || str_startswith(name, "skills/")) return md;
@@ -201,7 +201,25 @@ static int cfg_path(const char *name, char *out, size_t cap) {
 void api_config_list(const http_req_t *req, http_res_t *res) {
   (void)req;
   json_t *arr = j_arr();
-  const char *fixed[] = {"rules.json", "mcp.json", NULL};
+
+  /* 规则按域各一个文件:列在最上面(改检测口径是最常见的动作) */
+  char rules_dir[MAX_PATH * 2];
+  rules_domain_dir(rules_dir, sizeof(rules_dir));
+  for (int i = 0; i < rules_domain_count(); i++) {
+    const rules_domain_t *d = rules_domain_at(i);
+    char rel[96], full[MAX_PATH * 4];
+    snprintf(rel, sizeof(rel), "rules\\%s", d->file);
+    path_join(full, sizeof(full), rules_dir, d->file);
+    long sz = file_size(full);
+    json_t *o = j_obj();
+    j_set_str(o, "name", rel);
+    j_set_bool(o, "exists", sz >= 0 ? 1 : 0);
+    j_set_num(o, "size", sz > 0 ? (double)sz : 0);
+    j_set_str(o, "group", "检测规则(按域)");
+    j_add(arr, o);
+  }
+
+  const char *fixed[] = {"mcp.json", NULL};
   for (int i = 0; fixed[i]; i++) {
     char path[MAX_PATH * 2];
     app_data_path(path, sizeof(path), fixed[i]);
@@ -210,7 +228,7 @@ void api_config_list(const http_req_t *req, http_res_t *res) {
     j_set_str(o, "name", fixed[i]);
     j_set_bool(o, "exists", sz >= 0 ? 1 : 0);
     j_set_num(o, "size", sz > 0 ? (double)sz : 0);
-    j_set_str(o, "group", strcmp(fixed[i], "rules.json") == 0 ? "检测口径" : "外部能力");
+    j_set_str(o, "group", "外部能力");
     j_add(arr, o);
   }
   /* skills\*.md 与 tools\*.json */

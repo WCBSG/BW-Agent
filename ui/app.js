@@ -2440,10 +2440,10 @@ function renderRuleDomains() {
   if (!box) return;
   box.innerHTML = '';
   for (const d of RULE.domains) {
-    const b = el('button', 'fileitem' + (RULE.current === d.id ? ' active' : ''));
+    /* 和设置页同一套 tab 样式:规则也是"左边分类、右边改这一分类" */
+    const b = el('button', 'set-tab' + (RULE.current === d.id ? ' active' : ''), d.title || d.id);
     b.type = 'button';
-    b.appendChild(el('span', 'fname', d.title || d.id));
-    b.appendChild(el('span', 'fmeta', d.exists ? (d.size + ' B') : '未生成'));
+    b.title = d.note || '';
     b.addEventListener('click', () => {
       RULE.current = d.id;
       if ($('rules-msg')) $('rules-msg').textContent = '';
@@ -2458,7 +2458,7 @@ function renderRulePage() {
   const form = $('rules-form');
   if (!form) return;
   const d = RULE.domains.find((x) => x.id === RULE.current) || { id: 'detect' };
-  if ($('rules-domain-file')) $('rules-domain-file').textContent = d.file || (d.id + '.json');
+  if ($('rules-title')) $('rules-title').textContent = d.title || '检测口径';
   if ($('rules-domain-note')) $('rules-domain-note').textContent = d.note || '';
   form.innerHTML = '';
   for (const f of ruleFieldsOf(RULE.current)) form.appendChild(setFieldEl(f));
@@ -2472,21 +2472,12 @@ async function renderRulesView(force) {
     RULES = r.rules || {};
     RULE.domains = r.domains || [];
     RULE.loaded = true;
-    if ($('rules-source')) {
-      $('rules-source').textContent =
-        `每个域一个文件，存在 ${r.dir || '数据目录\\rules'}；保存只写当前这一域，立即生效。`;
-    }
     if (hint) hint.textContent = `${RULE.domains.length} 个域 · 改哪一类就只动那一个文件`;
     if (!RULE.domains.find((x) => x.id === RULE.current) && RULE.domains.length) {
       RULE.current = RULE.domains[0].id;
     }
     renderRuleDomains();
     renderRulePage();
-    const pre = $('rules-preview');
-    if (pre) {
-      const text = JSON.stringify(r.rules || {}, null, 2);
-      pre.textContent = text.length > 24000 ? text.slice(0, 24000) + '\n… （只显示前 24000 字）' : text;
-    }
   } catch (e) {
     if (hint) hint.textContent = '读不到规则：' + ((e && e.message) || e);
   }
