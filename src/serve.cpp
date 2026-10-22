@@ -17,6 +17,7 @@
 #include <ctime>
 
 #include "agent.h"
+#include "api.h"
 #include "approval.h"
 #include "automation.h"
 #include "embed.h"
@@ -31,6 +32,7 @@
 #include "profile.h"
 #include "res.h"
 #include "rules.h"
+#include "serve_ctx.h"
 #include "skills.h"
 #include "store.h"
 #include "tools.h"
@@ -726,6 +728,20 @@ static char *build_status_json(void) {
 }
 
 /* 重建状态缓存(调用方必须已持有 g_lock) */
+/* ---------- 给拆出去的接口实现用的小门(见 serve_ctx.h) ---------- */
+store_t *serve_store(void) { return g_store; }
+const char *serve_task_id(void) { return g_task; }
+
+void serve_audit_line(const char *action, const char *target, const char *detail) {
+  if (!g_store) return;
+  store_audit(g_store, action, target, 1, detail, g_task, "");
+}
+
+/* 顶部状态是缓存出来的:规则/配置一变就得重算,否则界面还显示旧口径 */
+static void refresh_status_cache(void);
+
+void serve_refresh_status(void) { refresh_status_cache(); }
+
 static void refresh_status_cache(void) {
   char *j = build_status_json();
   EnterCriticalSection(&g_status_lock);
@@ -820,241 +836,6 @@ static int api_guard(const http_req_t *req, http_res_t *res) {
     return 0;
   }
   return 1;
-}
-
-/* ================= 配置文件的读写(前台可编辑) =================
-   界面里要能直接改规则/技能/工具/MCP,不用去开记事本。安全边界写死在这里:
-     · 只允许数据目录下的白名单文件:rules.json、mcp.json、skills\*.md、tools\*.json
-     · 名字里不许出现 .. / 绝对路径 / 多层目录(只允许"一层子目录 + 文件名")
-     · 单文件上限 256KB;写之前先备份成 <名字>.bak;JSON 必须先解析通过才落盘
-   这样"能改配置"和"不能被当成任意文件写入漏洞"两件事同时成立。 */
-#define CFG_MAX_BYTES (256 * 1024)
-
-static int cfg_allowed(const char *name) {
-  if (!name || !*name) return 0;
-  size_t len = strlen(name);
-  if (len > 128) return 0;
-  if (strstr(name, "..") || strchr(name, ':') || name[0] == '\\' || name[0] == '/') return 0;
-  int slash = 0;
-  for (const char *p = name; *p; p++) {
-    if (*p == '\\' || *p == '/') slash++;
-  }
-  int md = str_endswith(name, ".md");
-  int js = str_endswith(name, ".json");
-  if (!md && !js) return 0;
-  if (slash == 0) {
-    return strcmp(name, "rules.json") == 0 || strcmp(name, "mcp.json") == 0 ||
-           strcmp(name, "rules.default.json") == 0;
-  }
-  if (slash != 1) return 0;
-  if (str_startswith(name, "skills\\") || str_startswith(name, "skills/")) return md;
-  if (str_startswith(name, "tools\\") || str_startswith(name, "tools/")) return js;
-  return 0;
-}
-
-/* 把白名单名字解析成数据目录下的绝对路径;返回 1 成功 */
-static int cfg_path(const char *name, char *out, size_t cap) {
-  if (!cfg_allowed(name)) return 0;
-  char norm[192];
-  snprintf(norm, sizeof(norm), "%s", name);
-  for (char *p = norm; *p; p++) if (*p == '/') *p = '\\';
-  app_data_path(out, cap, norm);
-  return 1;
-}
-
-static void h_config_list(const http_req_t *req, http_res_t *res) {
-  (void)req;
-  json_t *arr = j_arr();
-  const char *fixed[] = {"rules.json", "mcp.json", NULL};
-  for (int i = 0; fixed[i]; i++) {
-    char path[MAX_PATH * 2];
-    app_data_path(path, sizeof(path), fixed[i]);
-    long sz = file_size(path);
-    json_t *o = j_obj();
-    j_set_str(o, "name", fixed[i]);
-    j_set_bool(o, "exists", sz >= 0 ? 1 : 0);
-    j_set_num(o, "size", sz > 0 ? (double)sz : 0);
-    j_set_str(o, "group", strcmp(fixed[i], "rules.json") == 0 ? "检测口径" : "外部能力");
-    j_add(arr, o);
-  }
-  /* skills\*.md 与 tools\*.json */
-  const char *dirs[2][2] = {{"skills", ".md"}, {"tools", ".json"}};
-  for (int d = 0; d < 2; d++) {
-    char dir[MAX_PATH * 2];
-    app_data_path(dir, sizeof(dir), dirs[d][0]);
-    ensure_dir(dir);
-    char **files = NULL;
-    int n = ext_list_files(dir, dirs[d][1], &files);
-    for (int i = 0; i < n; i++) {
-      const char *full = files[i];
-      const char *base = strrchr(full, '\\');
-      base = base ? base + 1 : full;
-      char name[192];
-      snprintf(name, sizeof(name), "%s\\%s", dirs[d][0], base);
-      json_t *o = j_obj();
-      j_set_str(o, "name", name);
-      j_set_bool(o, "exists", 1);
-      j_set_num(o, "size", (double)file_size(full));
-      j_set_str(o, "group", d == 0 ? "技能说明/技能包" : "外部工具");
-      j_add(arr, o);
-    }
-    if (files) str_free_list(files, n);
-  }
-  char *dump = json_dump(arr);
-  buf_t b;
-  buf_init(&b);
-  buf_puts(&b, "{\"ok\":true,\"files\":");
-  buf_puts(&b, dump);
-  buf_puts(&b, "}");
-  http_res_json(res, 200, b.data);
-  buf_free(&b);
-  free(dump);
-  json_free(arr);
-}
-
-static void h_config_get(const http_req_t *req, http_res_t *res) {
-  char name[192];
-  http_query(req, "name", name, sizeof(name), "");
-  char path[MAX_PATH * 2];
-  if (!cfg_path(name, path, sizeof(path))) {
-    http_res_text(res, 400, "application/json; charset=utf-8",
-                  "{\"ok\":false,\"error\":\"只允许编辑数据目录下的 rules.json / mcp.json / skills\\\\*.md / tools\\\\*.json\"}");
-    return;
-  }
-  size_t len = 0;
-  char *text = file_read_all(path, &len);
-  buf_t b;
-  buf_init(&b);
-  if (!text) {
-    buf_puts(&b, "{\"ok\":true,\"exists\":false,\"name\":");
-    buf_json_str(&b, name);
-    buf_puts(&b, ",\"content\":\"\"}");
-  } else {
-    if (len > CFG_MAX_BYTES) {
-      buf_printf(&b, "{\"ok\":false,\"error\":\"文件超过 %dKB,请用记事本打开\"}", CFG_MAX_BYTES / 1024);
-      http_res_json(res, 200, b.data);
-      buf_free(&b);
-      free(text);
-      return;
-    }
-    buf_puts(&b, "{\"ok\":true,\"exists\":true,\"name\":");
-    buf_json_str(&b, name);
-    buf_printf(&b, ",\"size\":%d,\"content\":", (int)len);
-    buf_json_str(&b, text);
-    buf_puts(&b, "}");
-    free(text);
-  }
-  http_res_json(res, 200, b.data);
-  buf_free(&b);
-}
-
-/* 保存 + 校验规则:JSON 必须能解析(否则不落盘);落盘前留一份 .bak */
-static void h_config_save(const http_req_t *req, http_res_t *res) {
-  json_t *body = req->body ? json_parse(req->body) : NULL;
-  const char *name = body ? j_s(body, "name", "") : "";
-  const char *content = body ? j_s(body, "content", "") : "";
-  if (!body || !name[0]) {
-    if (body) json_free(body);
-    http_res_text(res, 400, "application/json; charset=utf-8",
-                  "{\"ok\":false,\"error\":\"需要 name 与 content\"}");
-    return;
-  }
-  char path[MAX_PATH * 2];
-  if (!cfg_path(name, path, sizeof(path))) {
-    json_free(body);
-    http_res_text(res, 400, "application/json; charset=utf-8",
-                  "{\"ok\":false,\"error\":\"文件名不在白名单里\"}");
-    return;
-  }
-  size_t len = strlen(content);
-  if (len > CFG_MAX_BYTES) {
-    json_free(body);
-    http_res_text(res, 400, "application/json; charset=utf-8",
-                  "{\"ok\":false,\"error\":\"内容过大(上限 256KB)\"}");
-    return;
-  }
-  int is_json = str_endswith(name, ".json");
-  if (is_json) {
-    json_t *probe = json_parse(content);
-    if (!probe) {
-      json_free(body);
-      http_res_text(res, 400, "application/json; charset=utf-8",
-                    "{\"ok\":false,\"error\":\"JSON 语法不合法,已拒绝保存(检查逗号/引号/括号)\"}");
-      return;
-    }
-    json_free(probe);
-  }
-  /* 备份上一版:改坏了还能回头 */
-  char bak[MAX_PATH * 2];
-  snprintf(bak, sizeof(bak), "%s.bak", path);
-  if (file_size(path) >= 0) {
-    size_t old_len = 0;
-    char *old = file_read_all(path, &old_len);
-    if (old) {
-      file_write_all(bak, old, old_len);
-      free(old);
-    }
-  }
-  char dir[MAX_PATH * 2];
-  snprintf(dir, sizeof(dir), "%s", path);
-  char *slash = strrchr(dir, '\\');
-  if (slash) { *slash = 0; ensure_dir(dir); }
-  /* 保留原来的换行风格:浏览器 textarea 会把 CRLF 归一成 LF,
-     直接写回去会让"只改了一个词"的文件在 git 里整篇 diff。
-     策略:原文件用 CRLF 就按 CRLF 写;原文件不存在(新建)按 LF。 */
-  int want_crlf = 0;
-  if (file_size(path) >= 0) {
-    size_t chk_len = 0;
-    char *chk = file_read_all(path, &chk_len);
-    if (chk) {
-      want_crlf = (strstr(chk, "\r\n") != NULL);
-      free(chk);
-    }
-  }
-  int rc;
-  if (want_crlf && !strstr(content, "\r\n")) {
-    buf_t conv;
-    buf_init(&conv);
-    for (const char *p = content; *p; p++) {
-      if (*p == '\n') buf_putc_(&conv, '\r');
-      buf_putc_(&conv, *p);
-    }
-    len = conv.len;
-    rc = file_write_all(path, conv.data, conv.len);
-    buf_free(&conv);
-  } else {
-    rc = file_write_all(path, content, len);
-  }
-  json_free(body);
-  buf_t b;
-  buf_init(&b);
-  if (rc != 0) {
-    buf_puts(&b, "{\"ok\":false,\"error\":\"写入失败(检查文件是否被别的程序占用)\"}");
-  } else {
-    buf_printf(&b, "{\"ok\":true,\"name\":");
-    buf_json_str(&b, name);
-    buf_printf(&b, ",\"size\":%d,\"backup\":", (int)len);
-    buf_json_str(&b, file_size(bak) >= 0 ? "已留 .bak 备份" : "本次无旧版本");
-    buf_puts(&b, "}");
-    store_audit(g_store, "界面编辑配置", name, 1, "经界面保存并校验", g_task, "");
-  }
-  http_res_json(res, 200, b.data);
-  buf_free(&b);
-}
-
-/* 规则热加载:改完 rules.json 不用重启(技能/工具/MCP 仍需重启,界面会写明) */
-static void h_reload(const http_req_t *req, http_res_t *res) {
-  (void)req;
-  rules_shutdown();
-  rules_init(app_dir());
-  refresh_status_cache();
-  buf_t b;
-  buf_init(&b);
-  buf_puts(&b, "{\"ok\":true,\"rulesSource\":");
-  buf_json_str(&b, rules_source());
-  buf_puts(&b, "}");
-  http_res_json(res, 200, b.data);
-  buf_free(&b);
 }
 
 /* ================= 周期巡检 =================
@@ -2431,180 +2212,12 @@ static void h_cancel(const http_req_t *req, http_res_t *res) {
   http_res_json(res, 200, was ? "{\"ok\":true,\"already\":true}" : "{\"ok\":true}");
 }
 
-/* ================= 规则设置(图形化) =================
-   规则本来是 rules.json 里的一堆键。让人直接改 JSON,是把工具的麻烦转嫁给使用者,
-   所以这里按"类型"拆组:GET 给出当前生效的整份规则,POST 整份写回并立即重载。 */
-static void h_settings(const http_req_t *req, http_res_t *res) {
-  char path[MAX_PATH * 2];
-  app_data_path(path, sizeof(path), "rules.json");
-
-  if (strcmp(req->method, "POST") == 0) {
-    json_t *body = req->body ? json_parse(req->body) : NULL;
-    json_t *rules = body ? j_get(body, "rules") : NULL;
-    if (!rules || rules->type != J_OBJ) {
-      if (body) json_free(body);
-      http_res_json(res, 400, "{\"ok\":false,\"error\":\"需要 rules 对象\"}");
-      return;
-    }
-    char *text = json_dump_pretty(rules);
-    int rc = text ? file_write_all(path, text, strlen(text)) : -1;
-    free(text);
-    if (body) json_free(body);
-    if (rc != 0) {
-      http_res_json(res, 500, "{\"ok\":false,\"error\":\"规则文件写入失败\"}");
-      return;
-    }
-    rules_shutdown();
-    rules_init(app_dir());
-    refresh_status_cache();
-    store_audit(g_store, "修改规则设置", "rules.json", 1, "界面保存并重载", g_task, "");
-    buf_t b;
-    buf_init(&b);
-    buf_puts(&b, "{\"ok\":true,\"path\":");
-    buf_json_str(&b, path);
-    buf_puts(&b, ",\"source\":");
-    buf_json_str(&b, rules_source());
-    buf_puts(&b, "}");
-    http_res_json(res, 200, b.data);
-    buf_free(&b);
-    return;
-  }
-
-  /* GET:返回当前真正生效的那一份(数据目录有就用它,没有就用内置默认) */
-  json_t *root = rules_root();
-  json_t *copy = root ? json_parse(json_dump(root)) : j_obj();
-  json_t *out = j_obj();
-  j_set_bool(out, "ok", 1);
-  j_set_str(out, "path", path);
-  j_set_str(out, "source", rules_source());
-  j_set_bool(out, "fromFile", rules_from_file());
-  j_set(out, "rules", copy ? copy : j_obj());
-  char *text = json_dump(out);
-  http_res_json(res, 200, text);
-  free(text);
-  json_free(out);
-}
-
 /* ================= 能力管理(技能 / 工具,图形化) =================
    目的:加一个技能或工具不该要求人会写 front-matter、会拼 JSON。
    这里把同一份落盘文件用表单生成,并提供两条"不用自己动脑"的路:
      · 用大模型生成(给一句话描述,模型产出草稿,人再改)
      · 从市场导入(粘贴一段技能/工具文本,校验后落盘)
    落盘格式与手写完全一致 —— 想手改随时还能改。 */
-/* 把内存里的配置拍成 JSON(带密钥明文,只在本机内存里流转) */
-static json_t *models_snapshot(void) {
-  char *dump = providers_json(0);
-  json_t *root = dump ? json_parse(dump) : NULL;
-  free(dump);
-  return root;
-}
-
-static void models_ok(http_res_t *res, int code, const char *msg) {
-  json_t *o = j_obj();
-  j_set_bool(o, "ok", code == 200);
-  if (msg && *msg) j_set_str(o, code == 200 ? "note" : "error", msg);
-  char *dump = providers_json(1);
-  if (dump) {
-    json_t *cur = json_parse(dump);
-    if (cur) j_set(o, "models", cur);
-    free(dump);
-  }
-  char *out = json_dump(o);
-  http_res_json(res, code, out);
-  free(out);
-  json_free(o);
-}
-
-/* /api/models —— 模型配置的读写与连通性测试
-     GET  列表(密钥只回显后四位)
-     POST action=save      整份写回(密钥空着或仍是掩码 = 不改)
-          action=activate  只切换当前使用的那一条
-          action=test      真发一句话,验证地址和 key 到底通不通
-          action=delete    删掉一条
-   "测试"单独做一个动作的原因:保存只需要格式合法,通不通只有真发一次才知道;
-   让用户点一下就能看到"钥匙错了"还是"地址错了",比等到对话时才失败强。 */
-static void h_models(const http_req_t *req, http_res_t *res) {
-  if (strcmp(req->method, "GET") == 0) {
-    char *dump = providers_json(1);
-    http_res_json(res, 200, dump);
-    free(dump);
-    return;
-  }
-  json_t *body = req->body ? json_parse(req->body) : NULL;
-  if (!body) {
-    http_res_json(res, 400, "{\"ok\":false,\"error\":\"请求体不是合法 JSON\"}");
-    return;
-  }
-  char action[32];
-  snprintf(action, sizeof(action), "%s", j_s(body, "action", "save"));
-  char id[80];
-  snprintf(id, sizeof(id), "%s", j_s(body, "id", ""));
-  char err[512] = {0};
-  int rc = -1;
-
-  if (str_ieq(action, "test")) {
-    if (!id[0]) {
-      json_free(body);
-      http_res_json(res, 400, "{\"ok\":false,\"error\":\"没指定测哪一条\"}");
-      return;
-    }
-    char detail[1024] = {0};
-    long long t0 = now_ms();
-    int trc = providers_test(id, detail, sizeof(detail));
-    long long ms = now_ms() - t0;
-    json_t *o = j_obj();
-    j_set_bool(o, "ok", trc == 0);
-    j_set_num(o, "ms", (double)ms);
-    j_set_str(o, "detail", detail[0] ? detail : (trc == 0 ? "通了" : "没有响应"));
-    /* 测试结果本身是"通/不通"两种正常结果,不是请求出错 —— 一律 200,
-       界面照 ok 字段渲染。之前通不通用 HTTP 状态码表达,前端只能看到
-       "HTTP 400",把"哪一步不通"这句最有用的话丢了。 */
-    char *dump = json_dump(o);
-    http_res_json(res, 200, dump);
-    free(dump);
-    json_free(o);
-    json_free(body);
-    return;
-  } else if (str_ieq(action, "save")) {
-    rc = providers_apply(body, err, sizeof(err));
-  } else if (str_ieq(action, "activate") || str_ieq(action, "delete")) {
-    json_t *root = models_snapshot();
-    if (!root) root = j_obj();
-    int is_delete = str_ieq(action, "delete");
-    if (is_delete) {
-      json_t *arr = j_get(root, "providers");
-      json_t *kept = j_arr();
-      int n = arr ? j_len(arr) : 0;
-      for (int i = 0; i < n; i++) {
-        json_t *it = j_at(arr, i);
-        if (!it) continue;
-        if (str_ieq(j_s(it, "id", ""), id)) continue;
-        char *d = json_dump(it);
-        json_t *cp = d ? json_parse(d) : NULL;
-        free(d);
-        if (cp) j_add(kept, cp);
-      }
-      j_set(root, "providers", kept);       /* j_set 接管所有权 */
-    } else {
-      j_set_str(root, "active", id);
-    }
-    rc = providers_apply(root, err, sizeof(err));
-    json_free(root);
-  } else {
-    snprintf(err, sizeof(err), "不认识的动作:%s", action);
-  }
-  json_free(body);
-
-  if (rc != 0) {
-    char msg[640];
-    snprintf(msg, sizeof(msg), "{\"ok\":false,\"error\":\"%s\"}",
-             err[0] ? err : "配置没有通过校验");
-    http_res_json(res, 400, msg);
-    return;
-  }
-  models_ok(res, 200, str_ieq(action, "save") ? "已保存" : "已生效");
-}
-
 static void h_caps(const http_req_t *req, http_res_t *res) {
   if (strcmp(req->method, "POST") == 0) {
     json_t *body = req->body ? json_parse(req->body) : NULL;
@@ -2882,17 +2495,18 @@ static void router(const http_req_t *req, http_res_t *res, void *ud) {
     if (!strcmp(p, "/api/cancel")) { h_cancel(req, res); return; }
     if (!strcmp(p, "/api/chats")) { h_chats(req, res); return; }
     if (!strcmp(p, "/api/attach")) { h_attach(req, res); return; }
-    if (!strcmp(p, "/api/settings")) { h_settings(req, res); return; }
+    if (!strcmp(p, "/api/settings")) { api_rules(req, res); return; }
     if (!strcmp(p, "/api/caps")) { h_caps(req, res); return; }
-  if (!strcmp(p, "/api/models")) { h_models(req, res); return; }
+    if (!strcmp(p, "/api/models")) { api_models(req, res); return; }
     if (!strcmp(p, "/api/quit")) { h_quit(req, res); return; }
-    if (!strcmp(p, "/api/chat")) { h_chat(req, res); return; }    if (!strcmp(p, "/api/config/list")) { h_config_list(req, res); return; }
+    if (!strcmp(p, "/api/chat")) { h_chat(req, res); return; }
+    if (!strcmp(p, "/api/config/list")) { api_config_list(req, res); return; }
     if (!strcmp(p, "/api/config")) {
-      if (strcmp(req->method, "POST") == 0) h_config_save(req, res);
-      else h_config_get(req, res);
+      if (strcmp(req->method, "POST") == 0) api_config_save(req, res);
+      else api_config_get(req, res);
       return;
     }
-    if (!strcmp(p, "/api/reload")) { h_reload(req, res); return; }
+    if (!strcmp(p, "/api/reload")) { api_reload(req, res); return; }
     if (!strcmp(p, "/api/automations")) {
       if (strcmp(req->method, "POST") == 0) h_automation_post(req, res);
       else h_automation_list(req, res);

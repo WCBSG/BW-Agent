@@ -519,7 +519,8 @@ build\agent.exe run skill_我的技能
 │   ├─ thread_store.cpp           对话存储:threads/<id>/{meta,messages,events} + 索引流水
 │   ├─ native_ui.cpp tray.cpp     原生窗口(Win32 + GDI+)与托盘
 │   ├─ store.cpp                  落盘层:业务对象、去重、状态机、快照
-│   ├─ http.cpp serve.c             自写 HTTP/1.1 + SSE + 路由与只读数据接口
+│   ├─ http.cpp serve.cpp          自写 HTTP/1.1 + SSE + 路由;serve.cpp 只做开端口/门禁/分派
+│   ├─ api_config.cpp api_models.cpp 接口分域实现:规则与配置文件、多厂商模型(serve_ctx.h 借出存储与状态刷新)
 │   ├─ json.cpp common.c            自写 JSON、缓冲、编码、时间、路径、数据目录解析
 │   ├─ app.rc ui.cpp              图标/版本信息、界面宿主(三级降级)
 │   └─ ui/                        界面源码(编译时被打进 exe)

@@ -392,7 +392,13 @@ int providers_apply(json_t *root, char *err, size_t errcap) {
 
   char active[64];
   copy_trim(active, sizeof(active), j_s(root, "active", g_active));
-  if (!provider_find(active)) {
+  /* 校验要针对"即将生效的新列表",不能查旧列表:删掉当前那条时,
+     旧列表里它还在,active 就会被留下来指向一个已经不存在的条目。 */
+  int active_ok = 0;
+  for (int i = 0; i < m; i++) {
+    if (active[0] && str_ieq(tmp[i].id, active)) { active_ok = 1; break; }
+  }
+  if (!active_ok) {
     active[0] = 0;
     for (int i = 0; i < m; i++)
       if (tmp[i].enabled) { copy_trim(active, sizeof(active), tmp[i].id); break; }
