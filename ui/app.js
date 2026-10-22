@@ -3580,6 +3580,27 @@ $('btn-refresh2').addEventListener('click', async () => {
   await loadView(state.view);
 });
 
+/* 工作台右上角那两个 chip 不再只是状态,而是入口:
+     「授权池 N 个主机」→ 授权管理(弹窗)
+     「模型名」      → 模型设置(配置 → 模型)
+   状态标签点得动,是因为人看见它的第一反应通常就是"这要怎么改"。 */
+function openSettingsPage(pageId) {
+  SET_CURRENT = pageId;
+  switchView('config');
+  loadView('config');
+}
+for (const [id, act] of [
+  ['work-scope', openModal],
+  ['work-model', () => openSettingsPage('models')],
+]) {
+  const node = $(id);
+  if (!node) continue;
+  node.addEventListener('click', act);
+  node.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); act(); }
+  });
+}
+
 const scrollTimer = new WeakMap();
 document.querySelectorAll('.main, .stream, .trace, .steps, .table-wrap, .tool-args, .tool-out, .config-side .filelist').forEach((node) => {
   node.classList.add('scroll-surface');
@@ -3599,14 +3620,6 @@ document.querySelectorAll('.tab').forEach((t) => {
     }
   });
 });
-
-$('btn-refresh').addEventListener('click', async () => {
-  state.cache = {};
-  try { renderStatus(await api('/api/status')); } catch { /* 后端可能刚停 */ }
-  await loadView(state.view);
-});
-
-
 
 /* 配置编辑页的按钮 */
 $('cfg-save').addEventListener('click', saveConfigFile);
