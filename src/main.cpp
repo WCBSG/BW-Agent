@@ -338,24 +338,9 @@ static void selftest_loop(void) {
   agent_free(a);
 }
 /* 自检自己造数据、自己清理:临时目录用唯一名字,跑完删掉 ——
-   免得"上一次跑剩下的发现"把这一次的断言带偏(这是自检最常见的假失败来源)。 */
-static void rmrf(const char *dir) {
-  char pattern[MAX_PATH * 2];
-  snprintf(pattern, sizeof(pattern), "%s\\*", dir);
-  WIN32_FIND_DATAA fd;
-  HANDLE h = FindFirstFileA(pattern, &fd);
-  if (h != INVALID_HANDLE_VALUE) {
-    do {
-      if (strcmp(fd.cFileName, ".") == 0 || strcmp(fd.cFileName, "..") == 0) continue;
-      char child[MAX_PATH * 2];
-      snprintf(child, sizeof(child), "%s\\%s", dir, fd.cFileName);
-      if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) rmrf(child);
-      else DeleteFileA(child);
-    } while (FindNextFileA(h, &fd));
-    FindClose(h);
-  }
-  RemoveDirectoryA(dir);
-}
+   免得"上一次跑剩下的发现"把这一次的断言带偏(这是自检最常见的假失败来源)。
+   走 fs_remove_tree(std::filesystem):不再有 A/W 两套 API 的中文名坑。 */
+static void rmrf(const char *dir) { fs_remove_tree(dir); }
 
 /* ---------- 通用探测能力的自检(全部用"假站点",不依赖任何真实目标) ---------- */
 

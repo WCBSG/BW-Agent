@@ -103,20 +103,13 @@ char *store_next_id(store_t *s, const char *collection) {
   } else {
     char dir[MAX_PATH * 2];
     coll_path(s, c, dir, sizeof(dir));
-    char pattern[MAX_PATH * 4];
-    snprintf(pattern, sizeof(pattern), "%s\\*.json", dir);
-    WIN32_FIND_DATAA fd;
-    HANDLE h = FindFirstFileA(pattern, &fd);
-    if (h != INVALID_HANDLE_VALUE) {
-      do {
-        char stem[MAX_PATH];
-        snprintf(stem, sizeof(stem), "%s", fd.cFileName);
-        char *dot = strrchr(stem, '.');
-        if (dot) *dot = 0;
-        long v = id_number(stem, c->prefix);
-        if (v > max_n) max_n = v;
-      } while (FindNextFileA(h, &fd));
-      FindClose(h);
+    /* 走 fs_list_files(std::filesystem):中文文件名不再"看不见" */
+    for (const std::string &name : fs_list_files(dir, ".json")) {
+      std::string stem = name;
+      size_t dot = stem.rfind('.');
+      if (dot != std::string::npos) stem.resize(dot);
+      long v = id_number(stem.c_str(), c->prefix);
+      if (v > max_n) max_n = v;
     }
   }
   char out[64];
@@ -214,24 +207,17 @@ json_t *store_all(store_t *s, const char *collection) {
 
   char dir[MAX_PATH * 2];
   coll_path(s, c, dir, sizeof(dir));
-  char pattern[MAX_PATH * 4];
-  snprintf(pattern, sizeof(pattern), "%s\\*.json", dir);
-  WIN32_FIND_DATAA fd;
-  HANDLE h = FindFirstFileA(pattern, &fd);
-  if (h != INVALID_HANDLE_VALUE) {
-    do {
-      char path[MAX_PATH * 4];
-      path_join(path, sizeof(path), dir, fd.cFileName);
-      size_t len = 0;
-      char *text = file_read_all(path, &len);
-      if (text) {
-        char *line = str_trim(text);
-        json_t *o = json_parse(line);
-        if (o) j_add(arr, o);
-        free(text);
-      }
-    } while (FindNextFileA(h, &fd));
-    FindClose(h);
+  for (const std::string &name : fs_list_files(dir, ".json")) {
+    char path[MAX_PATH * 4];
+    path_join(path, sizeof(path), dir, name.c_str());
+    size_t len = 0;
+    char *text = file_read_all(path, &len);
+    if (text) {
+      char *line = str_trim(text);
+      json_t *o = json_parse(line);
+      if (o) j_add(arr, o);
+      free(text);
+    }
   }
   return arr;
 }

@@ -1,0 +1,359 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>网站安全巡检智能体 · 方向二</title>
+<style>
+/* ===================================================================
+   方向二 · 近黑工作台
+   借自: Linear 的深色产品语言 —— 近黑而非蓝黑、只有一个点缀色、
+        巨型标题压小正文、产品界面作为真实产物出现在页面上、
+        边框是 1px 的 #1b1c1e 级差而不是发光。
+   一句话骨架: 左侧一条窄栏(导航 + 授权),主区是"这一轮正在发生什么"，
+             底部一条常驻输入。没有仪表盘卡片墙。
+   =================================================================== */
+:root{
+  --bg:#08090a;
+  --panel:#0f1011;
+  --panel-2:#121316;
+  --line:#1b1c1e;
+  --line-2:#26282c;
+  --text:#f7f8f8;
+  --dim:#8a8f98;
+  --dim-2:#62666d;
+  --accent:#7170ff;
+  --ok:#3fb950;
+  --warn:#d29922;
+  --crit:#f85149;
+  --mono:Consolas,"Cascadia Mono",ui-monospace,monospace;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%}
+body{
+  background:var(--bg);color:var(--text);
+  font:14px/1.6 "Inter","Segoe UI","Microsoft YaHei UI","Microsoft YaHei",sans-serif;
+  -webkit-font-smoothing:antialiased;font-variant-numeric:tabular-nums;
+}
+button{font:inherit;color:inherit;background:none;border:0;cursor:pointer}
+code{font-family:var(--mono);font-size:.92em}
+
+.shell{display:grid;grid-template-columns:236px minmax(0,1fr);height:100vh;overflow:hidden}
+
+/* ---------- 侧栏 ---------- */
+.rail{border-right:1px solid var(--line);display:flex;flex-direction:column;background:#0a0b0c}
+.rail-top{padding:16px 16px 14px;border-bottom:1px solid var(--line)}
+.brand{display:flex;align-items:center;gap:9px;font-size:14px;font-weight:600;letter-spacing:-.1px}
+.brand i{width:16px;height:16px;border:1.5px solid var(--text);border-radius:50%;display:block;position:relative}
+.brand i::after{content:"";position:absolute;inset:4px;background:var(--text);border-radius:50%}
+.rail nav{padding:10px 8px;display:flex;flex-direction:column;gap:1px}
+.rail .grp{font-size:11px;color:var(--dim-2);letter-spacing:.6px;padding:12px 10px 5px}
+.rail nav button{
+  display:flex;align-items:center;gap:9px;padding:7px 10px;border-radius:5px;
+  font-size:13px;color:var(--dim);text-align:left;width:100%;
+}
+.rail nav button:hover{background:#141517;color:var(--text)}
+.rail nav button[aria-current="true"]{background:#1a1b1e;color:var(--text)}
+.rail nav button .k{font-size:11.5px;color:var(--dim-2);margin-left:auto}
+.rail nav button[aria-current="true"] .k{color:var(--dim)}
+
+.scope{margin-top:auto;padding:14px 16px;border-top:1px solid var(--line);font-size:12.5px}
+.scope .hd{display:flex;justify-content:space-between;align-items:center;color:var(--dim);margin-bottom:7px}
+.scope .hd button{color:var(--accent);font-size:12px}
+.scope b{display:block;font-size:13px;font-weight:500;margin-bottom:3px}
+.scope .dom{font-family:var(--mono);font-size:12px;color:var(--dim)}
+.scope .badge{display:inline-flex;align-items:center;gap:5px;margin-top:8px;font-size:11.5px;color:var(--dim)}
+.scope .badge s{width:5px;height:5px;border-radius:50%;background:var(--ok);text-decoration:none}
+.rail-foot{padding:9px 16px 14px;font-size:11px;color:var(--dim-2);border-top:1px solid var(--line)}
+
+/* ---------- 主区 ---------- */
+.main{display:flex;flex-direction:column;min-width:0}
+.topbar{
+  display:flex;align-items:center;gap:14px;padding:0 28px;height:52px;
+  border-bottom:1px solid var(--line);
+}
+.topbar h1{font-size:14.5px;font-weight:600;letter-spacing:-.1px}
+.topbar .crumb{font-size:12.5px;color:var(--dim-2)}
+.pills{margin-left:auto;display:flex;align-items:center;gap:8px}
+.pill{
+  display:inline-flex;align-items:center;gap:6px;height:28px;padding:0 10px;
+  border:1px solid var(--line-2);border-radius:6px;font-size:12px;color:var(--dim);
+}
+.pill s{width:6px;height:6px;border-radius:50%;text-decoration:none}
+.pill .on{background:var(--ok)} .pill .off{background:var(--dim-2)}
+.pill b{color:var(--text);font-weight:500}
+
+.scroll{flex:1;overflow:auto;padding:30px 28px 26px;min-height:0}
+.hero{max-width:940px}
+.hero h2{font-size:clamp(30px,3.4vw,46px);line-height:1.08;letter-spacing:-1.6px;font-weight:590}
+.hero h2 span{display:block;color:var(--dim)}
+.hero p{margin-top:14px;color:var(--dim);font-size:14.5px;max-width:60ch;line-height:1.7}
+
+/* 记录区:一条时间轴 + 行内元信息,不是聊天气泡 */
+.feed{margin-top:26px;max-width:940px;border-top:1px solid var(--line)}
+.row{display:grid;grid-template-columns:92px minmax(0,1fr) 108px;gap:16px;
+  padding:14px 0;border-bottom:1px solid var(--line);align-items:start}
+.row .t{font-family:var(--mono);font-size:11.5px;color:var(--dim-2);padding-top:3px}
+.row .c .head{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.row .c .tool{font-family:var(--mono);font-size:13px;color:var(--text)}
+.row .c .tag{font-size:11px;color:var(--dim);border:1px solid var(--line-2);border-radius:4px;padding:1px 6px}
+.row .c .out{margin-top:5px;font-size:13.5px;color:#d5d8dd}
+.row .c .out b{color:var(--text);font-weight:550}
+.row .c .why{margin-top:4px;font-size:12.5px;color:var(--dim-2);max-width:62ch}
+.row .s{text-align:right;font-size:12px;padding-top:3px}
+.s.ok{color:var(--ok)} .s.crit{color:var(--crit)} .s.warn{color:var(--warn)} .s.dim{color:var(--dim-2)}
+
+.end{
+  display:flex;align-items:center;gap:10px;margin:16px 0 0;padding:12px 14px;
+  background:var(--panel);border:1px solid var(--line);border-radius:8px;font-size:13px;color:var(--dim);
+  max-width:940px;
+}
+.end b{color:var(--text);font-weight:550}
+
+/* 底部常驻输入 */
+.compose{border-top:1px solid var(--line);padding:12px 28px 16px;background:#0a0b0c}
+.compose .field{
+  display:flex;align-items:center;gap:10px;background:var(--panel);border:1px solid var(--line-2);
+  border-radius:8px;padding:0 6px 0 14px;height:46px;
+}
+.compose .field:focus-within{border-color:#3a3c42}
+.compose input{
+  flex:1;background:none;border:0;outline:none;color:var(--text);font:inherit;height:100%;
+}
+.compose input::placeholder{color:var(--dim-2)}
+.compose .send{
+  height:34px;padding:0 15px;border-radius:6px;background:var(--text);color:#08090a;
+  font-size:13px;font-weight:600;
+}
+.compose .send:hover{background:#dcdedf}
+.compose .meta{margin-top:8px;display:flex;gap:16px;font-size:11.5px;color:var(--dim-2)}
+.compose .meta kbd{font-family:var(--mono);font-size:11px;border:1px solid var(--line-2);border-radius:3px;padding:0 4px;color:var(--dim)}
+
+/* 右侧:统计与边界 —— 只做一次,不铺卡片 */
+.insights{margin-top:30px;display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:0;
+  border-top:1px solid var(--line);border-bottom:1px solid var(--line);max-width:940px}
+.insights > div{padding:14px 18px 16px;border-right:1px solid var(--line)}
+.insights > div:last-child{border-right:0}
+.insights dt{font-size:11.5px;color:var(--dim-2);letter-spacing:.4px}
+.insights dd{font-size:24px;letter-spacing:-.8px;font-weight:550;margin-top:3px}
+.insights dd small{font-size:12px;color:var(--dim);font-weight:400;letter-spacing:0;margin-left:3px}
+.insights .why{font-size:11.5px;color:var(--dim-2);margin-top:5px;line-height:1.5}
+
+@media (max-width:1080px){
+  .shell{grid-template-columns:64px minmax(0,1fr)}
+  .rail-top .brand span,.rail nav .grp,.rail nav button .k,.scope,.rail-foot{display:none}
+  .rail nav{padding:8px 6px}
+  .rail nav button{justify-content:center;padding:9px 0;font-size:0;gap:0}
+  .rail nav button::first-letter{font-size:13px}
+  .row{grid-template-columns:64px minmax(0,1fr) 84px}
+  .insights{grid-template-columns:1fr}
+  .insights > div{border-right:0;border-bottom:1px solid var(--line)}
+}
+@media (max-width:640px){
+  .scroll{padding:22px 16px 0}
+  .topbar{padding:0 16px}
+  .compose{padding:12px 16px 14px}
+  .row{grid-template-columns:1fr;gap:6px}
+  .row .t,.row .s{padding-top:0;text-align:left}
+}
+</style>
+</head>
+<body>
+<div class="shell">
+
+  <aside class="rail">
+    <div class="rail-top">
+      <div class="brand"><i></i><span>网站安全巡检</span></div>
+    </div>
+    <nav id="nav">
+      <button aria-current="true" data-v="loop">决策循环<span class="k">now</span></button>
+      <button data-v="report">报告与告警<span class="k">7</span></button>
+      <button data-v="history">巡检历史</button>
+      <div class="grp">数据与复核</div>
+      <button data-v="assets">资产底账<span class="k">12</span></button>
+      <button data-v="eval">效果评测</button>
+      <button data-v="rules">生效规则</button>
+      <div class="grp">系统</div>
+      <button data-v="caps">能力清单<span class="k">15</span></button>
+      <button data-v="config">配置编辑</button>
+    </nav>
+    <div class="scope">
+      <div class="hd">巡检授权<button type="button">设置</button></div>
+      <b>127.0.0.1:8899</b>
+      <div class="dom">任务 WEB-TASK</div>
+      <div class="badge"><s></s>只读 · GET / HEAD / OPTIONS</div>
+    </div>
+    <div class="rail-foot">本机安全连接 · 127.0.0.1</div>
+  </aside>
+
+  <div class="main">
+    <div class="topbar">
+      <span class="crumb">巡检 /</span>
+      <h1 id="vtitle">决策循环</h1>
+      <div class="pills">
+        <span class="pill"><s class="off"></s>模型 <b>离线规则</b></span>
+        <span class="pill"><s class="on"></s>授权 <b>已设置</b></span>
+        <span class="pill">发现 <b>7</b></span>
+      </div>
+    </div>
+
+    <div class="scroll" id="scroll">
+
+      <!-- 决策循环 -->
+      <section id="v-loop">
+        <div class="hero">
+          <h2>它现在<span>正在看什么</span></h2>
+          <p>每一步都留下决策理由、观察结果与下一步的调整。目标不可达、手段重复、预算将尽时，它主动收尾并说明原因。</p>
+        </div>
+
+        <div class="feed">
+          <div class="row">
+            <div class="t">step 01</div>
+            <div class="c">
+              <div class="head"><span class="tool">skill_recon</span><span class="tag">资产与页面发现</span></div>
+              <div class="out">同域限深抓取，得到 <b>12 个页面与资源</b>，标出发现来源。</div>
+              <div class="why">先摸清家底：不知道有哪些页面，后续落点探测就没有坐标。</div>
+            </div>
+            <div class="s ok">完成 0.8s</div>
+          </div>
+          <div class="row">
+            <div class="t">step 02</div>
+            <div class="c">
+              <div class="head"><span class="tool">sensitive_file_probe</span><span class="tag">36 个落点</span></div>
+              <div class="out">命中 2 处：<b>/.env</b>（凭据）、<b>/backup.sql</b>（数据库备份）。</div>
+              <div class="why">先用不存在的路径校准站点默认页，与之同形的响应一律排除 —— 不误报的前提。</div>
+            </div>
+            <div class="s crit">严重 ×2</div>
+          </div>
+          <div class="row">
+            <div class="t">step 03</div>
+            <div class="c">
+              <div class="head"><span class="tool">dir_probe</span><span class="tag">29 个目录</span></div>
+              <div class="out"><b>/uploads/</b> 返回目录索引，列出 2 个条目。</div>
+              <div class="why">敏感文件之外，暴露面还包括目录索引与对外的管理入口。</div>
+            </div>
+            <div class="s warn">中 ×1</div>
+          </div>
+          <div class="row">
+            <div class="t">step 04</div>
+            <div class="c">
+              <div class="head"><span class="tool">nuclei_scan</span><span class="tag">响应头判定</span></div>
+              <div class="out">缺 HSTS、CSP、nosniff、点击劫持防护、Referrer-Policy、Permissions-Policy。</div>
+              <div class="why">这一项只看响应头 —— 拿不到头就写"没检查"，不猜。</div>
+            </div>
+            <div class="s dim">低 ×2</div>
+          </div>
+          <div class="row">
+            <div class="t">step 05</div>
+            <div class="c">
+              <div class="head"><span class="tool">sqli_probe</span><span class="tag">布尔差分</span></div>
+              <div class="out">news.php?id= 的恒真 / 恒假响应形状不同（1,204 vs 982 字节）。</div>
+              <div class="why">只确认是否存在注入，不取数据、不改数据；确认后停止，不扩大试探。</div>
+            </div>
+            <div class="s crit">严重 ×1</div>
+          </div>
+        </div>
+
+        <div class="end">
+          循环结束 · 停止原因 <b>已给出结论</b> · 调用 5 次 · 4.2 秒 · 42 次请求全部审计
+        </div>
+
+        <dl class="insights">
+          <div>
+            <dt>本轮确认</dt>
+            <dd>7<small>条</small></dd>
+            <div class="why">严重 4 · 中 1 · 低 2</div>
+          </div>
+          <div>
+            <dt>已发出的请求</dt>
+            <dd>42<small>次</small></dd>
+            <div class="why">限速 2 请求/秒 · 只读方法 · 全部留痕</div>
+          </div>
+          <div>
+            <dt>生效规则</dt>
+            <dd>10<small>条特征</small></dd>
+            <div class="why">落点 36 · 目录 29 · 来自 rules.json</div>
+          </div>
+        </dl>
+      </section>
+
+      <!-- 报告 -->
+      <section id="v-report" hidden>
+        <div class="hero">
+          <h2>七条风险<span>严重四条</span></h2>
+          <p>按等级排序，每条带证据、影响与修复建议；复测记录写回发现本身，已修复 / 仍未修复 / 判不了分开计。</p>
+        </div>
+        <div class="feed">
+          <div class="row"><div class="t">F-0001</div><div class="c"><div class="head"><span class="tool">站点根目录可下载 .env</span></div><div class="why">命中规则 config-secrets · 含数据库口令</div></div><div class="s crit">严重</div></div>
+          <div class="row"><div class="t">F-0002</div><div class="c"><div class="head"><span class="tool">数据库备份 backup.sql 暴露</span></div><div class="why">命中规则 sql-dump · 含建表与初始数据</div></div><div class="s crit">严重</div></div>
+          <div class="row"><div class="t">F-0003</div><div class="c"><div class="head"><span class="tool">私钥文件可读取</span></div><div class="why">命中规则 private-key</div></div><div class="s crit">严重</div></div>
+          <div class="row"><div class="t">F-0004</div><div class="c"><div class="head"><span class="tool">news.php 的 id 参数存在布尔注入</span></div><div class="why">恒真 / 恒假响应形状不同 · 未取数据</div></div><div class="s crit">严重</div></div>
+          <div class="row"><div class="t">F-0005</div><div class="c"><div class="head"><span class="tool">目录索引对外开放 /uploads/</span></div><div class="why">标题「Index of /uploads」· 列出 2 个条目</div></div><div class="s warn">中</div></div>
+          <div class="row"><div class="t">F-0006</div><div class="c"><div class="head"><span class="tool">安全响应头缺失 6 项</span></div><div class="why">HSTS / CSP / nosniff / 点击劫持 / Referrer / Permissions</div></div><div class="s dim">低</div></div>
+          <div class="row"><div class="t">F-0007</div><div class="c"><div class="head"><span class="tool">服务器版本信息泄露</span></div><div class="why">Server 与 X-Powered-By 未隐去</div></div><div class="s dim">低</div></div>
+        </div>
+        <div class="end">报告 <b>R-0001</b> · 可导出 Markdown · 同一发现只告警一次</div>
+        <dl class="insights">
+          <div><dt>告警已推送</dt><dd>5<small>条</small></dd><div class="why">严重 4 走邮件 · 中 1 走站内</div></div>
+          <div><dt>复测</dt><dd>6<small>条未修复</small></dd><div class="why">1 条判不了：取不到内容时不许写"没问题"</div></div>
+          <div><dt>评测</dt><dd>1.00<small>召回</small></dd><div class="why">准确 1.00 · 误报 0.00</div></div>
+        </dl>
+      </section>
+
+      <!-- 能力清单 -->
+      <section id="v-caps" hidden>
+        <div class="hero">
+          <h2>能力十五项<span>技能七 · 工具八</span></h2>
+          <p>技能是一件事的完整做法与判定；工具是一次原子动作，只如实返回事实，不下业务结论。</p>
+        </div>
+        <div class="feed">
+          <div class="row"><div class="t">skill</div><div class="c"><div class="head"><span class="tool">skill_full_inspection</span><span class="tag">全流程巡检</span></div><div class="out">先摸家底，再查内容与落点，最后配置与漏洞。</div><div class="why">site_crawl · page_diff · sensitive_file_probe · dir_probe · nuclei_scan</div></div><div class="s dim">内置</div></div>
+          <div class="row"><div class="t">skill</div><div class="c"><div class="head"><span class="tool">skill_recon</span><span class="tag">资产与页面发现</span></div><div class="out">把页面、静态资源、接口列成底账。</div><div class="why">site_crawl</div></div><div class="s dim">内置</div></div>
+          <div class="row"><div class="t">skill</div><div class="c"><div class="head"><span class="tool">skill_leak_check</span><span class="tag">敏感信息检查</span></div><div class="out">按本单位的定义查误发布与信息泄露。</div><div class="why">sensitive_file_probe · sensitive_scan</div></div><div class="s dim">内置</div></div>
+          <div class="row"><div class="t">skill</div><div class="c"><div class="head"><span class="tool">skill_integrity_check</span><span class="tag">内容完整性检查</span></div><div class="out">基线比对，看是否被篡改或植入外链。</div><div class="why">page_diff</div></div><div class="s dim">内置</div></div>
+          <div class="row"><div class="t">skill</div><div class="c"><div class="head"><span class="tool">skill_retest</span><span class="tag">复测与闭环</span></div><div class="out">已修复 / 仍未修复 / 判不了，写回发现。</div><div class="why">page_diff · sensitive_file_probe · dir_probe · nuclei_scan</div></div><div class="s dim">内置</div></div>
+          <div class="row"><div class="t">skill</div><div class="c"><div class="head"><span class="tool">skill_report</span><span class="tag">报告与告警</span></div><div class="out">分级统计 + 告警推送。</div><div class="why">汇总已有结果，不新发请求</div></div><div class="s dim">内置</div></div>
+          <div class="row"><div class="t">skill</div><div class="c"><div class="head"><span class="tool">skill_evaluate</span><span class="tag">检测效果评测</span></div><div class="out">召回率 / 准确率 / 误报率。</div><div class="why">对账已有发现与测试集</div></div><div class="s dim">内置</div></div>
+        </div>
+        <dl class="insights">
+          <div><dt>工具</dt><dd>8<small>个</small></dd><div class="why">site_crawl · sensitive_file_probe · dir_probe · page_diff · nuclei_scan · sqli_probe · sensitive_scan · password_check</div></div>
+          <div><dt>外部能力</dt><dd>0<small>个</small></dd><div class="why">在数据目录放 tools\*.json 或 mcp.json 即可接入</div></div>
+          <div><dt>扩展</dt><dd>3<small>类</small></dd><div class="why">技能包 · 外部工具 · MCP 服务器，均需 allow: true</div></div>
+        </dl>
+      </section>
+
+    </div>
+
+    <form class="compose" onsubmit="return false">
+      <div class="field">
+        <input id="cmd" placeholder="输入巡检指令，回车执行" autocomplete="off">
+        <button class="send" type="submit">执行</button>
+      </div>
+      <div class="meta">
+        <span><kbd>Enter</kbd> 执行 · <kbd>Shift</kbd>+<kbd>Enter</kbd> 换行</span>
+        <span>未授权时只回答问题，不访问任何外部目标</span>
+      </div>
+    </form>
+  </div>
+</div>
+
+<script>
+const titles = { loop:'决策循环', report:'报告与告警', caps:'能力清单' };
+function show(v){
+  document.querySelectorAll('#nav button').forEach(b => b.setAttribute('aria-current', String(b.dataset.v === v)));
+  for (const k of ['loop','report','caps']) {
+    const el = document.getElementById('v-' + k);
+    if (el) el.hidden = k !== v;
+  }
+  document.getElementById('vtitle').textContent = titles[v] || '决策循环';
+  document.getElementById('scroll').scrollTop = 0;
+}
+document.getElementById('nav').addEventListener('click', (e) => {
+  const b = e.target.closest('button[data-v]');
+  if (!b || !titles[b.dataset.v]) return;
+  show(b.dataset.v);
+});
+show('loop');
+</script>
+</body>
+</html>

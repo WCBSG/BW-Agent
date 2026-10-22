@@ -6,11 +6,27 @@
 
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
-#include <stdarg.h>
-#include <stddef.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
+#include <cstdarg>
+#include <cstddef>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <memory>
+#include <mutex>
+#include <string>
+#include <vector>
+
+/* ---------- Win32 句柄的 RAII 包装 ----------
+   句柄泄漏在本项目里踩过(HTTP 重试路径有多个 close 出口,漏一个就泄漏)。
+   现在把"关闭"绑定到对象生命周期:离开作用域自动关掉。
+   注意:句柄是 void*,unique_ptr 的默认删除器会调 delete ——
+   所以必须传自定义删除器,下面这个 struct 就是干这个的。 */
+struct handle_closer {
+  void operator()(void *h) const {
+    if (h && h != (void *)INVALID_HANDLE_VALUE) CloseHandle((HANDLE)h);
+  }
+};
+using unique_handle_t = std::unique_ptr<void, handle_closer>;
 
 /* ---------- 动态缓冲区:字符串拼接的基本单元 ---------- */
 typedef struct {
@@ -113,6 +129,15 @@ long file_size(const char *path);
 char *file_read_all(const char *path, size_t *out_len);      /* 读不到返回 NULL */
 int  file_write_all(const char *path, const char *data, size_t len);
 int  file_append(const char *path, const char *data, size_t len);
+
+/* ---------- 目录遍历(统一走 std::filesystem) ----------
+   为什么不让各模块自己调 FindFirstFile:
+     · A/W 两个版本混用是踩过的坑(中文文件名在 ANSI 版里直接"看不见");
+     · std::filesystem 只有一套 Unicode 语义,这类 bug 从根上不会再有。
+   返回文件名(不含目录),按名字排序,方便复现与测试。 */
+std::vector<std::string> fs_list_files(const char *dir, const char *ext);
+/* 递归删除目录(尽力而为:删不掉的就留着,不抛异常、不中断) */
+void fs_remove_tree(const char *dir);
 
 /* ---------- 全局:程序所在目录(所有相对路径都以它为基准) ---------- */
 void app_init_paths(void);

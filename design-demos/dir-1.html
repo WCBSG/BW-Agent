@@ -1,0 +1,452 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>网站安全巡检智能体 · 方向一</title>
+<style>
+/* ===================================================================
+   方向一 · Vignelli 印刷网格
+   借自: Massimo Vignelli 的编辑设计(网格纪律、单一正红、无圆角、
+        巨型中文标题与细线表格的尺度对比)
+   一句话骨架: 页面就是一张印张 —— 顶栏是刊头，正文是栏格，
+             等级用字重与一条朱红细线表达，不用色块装饰。
+   =================================================================== */
+:root{
+  --paper:#f2f0eb;
+  --ink:#141414;
+  --ink-2:#3a3833;
+  --ink-3:#6f6b63;
+  --rule:#141414;
+  --hair:#cfcbc2;
+  --red:#c8321f;
+  --red-soft:#f0ded9;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%}
+body{
+  background:var(--paper);color:var(--ink);
+  font:14px/1.6 "Segoe UI","Microsoft YaHei UI","Microsoft YaHei",sans-serif;
+  -webkit-font-smoothing:antialiased;
+  font-variant-numeric:tabular-nums;
+}
+button{font:inherit;color:inherit;background:none;border:0;cursor:pointer}
+
+/* ---------- 刊头 ---------- */
+.masthead{
+  display:grid;grid-template-columns:1fr auto;align-items:end;gap:24px;
+  padding:20px 40px 12px;border-bottom:3px double var(--rule);
+}
+.wordmark{display:flex;align-items:baseline;gap:14px}
+.wordmark b{font-size:19px;letter-spacing:.5px}
+.wordmark span{font-size:12px;color:var(--ink-3);letter-spacing:.4px}
+.issue{font-size:12px;color:var(--ink-3);letter-spacing:.6px;text-align:right;line-height:1.7}
+.issue b{color:var(--ink);font-weight:600}
+
+/* ---------- 主导航(印刷式样:细线分隔,不加底色) ---------- */
+.nav{display:flex;gap:0;border-bottom:1px solid var(--rule);padding:0 40px;overflow:auto}
+.nav button{
+  padding:11px 18px 10px;font-size:13.5px;color:var(--ink-2);
+  border-right:1px solid var(--hair);white-space:nowrap;
+}
+.nav button:first-child{padding-left:0}
+.nav button[aria-current="true"]{color:var(--ink);font-weight:700}
+.nav button[aria-current="true"]::after{
+  content:"";display:block;height:2px;background:var(--red);margin-top:8px;
+}
+.nav .count{font-size:11.5px;color:var(--ink-3);margin-left:7px}
+
+/* ---------- 主区:两栏刊格 ---------- */
+.sheet{padding:26px 40px 60px;display:grid;grid-template-columns:minmax(0,1.55fr) minmax(0,1fr);gap:40px}
+.lede{grid-column:1 / -1;display:grid;grid-template-columns:minmax(0,1.55fr) minmax(0,1fr);gap:40px;align-items:end}
+h1{font-size:clamp(38px,4.4vw,62px);line-height:.98;letter-spacing:-2.2px;font-weight:800}
+h1 .thin{font-weight:300;color:#56524a}
+.dek{margin-top:14px;font-size:15px;color:var(--ink-2);max-width:46ch;line-height:1.65}
+.dek strong{font-weight:600}
+.figures{display:grid;grid-template-columns:repeat(3,1fr);gap:0;border-left:1px solid var(--hair);padding-left:22px;align-self:end;padding-bottom:4px}
+.figures div{padding-right:14px}
+.figures dt{font-size:11.5px;letter-spacing:.8px;color:var(--ink-3);margin-bottom:4px}
+.figures dd{font-size:26px;font-weight:700;letter-spacing:-1px;line-height:1.1}
+.figures dd small{font-size:12px;font-weight:400;color:var(--ink-3);letter-spacing:0;margin-left:3px}
+
+/* ---------- 分节标题:只用一条横线,不做小标签 ---------- */
+.section-head{display:flex;align-items:baseline;justify-content:space-between;gap:16px;
+  border-top:1px solid var(--rule);padding-top:9px;margin-bottom:4px}
+.section-head h2{font-size:16px;letter-spacing:.3px;font-weight:700}
+.section-head span{font-size:12px;color:var(--ink-3)}
+
+/* ---------- 表格:细线,无斑马纹,无圆角 ---------- */
+table{width:100%;border-collapse:collapse;font-size:13.5px}
+th{text-align:left;font-size:11.5px;font-weight:600;letter-spacing:.6px;color:var(--ink-3);
+   border-bottom:1px solid var(--rule);padding:7px 10px 6px 0;white-space:nowrap}
+td{border-bottom:1px solid var(--hair);padding:9px 10px 9px 0;vertical-align:top}
+tr:hover td{background:#eae7e0}
+td.id{color:var(--ink-3);font-size:12.5px;white-space:nowrap}
+td.title{font-weight:600}
+td.title em{display:block;font-style:normal;font-weight:400;color:var(--ink-3);font-size:12.5px;margin-top:2px;
+  max-width:52ch;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.sev{white-space:nowrap;font-weight:700}
+.sev.critical{color:var(--red)}
+.sev.high{color:var(--ink)}
+.sev.mid{color:var(--ink-2);font-weight:500}
+.sev.low{color:var(--ink-3);font-weight:400}
+.status{font-size:12px;color:var(--ink-3);white-space:nowrap}
+
+/* ---------- 决策循环:更像"排版过的记录",不是聊天气泡 ---------- */
+.trace{border-top:1px solid var(--hair)}
+.trace-step{display:grid;grid-template-columns:56px 1fr;gap:16px;padding:13px 0;border-bottom:1px solid var(--hair)}
+.trace-step .n{font-size:11.5px;color:var(--ink-3);letter-spacing:.5px;padding-top:2px}
+.trace-step .what{display:flex;gap:10px;align-items:baseline;flex-wrap:wrap}
+.trace-step code{font:12.5px/1.5 Consolas,"Cascadia Mono",monospace;color:var(--ink)}
+.trace-step .out{margin-top:5px;font-size:13.5px;color:var(--ink-2)}
+.trace-step .why{margin-top:4px;font-size:12.5px;color:var(--ink-3);max-width:60ch}
+.stop{margin-top:14px;padding:11px 0 0;border-top:2px solid var(--rule);
+  font-size:13px;color:var(--ink-2);display:flex;justify-content:space-between;gap:16px}
+.stop b{font-weight:600;color:var(--ink)}
+
+/* ---------- 输入:方框 + 朱红按钮 ---------- */
+.compose{margin-top:18px;border-top:1px solid var(--rule);padding-top:12px}
+.compose label{display:block;font-size:11.5px;letter-spacing:.8px;color:var(--ink-3);margin-bottom:6px}
+.compose .row{display:flex;gap:0}
+.compose input{
+  flex:1;padding:11px 12px;border:1px solid var(--rule);border-right:0;background:#faf9f6;
+  font:inherit;outline:none;min-height:44px;
+}
+.compose input:focus{background:#fff;box-shadow:inset 0 0 0 1px var(--red)}
+.compose button{
+  padding:0 22px;background:var(--red);color:#fff;font-weight:600;font-size:13.5px;
+  letter-spacing:.6px;min-height:44px;
+}
+.compose button:hover{background:#a82815}
+.hints{margin-top:8px;font-size:12.5px;color:var(--ink-3)}
+.hints button{color:var(--ink-2);text-decoration:underline;text-underline-offset:3px;margin-right:14px}
+
+/* ---------- 右栏:规则与能力(列表,不用卡片) ---------- */
+.aside-stack{display:flex;flex-direction:column;gap:26px}
+.deflist{display:grid;grid-template-columns:auto 1fr;gap:6px 14px;font-size:13px;margin-top:8px}
+.deflist dt{color:var(--ink-3);font-size:12.5px;white-space:nowrap}
+.deflist dd{color:var(--ink)}
+.bar{display:flex;height:9px;margin-top:10px;border:1px solid var(--rule)}
+.bar i{display:block;height:100%}
+.bar .b1{background:var(--red)}
+.bar .b2{background:#8a8578}
+.bar .b3{background:#c9c5bb}
+.bar-legend{display:flex;gap:14px;font-size:12px;color:var(--ink-3);margin-top:6px}
+.bar-legend i{display:inline-block;width:8px;height:8px;margin-right:5px;vertical-align:1px}
+ul.plain{list-style:none;font-size:13.5px}
+ul.plain li{display:flex;justify-content:space-between;gap:12px;padding:8px 0;border-bottom:1px solid var(--hair)}
+ul.plain li b{font-weight:600}
+ul.plain li span{color:var(--ink-3);font-size:12.5px;white-space:nowrap}
+.note{font-size:12.5px;color:var(--ink-3);line-height:1.65;margin-top:8px}
+
+/* ---------- 页脚 ---------- */
+.colophon{border-top:3px double var(--rule);margin:0 40px;padding:12px 0 26px;
+  display:flex;justify-content:space-between;gap:20px;font-size:11.5px;color:var(--ink-3);letter-spacing:.4px}
+
+/* ---------- 响应式 ---------- */
+@media (max-width:1080px){
+  .masthead,.nav,.sheet{padding-left:20px;padding-right:20px}
+  .sheet,.lede{grid-template-columns:1fr;gap:26px}
+  .colophon{margin:0 20px}
+}
+@media (max-width:640px){
+  h1{letter-spacing:-1.2px}
+  .figures{grid-template-columns:1fr 1fr;border-left:0;padding-left:0;gap:12px 0}
+  .nav button{padding:10px 12px 9px;font-size:13px}
+}
+</style>
+</head>
+<body>
+
+<header class="masthead">
+  <div class="wordmark"><b>网站安全巡检智能体</b><span>只读巡检 · 结论可回溯</span></div>
+  <div class="issue">
+    任务 <b>WEB-TASK</b><br>授权 <b>127.0.0.1:8899</b>
+  </div>
+</header>
+
+<nav class="nav" id="nav">
+  <button aria-current="true" data-v="loop">决策循环</button>
+  <button data-v="report">报告与告警<span class="count">7</span></button>
+  <button data-v="history">巡检历史</button>
+  <button data-v="assets">资产底账<span class="count">12</span></button>
+  <button data-v="eval">效果评测</button>
+  <button data-v="rules">生效规则</button>
+  <button data-v="caps">能力清单</button>
+  <button data-v="config">配置编辑</button>
+</nav>
+
+<main class="sheet">
+
+  <!-- ===== 决策循环 ===== -->
+  <div class="lede" id="v-loop">
+    <div>
+      <h1>它现在<br><span class="thin">正在看什么</span></h1>
+      <p class="dek">
+        每一步都记下<strong>为什么这么做</strong>、看到了什么、下一步改什么。
+        目标不可达、手段重复、预算将尽时，它会主动收尾并说明原因 —— 而不是跑完清单再说。
+      </p>
+    </div>
+    <dl class="figures">
+      <div><dt>本轮步数</dt><dd>5<small>步</small></dd></div>
+      <div><dt>确认风险</dt><dd>7<small>条</small></dd></div>
+      <div><dt>请求数</dt><dd>42<small>次</small></dd></div>
+    </dl>
+  </div>
+
+  <section>
+    <div class="section-head"><h2>本轮留痕</h2><span>会话 web-session · msg-0007</span></div>
+    <div class="trace">
+      <div class="trace-step">
+        <div class="n">第 1 步</div>
+        <div>
+          <div class="what"><code>skill_recon</code><span class="status">资产与页面发现</span></div>
+          <div class="out">从首页出发，同域限深抓取，得到 12 个页面与资源。</div>
+          <div class="why">先摸清家底：不知道有哪些页面，后续的落点探测就没有坐标。</div>
+        </div>
+      </div>
+      <div class="trace-step">
+        <div class="n">第 2 步</div>
+        <div>
+          <div class="what"><code>sensitive_file_probe</code><span class="status">36 个落点</span></div>
+          <div class="out">命中 2 处：<b>/.env</b>（凭据）、<b>/backup.sql</b>（数据库备份）。</div>
+          <div class="why">先用一个不存在的路径校准出站点默认页，与之同形的响应一律排除 —— 这是不误报的前提。</div>
+        </div>
+      </div>
+      <div class="trace-step">
+        <div class="n">第 3 步</div>
+        <div>
+          <div class="what"><code>dir_probe</code><span class="status">29 个目录</span></div>
+          <div class="out">/uploads/ 返回目录索引，列出 2 个条目。</div>
+          <div class="why">敏感文件之外，暴露面还包括目录索引与对外的管理入口。</div>
+        </div>
+      </div>
+      <div class="trace-step">
+        <div class="n">第 4 步</div>
+        <div>
+          <div class="what"><code>nuclei_scan</code><span class="status">响应头判定</span></div>
+          <div class="out">缺 HSTS、CSP、nosniff、点击劫持防护、Referrer-Policy、Permissions-Policy。</div>
+          <div class="why">这一项只看响应头 —— 拿不到头就写"没检查"，不猜。</div>
+        </div>
+      </div>
+      <div class="trace-step">
+        <div class="n">第 5 步</div>
+        <div>
+          <div class="what"><code>sqli_probe</code><span class="status">布尔差分</span></div>
+          <div class="out">news.php?id= 的恒真/恒假响应形状不同（1,204 字节 vs 982 字节）。</div>
+          <div class="why">只确认"是否存在注入"，不取数据、不改数据；确认后就停，不再扩大试探。</div>
+        </div>
+      </div>
+    </div>
+    <div class="stop">
+      <span>循环结束，停止原因：<b>已给出结论</b></span>
+      <span>调用 5 次 · 4.2 秒</span>
+    </div>
+
+    <form class="compose" onsubmit="return false">
+      <label for="cmd">下一步做什么</label>
+      <div class="row">
+        <input id="cmd" placeholder="例如：复测一下上次发现的问题" autocomplete="off">
+        <button type="submit">执行</button>
+      </div>
+      <div class="hints">
+        <button type="button">完整巡检一遍</button>
+        <button type="button">复测</button>
+        <button type="button">出报告</button>
+        <button type="button">跑评测</button>
+      </div>
+    </form>
+  </section>
+
+  <aside class="aside-stack">
+    <section>
+      <div class="section-head"><h2>按等级</h2><span>共 7 条</span></div>
+      <div class="bar" role="img" aria-label="严重 4 条、中 1 条、低 2 条">
+        <i class="b1" style="width:57%"></i><i class="b2" style="width:14%"></i><i class="b3" style="width:29%"></i>
+      </div>
+      <div class="bar-legend">
+        <span><i style="background:#c8321f"></i>严重 4</span>
+        <span><i style="background:#8a8578"></i>中 1</span>
+        <span><i style="background:#c9c5bb"></i>低 2</span>
+      </div>
+      <ul class="plain" style="margin-top:14px">
+        <li><b>敏感信息</b><span>3 条</span></li>
+        <li><b>弱配置</b><span>3 条</span></li>
+        <li><b>漏洞</b><span>1 条</span></li>
+      </ul>
+    </section>
+
+    <section>
+      <div class="section-head"><h2>本轮的边界</h2><span>程序强制</span></div>
+      <dl class="deflist">
+        <dt>授权域名</dt><dd>127.0.0.1</dd>
+        <dt>允许方法</dt><dd>GET / HEAD / OPTIONS</dd>
+        <dt>限速</dt><dd>2 请求/秒</dd>
+        <dt>审计</dt><dd>42 次请求全部留痕</dd>
+        <dt>证据</dt><dd>落盘前去敏</dd>
+      </dl>
+      <p class="note">不在授权域名内的请求一个都不发 —— 这是程序的闸，不是使用者的自觉。</p>
+    </section>
+
+    <section>
+      <div class="section-head"><h2>生效规则</h2><span>来自文件</span></div>
+      <dl class="deflist">
+        <dt>规则来源</dt><dd>rules.json</dd>
+        <dt>内容特征</dt><dd>10 条</dd>
+        <dt>落点</dt><dd>36 个</dd>
+        <dt>目录</dt><dd>29 个</dd>
+        <dt>敏感信息正则</dt><dd>7 条</dd>
+      </dl>
+      <p class="note">换一个单位只需要改这个文件；报告里每条发现都写明命中的是哪一条定义。</p>
+    </section>
+  </aside>
+
+  <!-- ===== 报告 ===== -->
+  <div class="lede" id="v-report" hidden>
+    <div>
+      <h1>7 条风险<br><span class="thin">严重 4 条</span></h1>
+      <p class="dek">
+        报告按等级排序，每条带证据、影响与修复建议；复测记录写回发现本身，
+        <strong>已修复 / 仍未修复 / 判不了</strong> 三种结论分开计。
+      </p>
+    </div>
+    <dl class="figures">
+      <div><dt>报告编号</dt><dd>R-0001</dd></div>
+      <div><dt>生成时间</dt><dd style="font-size:16px;letter-spacing:0;padding-top:6px">2026-10-22 09:41</dd></div>
+      <div><dt>未闭环</dt><dd>7<small>条</small></dd></div>
+    </dl>
+  </div>
+
+  <section id="report-table">
+    <div class="section-head"><h2>发现清单</h2><span>按等级降序</span></div>
+    <table>
+      <thead>
+        <tr><th>编号</th><th>发现</th><th>等级</th><th>状态</th></tr>
+      </thead>
+      <tbody>
+        <tr><td class="id">F-0001</td><td class="title">站点根目录可下载 .env<em>命中规则 config-secrets · 含数据库口令</em></td><td class="sev critical">严重</td><td class="status">仍未修复</td></tr>
+        <tr><td class="id">F-0002</td><td class="title">数据库备份 backup.sql 暴露<em>命中规则 sql-dump · 含建表与初始数据</em></td><td class="sev critical">严重</td><td class="status">仍未修复</td></tr>
+        <tr><td class="id">F-0003</td><td class="title">私钥文件可读取<em>命中规则 private-key</em></td><td class="sev critical">严重</td><td class="status">仍未修复</td></tr>
+        <tr><td class="id">F-0004</td><td class="title">news.php 的 id 参数存在布尔注入<em>恒真/恒假响应形状不同 · 未取数据</em></td><td class="sev critical">严重</td><td class="status">仍未修复</td></tr>
+        <tr><td class="id">F-0005</td><td class="title">目录索引对外开放 /uploads/<em>标题「Index of /uploads」 · 列出 2 个条目</em></td><td class="sev mid">中</td><td class="status">仍未修复</td></tr>
+        <tr><td class="id">F-0006</td><td class="title">安全响应头缺失 6 项<em>HSTS / CSP / nosniff / 点击劫持 / Referrer / Permissions</em></td><td class="sev low">低</td><td class="status">判不了</td></tr>
+        <tr><td class="id">F-0007</td><td class="title">服务器版本信息泄露<em>Server 与 X-Powered-By 未隐去</em></td><td class="sev low">低</td><td class="status">仍未修复</td></tr>
+      </tbody>
+    </table>
+    <div class="stop">
+      <span>导出：<b>Markdown</b> · 报告与发现清单同文件</span>
+      <span>评测 Recall 1.00 / Precision 1.00 / FPR 0.00</span>
+    </div>
+  </section>
+
+  <aside class="aside-stack" id="report-aside">
+    <section>
+      <div class="section-head"><h2>告警</h2><span>已推送 5 条</span></div>
+      <ul class="plain">
+        <li><b>严重 4 条</b><span>邮件队列</span></li>
+        <li><b>中 1 条</b><span>站内提示</span></li>
+        <li><b>低 2 条</b><span>只进报告</span></li>
+      </ul>
+      <p class="note">同一发现只推一次：报告可以反复生成，告警不该反复轰炸。</p>
+    </section>
+    <section>
+      <div class="section-head"><h2>复测</h2><span>上一轮</span></div>
+      <dl class="deflist">
+        <dt>已修复</dt><dd>0 条</dd>
+        <dt>仍未修复</dt><dd>6 条</dd>
+        <dt>判不了</dt><dd>1 条</dd>
+      </dl>
+      <p class="note">判不了的单列：取不到内容时不许写"没问题"。</p>
+    </section>
+  </aside>
+
+  <!-- ===== 能力清单 ===== -->
+  <div class="lede" id="v-caps" hidden>
+    <div>
+      <h1>能力 15 项<br><span class="thin">技能 7 · 工具 8</span></h1>
+      <p class="dek">技能是一件事的完整做法与判定，工具是一次原子动作。工具不下业务结论，只如实返回事实。</p>
+    </div>
+    <dl class="figures">
+      <div><dt>内置</dt><dd>15</dd></div>
+      <div><dt>外部</dt><dd>0</dd></div>
+      <div><dt>MCP</dt><dd>0</dd></div>
+    </dl>
+  </div>
+
+  <section id="caps-table">
+    <div class="section-head"><h2>技能</h2><span>可多步 · 带判定</span></div>
+    <table>
+      <thead><tr><th>名称</th><th>解决什么</th><th>用到的工具</th></tr></thead>
+      <tbody>
+        <tr><td class="id">skill_full_inspection</td><td class="title">全流程巡检<em>先摸家底，再查内容与落点，最后配置与漏洞</em></td><td class="status">site_crawl · page_diff · sensitive_file_probe · dir_probe · nuclei_scan</td></tr>
+        <tr><td class="id">skill_recon</td><td class="title">资产与页面发现<em>把页面、静态资源、接口列成底账</em></td><td class="status">site_crawl</td></tr>
+        <tr><td class="id">skill_leak_check</td><td class="title">敏感信息检查<em>按本单位的定义查误发布</em></td><td class="status">sensitive_file_probe · sensitive_scan</td></tr>
+        <tr><td class="id">skill_integrity_check</td><td class="title">内容完整性检查<em>基线比对，看是否被篡改或植入外链</em></td><td class="status">page_diff</td></tr>
+        <tr><td class="id">skill_retest</td><td class="title">复测与闭环<em>已修复 / 仍未修复 / 判不了</em></td><td class="status">page_diff · sensitive_file_probe · dir_probe · nuclei_scan</td></tr>
+        <tr><td class="id">skill_report</td><td class="title">报告与告警<em>分级统计 + 告警推送</em></td><td class="status">汇总已有结果</td></tr>
+        <tr><td class="id">skill_evaluate</td><td class="title">检测效果评测<em>召回率 / 准确率 / 误报率</em></td><td class="status">对账已有发现与测试集</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <aside class="aside-stack" id="caps-aside">
+    <section>
+      <div class="section-head"><h2>工具</h2><span>只读 · 不下结论</span></div>
+      <ul class="plain">
+        <li><b>site_crawl</b><span>资产发现</span></li>
+        <li><b>sensitive_file_probe</b><span>落点探测</span></li>
+        <li><b>dir_probe</b><span>目录探测</span></li>
+        <li><b>page_diff</b><span>基线比对</span></li>
+        <li><b>nuclei_scan</b><span>安全配置</span></li>
+        <li><b>sqli_probe</b><span>注入验证</span></li>
+        <li><b>sensitive_scan</b><span>文本敏感信息</span></li>
+        <li><b>password_check</b><span>口令强度</span></li>
+      </ul>
+    </section>
+  </aside>
+
+</main>
+
+<footer class="colophon">
+  <span>本机安全连接 · 127.0.0.1 · 界面服务只绑回环</span>
+  <span>规则来自 rules.json · 报告可导出 Markdown</span>
+</footer>
+
+<script>
+/* 视图切换:真能点,不是静态稿 */
+const views = {
+  loop:  ['v-loop', '.sheet > section:nth-of-type(1)', '.sheet > aside:nth-of-type(1)'],
+  report:['v-report', '#report-table', '#report-aside'],
+  caps:  ['v-caps', '#caps-table', '#caps-aside'],
+};
+function show(v){
+  document.querySelectorAll('#nav button').forEach(b => b.setAttribute('aria-current', String(b.dataset.v === v)));
+  for (const key of Object.keys(views)) {
+    const [head, main, side] = views[key];
+    const on = key === v;
+    const h = document.getElementById(head); if (h) h.hidden = !on;
+    const m = document.querySelector(main); if (m) m.hidden = !(on || key === 'loop');
+    const s = document.querySelector(side); if (s) s.hidden = !(on || key === 'loop');
+  }
+  /* 简化:只让当前视图的三块可见 */
+  const map = { loop: ['.sheet > section:nth-of-type(1)', '.sheet > aside:nth-of-type(1)'],
+                report: ['#report-table', '#report-aside'],
+                caps: ['#caps-table', '#caps-aside'] };
+  document.querySelectorAll('.sheet > section, .sheet > aside, .sheet > div.lede').forEach(n => n.hidden = true);
+  const [m, s] = map[v] || map.loop;
+  const h = document.getElementById('v-' + v); if (h) h.hidden = false;
+  const mm = document.querySelector(m); if (mm) mm.hidden = false;
+  const ss = document.querySelector(s); if (ss) ss.hidden = false;
+}
+document.getElementById('nav').addEventListener('click', (e) => {
+  const b = e.target.closest('button[data-v]'); if (!b) return;
+  if (!views[b.dataset.v]) return;   /* 未做的视图保持当前页,不假装 */
+  show(b.dataset.v);
+});
+document.querySelectorAll('.hints button').forEach(b => {
+  b.addEventListener('click', () => { document.getElementById('cmd').value = b.textContent; document.getElementById('cmd').focus(); });
+});
+show('loop');
+</script>
+</body>
+</html>

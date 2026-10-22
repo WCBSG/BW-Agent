@@ -3,6 +3,7 @@
 #include "common.h"
 
 #include <shellapi.h>   /* CommandLineToArgvW —— 从原始命令行取参数用 */
+#include <algorithm>
 #include <cstdlib>
 #include <ctime>
 #include <exception>
@@ -661,4 +662,68 @@ int file_append(const char *path, const char *data, size_t len) {
   size_t put = fwrite(data, 1, len, fp);
   fclose(fp);
   return put == len ? 0 : -1;
+}
+/* ---------- 目录遍历(统一走宽字符 Win32) ----------
+   为什么收口到这里:项目里踩过最久的一类 bug 就是"A 版 Win32 API 不认中文文件名"
+   (FindFirstFileA / file_size(A) / CreateDirectoryA)。现在只保留**一套宽字符实现**,
+   UTF-8 → UTF-16 由 u8_to_w 完成,调用方再也不用选 A 还是 W。
+   (早期版本用过 std::filesystem,功能对但把 exe 从 582KB 撑到 1.5MB,
+    换回 W 版后同样只有一条代码路径,体积几乎不增。) */
+std::vector<std::string> fs_list_files(const char *dir, const char *ext) {
+  std::vector<std::string> out;
+  if (!dir || !*dir) return out;
+  char pattern[MAX_PATH * 2];
+  snprintf(pattern, sizeof(pattern), "%s\\*", dir);
+  wchar_t *wpat = u8_to_w(pattern);
+  if (!wpat) return out;
+  WIN32_FIND_DATAW fd;
+  HANDLE h = FindFirstFileW(wpat, &fd);
+  free(wpat);
+  if (h == INVALID_HANDLE_VALUE) return out;
+  const std::string want_ext = ext ? ext : "";
+  do {
+    if (wcscmp(fd.cFileName, L".") == 0 || wcscmp(fd.cFileName, L"..") == 0) continue;
+    if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) continue;
+    char *name8 = w_to_u8(fd.cFileName);
+    if (!name8) continue;
+    std::string name = name8;
+    free(name8);
+    if (!want_ext.empty() && !str_endswith(name.c_str(), want_ext.c_str())) continue;
+    out.push_back(name);
+  } while (FindNextFileW(h, &fd));
+  FindClose(h);
+  std::sort(out.begin(), out.end());   /* 顺序稳定,便于复现与测试 */
+  return out;
+}
+
+void fs_remove_tree(const char *dir) {
+  if (!dir || !*dir) return;
+  /* 先递归删子项,再删自己;删不掉就算了(文件被占用等),不抛异常、不中断 */
+  char pattern[MAX_PATH * 2];
+  snprintf(pattern, sizeof(pattern), "%s\\*", dir);
+  wchar_t *wpat = u8_to_w(pattern);
+  if (wpat) {
+    WIN32_FIND_DATAW fd;
+    HANDLE h = FindFirstFileW(wpat, &fd);
+    free(wpat);
+    if (h != INVALID_HANDLE_VALUE) {
+      do {
+        if (wcscmp(fd.cFileName, L".") == 0 || wcscmp(fd.cFileName, L"..") == 0) continue;
+        char *name8 = w_to_u8(fd.cFileName);
+        if (!name8) continue;
+        char child[MAX_PATH * 2];
+        snprintf(child, sizeof(child), "%s\\%s", dir, name8);
+        free(name8);
+        if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
+          fs_remove_tree(child);
+        } else {
+          wchar_t *wfile = u8_to_w(child);
+          if (wfile) { DeleteFileW(wfile); free(wfile); }
+        }
+      } while (FindNextFileW(h, &fd));
+      FindClose(h);
+    }
+  }
+  wchar_t *wdir = u8_to_w(dir);
+  if (wdir) { RemoveDirectoryW(wdir); free(wdir); }
 }

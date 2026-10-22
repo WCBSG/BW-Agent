@@ -289,7 +289,13 @@ json_t *json_parse_n(const char *text, size_t len) {
 }
 
 json_t *json_parse(const char *text) {
-  return text ? json_parse_n(text, strlen(text)) : NULL;
+  if (!text) return NULL;
+  /* 剥掉 UTF-8 BOM:记事本 / PowerShell 存出来的 JSON 都带它,
+     而解析器只认第一个字符是 { 或 [ —— 不剥就等于"文件坏了"。
+     这类"用户改了配置却不生效"的故障排查成本极高,所以在入口处统一挡掉。 */
+  const unsigned char *u = (const unsigned char *)text;
+  if (u[0] == 0xEF && u[1] == 0xBB && u[2] == 0xBF) text += 3;
+  return json_parse_n(text, strlen(text));
 }
 
 char *json_unescape(const char *s, size_t n, size_t *out_len) {
