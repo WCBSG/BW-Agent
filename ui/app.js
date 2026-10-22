@@ -588,7 +588,7 @@ function send(text) {
   /* 后端建好这一轮再刷新左栏，否则新任务不会出现在列表里 */
   setTimeout(() => { renderTasks().catch(() => {}); }, 900);
   trace.textContent = '';
-  if (stepsBox) stepsBox.innerHTML = '<div class="muted">执行后这里按步列出「为什么这么做」。</div>';
+  if (stepsBox) stepsBox.innerHTML = '<div class="muted">执行后按步列出。</div>';
 
   /* EventSource 不能自定义请求头,所以令牌走查询串 */
   /* 目标不再是全局设定:这一轮看哪个站,由用户这句话决定。
@@ -616,7 +616,7 @@ function send(text) {
     es.close();
     if (closed) return;
     if (current) {
-      current.body.appendChild(el('div', 'stopline', '连接中断 —— 后端可能已停止。'));
+      current.body.appendChild(el('div', 'stopline', '连接中断，请确认服务仍在运行。'));
       current = null;
     }
     endTurn();
@@ -920,7 +920,7 @@ async function renderEvalView() {
   const box = $('eval-missing');
   box.innerHTML = '';
   if (!missing.length) {
-    box.appendChild(emptyCard('每条结论都带证据 —— 这是能交付的前提。'));
+    box.appendChild(emptyCard('每条结论都应带证据。'));
   } else {
     for (const f of missing) {
       const c = el('div', 'card');
@@ -933,7 +933,7 @@ async function renderEvalView() {
       c.appendChild(head);
       c.appendChild(kv('目标', f.target, 'cm'));
       c.appendChild(kv('状态', STATUS_LABEL[f.status] || f.status || '—', 'cm'));
-      c.appendChild(el('div', 'cd', '这条没有证据。没有原始响应摘录的结论不该进报告 —— 补一次复现，或者把它标成误报。'));
+      c.appendChild(el('div', 'cd', '这条缺少证据：补一次复现，或标为误报。'));
       box.appendChild(c);
     }
   }
@@ -1226,10 +1226,10 @@ function resetStream(title, text) {
   const empty = el('div', 'empty');
   empty.id = 'stream-empty';
   empty.appendChild(el('b', null, title || '还没有开始'));
-  empty.appendChild(el('p', null, text || '在下面写一句要做什么，它会把每一步的决定和证据摊在这个位置。'));
+  empty.appendChild(el('p', null, text || '输入要查什么，过程和证据会显示在这里。'));
   stream.appendChild(empty);
   current = null;
-  if (stepsBox) stepsBox.innerHTML = '<div class="muted">执行后这里按步列出「为什么这么做」。</div>';
+  if (stepsBox) stepsBox.innerHTML = '<div class="muted">执行后按步列出。</div>';
   if (trace) trace.textContent = '';
   if ($('task-title')) $('task-title').textContent = '巡检会话';
 }
@@ -1998,7 +1998,7 @@ async function saveConfigFile() {
     CFG.dirty = false;
     msg.className = 'note ok';
     msg.textContent = '已保存（' + r.size + ' B，' + (r.backup || '') + '）'
-      + (/rules\.json$/.test(CFG.current) ? ' —— 可点「让规则生效」立即应用' : ' —— 技能/工具/MCP 需重启程序生效');
+      + (/rules\.json$/.test(CFG.current) ? '，可点「让规则生效」立即应用' : '，重启后生效');
     await renderConfigView();
   } catch (e) {
     msg.className = 'note bad';
@@ -2048,7 +2048,7 @@ function newConfigFile() {
   $('cfg-text').value = tpl;
   $('cfg-meta').textContent = '新文件（保存后创建）';
   $('cfg-msg').className = 'note';
-  $('cfg-msg').textContent = '模板已就绪 —— 改完点「保存」';
+  $('cfg-msg').textContent = '模板已就绪，改完点「保存」';
 }
 
 /* ============ 绑定 ============ */
@@ -2146,19 +2146,14 @@ if (hq) {
 $('home-form').addEventListener('submit', (e) => {
   e.preventDefault();
   const text = (hq.value || '').trim();
-  if (!text) { hq.focus(); return; }
+  /* 什么都没写就点「开始」= 想直接进对话页，不要拦着他 */
+  if (!text) { newChat(); return; }
   if (!state.status || !state.status.authorized) {
     openModal();
     return;
   }
   hq.value = '';
   send(text);
-});
-document.querySelectorAll('.chip-btn').forEach((b) => {
-  b.addEventListener('click', () => {
-    hq.value = b.dataset.q;
-    hq.focus();
-  });
 });
 /* 任何 data-goto 都走同一个入口：先切视图，再取数 */
 document.querySelectorAll('[data-goto]').forEach((b) => {

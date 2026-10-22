@@ -36,7 +36,7 @@
 
   <main class="home-main">
     <h1 class="ask">要巡检哪个站？</h1>
-    <p class="ask-sub">给一个已授权的域名或地址，它在边界内自己决定怎么查，最后交一份带证据的报告。</p>
+    <p class="ask-sub">输入已授权的网址，说清要查什么；每条结论都带证据。</p>
 
     <form class="composer" id="home-form">
       <textarea id="hq" rows="2" aria-label="巡检目标与要求"
@@ -49,15 +49,6 @@
       </div>
     </form>
 
-    <div class="ask-chips" id="ask-chips">
-      <button class="chip-btn" data-q="把这个站完整巡检一遍">完整巡检</button>
-      <button class="chip-btn" data-q="重点查敏感文件泄露">敏感文件泄露</button>
-      <button class="chip-btn" data-q="查目录索引是否开放">目录暴露</button>
-      <button class="chip-btn" data-q="看看有没有注入问题">注入差分</button>
-      <button class="chip-btn" data-q="检查响应头与错误回显">配置错误</button>
-      <button class="chip-btn" data-q="复测上次没修复的发现">复测</button>
-    </div>
-
     <section class="recent">
       <div class="recent-head">
         <h2>最近的巡检</h2>
@@ -69,8 +60,7 @@
   </main>
 
   <footer class="home-foot">
-    <p>只在授权主体内发请求，只用 GET / HEAD / OPTIONS，不猜密码、不取数据、不做破坏性验证。<br>
-       每一次请求都写进审计表，报告里的每条结论都能回到原始响应。</p>
+    <p>只读检查（GET / HEAD / OPTIONS），每一次请求都写进审计。</p>
   </footer>
 </div>
 
@@ -95,7 +85,7 @@
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 4v3M15 4v3"/><rect x="4" y="7" width="16" height="13" rx="2.5"/><path d="M9.5 12h5M9.5 15.5h3"/></svg>
           <span>能力</span>
         </button>
-        <button class="act" data-goto="automation" type="button" title="定时巡检：按周期自动跑，并与上一轮做基线差分">
+        <button class="act" data-goto="automation" type="button" title="定时巡检">
           <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12.8" r="7.2"/><path d="M12 9.6v3.6l2.4 1.6"/><path d="M7 4.4 5 6.4M17 4.4l2 2"/></svg>
           <span>自动化</span>
           <b class="act-badge" id="auto-badge"></b>
@@ -119,7 +109,7 @@
       <span class="path">任务 /</span>
       <h1 id="task-title">巡检会话</h1>
       <div class="head-right">
-        <span class="chip" id="work-scope" title="边界是授权池；具体看哪个站由你在指令里说">目标由指令决定</span>
+        <span class="chip" id="work-scope" title="边界是授权池">目标由指令决定</span>
         <span class="chip" id="work-model">离线规则</span>
         <button class="ghost" id="btn-refresh" title="刷新数据">刷新</button>
         <button class="ghost" data-goto="report">数据</button>
@@ -129,7 +119,7 @@
     <div class="stream" id="stream">
       <div class="empty" id="stream-empty">
         <b>还没有开始</b>
-        <p>在下面写一句要做什么，它会把每一步的决定和证据摊在这个位置。</p>
+        <p>输入要查什么，过程和证据会显示在这里。</p>
       </div>
     </div>
 
@@ -154,7 +144,7 @@
         </button>
         <input type="file" id="attach" multiple hidden
                accept=".txt,.log,.json,.md,.csv,.ini,.conf,.cfg,.xml,.html,.yml,.yaml,.sql,.env,.png,.jpg,.jpeg,.webp">
-        <textarea id="q" rows="1" aria-label="巡检指令" placeholder="继续追问，或让它在同一任务上接着做"></textarea>
+        <textarea id="q" rows="1" aria-label="巡检指令" placeholder="继续追问…"></textarea>
         <button type="button" id="btn-stop" class="stop-btn" hidden>停止</button>
         <button type="submit" id="btn-send">执行</button>
       </div>
@@ -190,7 +180,7 @@
 
       <section class="card rail-card">
         <div class="k"><span>过程要点</span><span id="trace-hint"></span></div>
-        <div class="steps" id="steps"><div class="muted">执行后这里按步列出「为什么这么做」。</div></div>
+        <div class="steps" id="steps"><div class="muted">执行后按步列出。</div></div>
       </section>
 
       <section class="card rail-card">
@@ -292,10 +282,8 @@
       <section class="panel">
         <div class="panel-head"><div><h2>证据与闭环</h2></div><span class="hint" id="eval-hint"></span></div>
         <p class="note">
-          这里只回答两件可核查的事：每条结论有没有<strong>证据 / 影响 / 修复建议</strong>，以及闭环走到了哪一步。
-          <strong>不在这里给出效果指标</strong> —— 那取决于评测集怎么造、口径怎么定，
-          同一个系统换一套数据集就能得出完全不同的结论，应由评测方按统一评测集给出；
-          本工具能保证的是：每条结论都能回到原始响应。
+          每条结论都要有<strong>证据 / 影响 / 修复建议</strong>，这里核对它们齐不齐、闭环走到哪一步。
+          效果指标由评测方按统一数据集给出，本工具不自行计算。
         </p>
         <div class="tiles" id="eval-tiles"></div>
       </section>
@@ -313,7 +301,7 @@
     <section class="view" id="view-rules">
       <section class="panel">
         <div class="panel-head"><div><h2>这次按什么定义检查</h2></div><span class="hint" id="rules-source"></span></div>
-        <p class="note">下面是本次巡检实际使用的判定规则与落点清单。改完规则点「让规则生效」，不需要重新编译程序。</p>
+        <p class="note">本次巡检使用的判定规则与落点。改完点「让规则生效」。</p>
         <div class="table-wrap"><table class="table" id="rules-table"></table></div>
       </section>
       <section class="panel">
@@ -348,9 +336,8 @@
           <span class="hint" id="auto-hint"></span>
         </div>
         <p class="note">
-          到点由程序自己跑一轮，跑完把这一轮和<strong>同一目标上一轮</strong>比一遍：
-          新出现的、等级升高的、本轮没再出现的，各算一类，写进告警。
-          关掉浏览器它照样跑；服务没开着时错过的周期不补跑（避免开机瞬间对目标突发请求）。
+          到点自动跑一轮，并与同一目标上一轮比对：新增、升高、本轮未再出现，各记一类。
+          关掉浏览器也会继续；服务没开时错过的周期不补跑。
         </p>
         <div class="cards" id="auto-list"></div>
       </section>
@@ -439,10 +426,8 @@
           <span class="hint" id="appr-hint"></span>
         </div>
         <p class="note">
-          智能体在<strong>动手之前</strong>先过这道闸：<code>询问</code> 会停下来等你点；
-          <code>全部允许</code> 直接放行（开之前会让你确认一次）；自定义策略按工具名逐条指定
-          允许 / 询问 / 拒绝，规则自上而下第一条命中说了算，一条都没命中就按「询问」。
-          被拒绝不是报错：它会作为一条观察交回给模型，模型据此换路子或老实收束。
+          工具调用前先过这道闸：<code>询问</code> 停下来等你点，<code>全部允许</code> 直接放行；
+          自定义策略按工具名逐条指定允许 / 询问 / 拒绝，自上而下第一条命中生效。
         </p>
         <div class="cards" id="appr-list"></div>
 
@@ -470,8 +455,8 @@
           <span class="hint" id="prof-hint"></span>
         </div>
         <p class="note">
-          关键词与样例按"正文里出现即命中"判定;正则由内置引擎执行,保存前会当场试编译(写错了直接拒绝,不会静默跳过);
-          落点会追加到敏感文件探测里;文件类型用于给命中的文件定级。一条定义 = 一套口径,周期规则可以各自选一套。
+          关键词 / 样例按正文命中，正则保存前会试编译；落点会并入敏感文件探测，文件类型用于定级。
+          一条定义是一套口径，周期规则可各选一套。
         </p>
         <div class="cards" id="prof-list"></div>
 
@@ -561,15 +546,14 @@
   <div class="modal-backdrop"></div>
   <div class="modal-box">
     <h3 id="scope-title">授权池</h3>
-    <p class="muted">本工具只会对<strong>池内主机</strong>发请求。池子之外的目标，请求在发出去之前就被拦下，整轮巡检立刻停止。
-      具体每一轮看哪个站，由你在指令里说 —— 没有"当前目标"这一说。</p>
+    <p class="muted">只对<strong>池内主机</strong>发请求，池外目标一律拦下。每一轮查哪个站，在指令里说。</p>
     <p class="field-help">条目写法：<code>exp.com</code> 允许；<code>exp.com:8443</code> 只允许这个端口；
       <code>!exp.com</code> 不允许整站；<code>!exp.com/admin/</code> 只不允许这个路径前缀（不允许优先于允许）。</p>
 
     <div class="pool-list" id="pool-list"></div>
 
     <label>加入授权主机<input id="scope-domain" placeholder="exp.com 或 !exp.com/admin/"></label>
-    <p class="field-help">只填主机名，可带端口；前面加 <code>!</code> 表示"不允许"。确认前请确保已获得该目标的巡检授权。</p>
+    <p class="field-help">只填主机名，可带端口；前面加 <code>!</code> 表示不允许。请确认已获得该目标的授权。</p>
 
     <details class="pool-batch">
       <summary>批量录入 / 从文件导入</summary>
