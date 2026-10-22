@@ -437,7 +437,58 @@ function beginMessage(messageId) {
     stopReason: '',
     startedAt: Date.now(),
   };
+  /* 真正的空等不在"消息刚建好"这一刻,而在"上一段说完、模型还没给下一段"中间
+     (恒脑的 agent 接口常常要想 5–10 秒)。所以等待提示跟着"有多久没动静"走。 */
+  noteActivity();
 }
+
+/* ---------- 等待提示:一段时间没有新内容就浮出来 ----------
+   为什么不是一开消息就显示"正在思考":那一刻往往马上就有第一句,提示会闪一下。
+   按"静默时长"来判,才正好落在人真的开始怀疑"它是不是卡了"的时候。 */
+const IDLE_MS = 1200;
+let idleTimer = null;
+let idleEl = null;
+let idleT0 = 0;
+let idleTick = null;
+
+function noteActivity() {
+  stopIdle();
+  if (!current) return;
+  clearTimeout(idleTimer);
+  idleTimer = setTimeout(showIdle, IDLE_MS);
+}
+
+function showIdle() {
+  if (!current || !current.body) return;
+  if (!idleEl) {
+    idleEl = el('div', 'waiting');
+    idleEl.appendChild(el('span', 'pulse'));
+    idleEl.appendChild(el('span', 'wtxt', '模型还在想'));
+    current.body.appendChild(idleEl);
+    idleT0 = Date.now();
+    idleTick = setInterval(() => {
+      const s = Math.floor((Date.now() - idleT0) / 1000);
+      if (idleEl) {
+        const t = idleEl.querySelector('.wtxt');
+        if (t) t.textContent = s >= 1 ? `模型还在想 · 已 ${s}s` : '模型还在想';
+      }
+    }, 500);
+    scrollBottom();
+  }
+}
+
+function stopIdle() {
+  clearTimeout(idleTimer);
+  idleTimer = null;
+  if (idleTick) { clearInterval(idleTick); idleTick = null; }
+  if (idleEl) {
+    if (idleEl.isConnected) idleEl.remove();
+    idleEl = null;
+  }
+}
+
+/* 兼容旧调用点:收尾/中断时停掉等待提示 */
+function clearWaiting() { stopIdle(); }
 
 function getBlock(index) {
   return (current && current.blocks[index]) || null;
@@ -446,6 +497,7 @@ function getBlock(index) {
 function onBlockStart(e) {
   if (!current) beginMessage(e.messageId);
   if (e.blockType === 'tool_use') {
+    noteActivity();               /* 开始调工具了:不是"模型卡住",换成工具卡片的进度 */
     const card = el('div', 'tool');
     const head = el('div', 'tool-head');
     const dot = el('span', 'dot running');
@@ -466,29 +518,81 @@ function onBlockStart(e) {
   } else {
     const n = el('div');
     current.body.appendChild(n);
-    current.blocks[e.index] = { kind: 'text', node: n, text: '' };
+    current.blocks[e.index] = { kind: 'text', node: n, text: '', shown: 0 };
   }
 }
 
 /* 流式渲染的合并:模型的正文是一小块一小块到的(有时一秒钟上百个),
    每来一块就写一次 DOM + 量一次滚动位置,会让主线程一直在排版。
-   这里把"这一帧要改哪些块"攒起来,一帧只写一次 —— 看起来一样是边收边出,
-   但连续的 delta 不再各自触发一次 reflow。 */
+   这里把"这一帧要改哪些块"攒起来,一帧只写一次。
+
+   另外还有一个现实问题:不是每家上游都给增量。恒脑的 agent 接口是
+   "憋到最后一次性给整段",那样界面会静止几秒然后"啪"地出现一大段。
+   所以这里按已到达的字数做推进:一次来一小段就立刻显示,一次来一大段
+   就分几帧吐出去 —— 看起来都像在写,而不是像刷出来。 */
 const dirtyBlocks = new Set();
 let flushPending = false;
 
 function scheduleFlush() {
   if (flushPending) return;
   flushPending = true;
-  requestAnimationFrame(flushStream);
+  /* 用定时器而不是 requestAnimationFrame:标签切到后台时 rAF 会被完全暂停,
+     文字就卡在半句话上;定时器即便被节流,也还在走。
+     16ms 与一帧相当,合并效果一样,不会每个 delta 都写一次 DOM。 */
+  setTimeout(flushStream, 16);
 }
 
 function flushStream() {
   flushPending = false;
+  let more = false;
   for (const b of dirtyBlocks) {
-    if (b.node && b.node.isConnected) b.node.textContent = b.text;
+    if (!b.node || !b.node.isConnected) continue;
+    const target = b.text.length;
+    if (b.shown === undefined) b.shown = 0;
+    if (b.shown >= target) {
+      /* 这块之前已经显示完了(下一段要等模型再给):把计时清掉。
+         不清的话,下一段到来时"距上次显示"已经过去好几秒,
+         算出来的步长会直接把整段吞完 —— 看起来就像没有流式。 */
+      b.shownAt = 0;
+      continue;
+    }
+
+    /* 动效关掉的人要的是"立刻看到全部",别给他打字机 */
+    if (!PREFS.motion) {
+      b.shown = target;
+      b.shownAt = 0;
+    } else {
+      /* 按时间推进,不按帧推进:显示器 60Hz 还是 144Hz,读起来都是同一个速度。
+         每秒约 400 字 —— 快到不用等,慢到能看见字在往外走。
+         上游一次性给整段(恒脑常见)时这是唯一能"看起来在写"的办法;
+         上游给增量时,每次只多几个字,这条路径会瞬间跟上,不会拖慢。 */
+      const now = performance.now();
+      if (!b.shownAt) b.shownAt = now;
+      const dt = now - b.shownAt;
+      b.shownAt = now;
+      /* 速率跟长度走:短回答慢一点(看得见在写),长回答快一点(不让它拖成打字课)。
+         下限 400 字/秒,上限 2000 字/秒 —— 2000 字的回答也就 1 秒吐完。 */
+      const rate = Math.min(2000, Math.max(400, target));
+      if (dt > 200) {
+        /* 两帧之间隔了这么久,说明定时器被节流了(页面切到后台):
+           这时候不该继续"打字",直接把已有内容显示完,免得切回来看到半句卡着。 */
+        b.shown = target;
+      } else {
+        const add = Math.max(1, Math.floor((dt / 1000) * rate));
+        b.shown = Math.min(target, b.shown + add);
+      }
+      if (b.shown < target) more = true;
+      else b.shownAt = 0;          /* 显示完就清计时:下一段到达时从头算,不会一次吞完 */
+    }
+    b.node.textContent = b.text.slice(0, b.shown);
   }
-  dirtyBlocks.clear();
+  if (!more) {
+    dirtyBlocks.clear();
+    const cb = finishPending;
+    finishPending = null;
+    if (cb) cb();
+  } else scheduleFlush();
+
   if (current && current.lastText) {
     const t = current.lastText.trim();
     if (/^\[第 \d+ 步/.test(t) || /^\[需要你补充信息\]/.test(t)) trace.textContent = current.lastText;
@@ -496,10 +600,34 @@ function flushStream() {
   scrollBottom();
 }
 
+/* 收尾:把还没吐完的字吐完,再执行 done()。
+   为什么不是"立刻补齐":恒脑的 agent 接口会把整段答案和结束事件几乎同时送过来,
+   那样打字机刚启动就被收尾掐掉,用户仍然看到"啪"地一下出现一整段。
+   这里让剩余的字按同一速率走完(通常不到半秒),再补停止行。 */
+let finishPending = null;
+
+function finishStream(done) {
+  let pending = false;
+  for (const b of dirtyBlocks) {
+    if (b.node && b.node.isConnected && b.shown !== undefined && b.shown < b.text.length) {
+      pending = true;
+      break;
+    }
+  }
+  if (!pending) {
+    dirtyBlocks.clear();
+    if (done) done();
+    return;
+  }
+  finishPending = done || null;
+  scheduleFlush();
+}
+
 function onBlockDelta(e) {
   const b = getBlock(e.index);
   if (!b || !e.delta) return;
   if (e.delta.type === 'text_delta') {
+    noteActivity();                 /* 有内容进来:等待提示撤掉,计时重新开始 */
     b.text = (b.text || '') + e.delta.text;
     current.lastText = b.text;
     dirtyBlocks.add(b);
@@ -514,6 +642,13 @@ function onBlockStop(e) {
   const b = getBlock(e.index);
   if (!b) return;
   if (b.kind === 'tool_use') b.dot.className = 'dot ' + (b.dot.dataset.state || 'done');
+  else if (b.kind === 'text' && b.node && b.shown !== undefined && b.shown < b.text.length) {
+    /* 这一段已经写完了:剩下的字一次补齐,不用等动画走完 */
+    b.shown = b.text.length;
+    b.node.textContent = b.text;
+    dirtyBlocks.delete(b);
+  }
+  noteActivity();                 /* 换下一段(或去调工具)前,计时重置 */
 }
 
 function onToolStatus(e) {
@@ -567,16 +702,21 @@ function renderStepCard(e, block) {
 
 function onMessageStop(e) {
   if (!current) return;
-  flushStream();                       /* 收尾前把这一帧还没写出去的正文落下去 */
-  current.stopReason = e.stopReason;
-  const seconds = ((Date.now() - current.startedAt) / 1000).toFixed(1);
-  const line = el('div', 'stopline');
-  line.textContent = `消息结束 · 停止原因 ${e.stopReason} · 调用技能/工具 ${current.steps} 次 · 耗时 ${seconds}s`;
-  current.body.appendChild(line);
-  $('trace-hint').textContent = `${current.steps} 步 / ${seconds}s / ${e.stopReason}`;
-  current = null;
-  endTurn();
-  scrollBottom(true);
+  clearWaiting();
+  const msg = current;                 /* 收尾可能延后到下几帧:先抓住这一条 */
+  msg.stopReason = e.stopReason;
+  const seconds = ((Date.now() - msg.startedAt) / 1000).toFixed(1);
+  const back = () => {
+    const line = el('div', 'stopline');
+    line.textContent = `消息结束 · 停止原因 ${e.stopReason} · 调用技能/工具 ${msg.steps} 次 · 耗时 ${seconds}s`;
+    msg.body.appendChild(line);
+    if ($('trace-hint')) $('trace-hint').textContent = `${msg.steps} 步 / ${seconds}s / ${e.stopReason}`;
+    if (current === msg) current = null;
+    endTurn();
+    scrollBottom(true);
+  };
+  /* 先让剩余的字按打字机速率走完(通常不到半秒),再落停止行 */
+  finishStream(back);
 }
 
 /* ============ 一轮对话 ============ */
@@ -666,6 +806,7 @@ function send(text) {
     es.close();
     if (closed) return;
     if (current) {
+      clearWaiting();
       current.body.appendChild(el('div', 'stopline', '连接中断，请确认服务仍在运行。'));
       current = null;
     }
@@ -1218,6 +1359,8 @@ function resetStream(title, text) {
   empty.appendChild(el('b', null, title || '还没有开始'));
   empty.appendChild(el('p', null, text || '输入要查什么，过程和证据会显示在这里。'));
   stream.appendChild(empty);
+  clearWaiting();                    /* 上一轮的"正在思考"计时器要停掉,别让它空转 */
+  finishPending = null;              /* 上一轮没吐完的字也不必再吐:这一屏已经清了 */
   current = null;
   if (stepsBox) stepsBox.innerHTML = '<div class="muted">执行后按步列出。</div>';
   if (trace) trace.textContent = '';

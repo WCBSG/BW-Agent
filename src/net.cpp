@@ -771,7 +771,12 @@ static void post_json_ex(const char *url, const char *headers, int timeout_ms,
               if (acc.len == 0) resp->error = xstrdup("等待模型响应超时");
               break;
             }
-            if (!resp->error) resp->error = xstrdup("读取响应失败");
+            if (!resp->error) {
+              buf_t e;
+              buf_init(&e);
+              buf_printf(&e, "读取响应失败 (err=%lu)", err);
+              resp->error = buf_take(&e);
+            }
             break;
           }
           if (avail == 0) break;
