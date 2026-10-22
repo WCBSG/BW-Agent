@@ -496,6 +496,13 @@ int agent_run_turn(agent_t *a, const char *user_text, loop_state_t *st) {
     if (llm_enabled()) {
       decided = llm_decide(a, user_text, observations, scope, &d);
     }
+    /* 停止信号可能正好落在模型调用里(那一段已经被掐断):这一轮到此为止,
+       不要再用规则"替模型把话说完" —— 用户点停止就是不想继续了。
+       跳回循环顶部,由那里统一的叫停分支收尾(写停止原因、给一句交代)。 */
+    if (a->cancel) {
+      decision_free(&d);
+      continue;
+    }
     if (decided != 0) {
       rule_decide(user_text, scope, &d);        /* 降级:本地规则 */
       if (decided != 0 && llm_enabled()) {

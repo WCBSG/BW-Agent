@@ -43,8 +43,10 @@ void net_set_rate_limit(double qps);
 void net_set_cancel(volatile LONG *flag);
 int  net_cancelled(void);
 
-/* 增量回调:POST 的响应分块到达时调用(用于模型输出的边收边显示) */
-typedef void (*net_stream_fn)(void *ud, const char *data, size_t len);
+/* 增量回调:POST 的响应分块到达时调用(用于模型输出的边收边显示)。
+   返回 1 表示"这一轮我收完了,不用再等"(例如已经读到 SSE 的 [DONE]):
+   这时会立刻断开,而不是陪着对端把连接挂到超时。 */
+typedef int (*net_stream_fn)(void *ud, const char *data, size_t len);
 void net_post_stream(const char *url, const char *headers, int timeout_ms,
                      const char *body, net_stream_fn cb, void *ud, http_resp_t *resp);
 void hn_http_post_stream(const char *url, const char *app_key, const char *sign,

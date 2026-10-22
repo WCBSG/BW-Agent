@@ -426,6 +426,7 @@ typedef struct {
   void *ud;
   int kind;
   int any;           /* 收到过正文没有 */
+  int done;          /* 见到 [DONE]:这一轮已经收完,不必再等对端关连接 */
 } sse_parser_t;
 
 static void emit_text(sse_parser_t *p, const char *t) {
@@ -492,19 +493,26 @@ static void feed_line(sse_parser_t *p, const char *raw) {
   if (str_startswith(buf, "data:")) js = str_trim(buf + 5);
   else if (buf[0] == '{') js = buf;   /* 有些网关直接一行一个 JSON */
   if (!js || !*js) return;
-  if (js[0] != '{') return;           /* [DONE] / 心跳 / 注释 */
+  if (js[0] != '{') {
+    /* [DONE] 是"这一段说完了"的正牌信号:记下来,让取数层立刻断开。
+       心跳/注释不是结束,不处理。 */
+    if (!strcmp(js, "[DONE]")) p->done = 1;
+    return;
+  }
   json_t *o = json_parse(js);
   if (o) { parse_event(p, o); json_free(o); }
 }
 
-static void on_chunk(void *ud, const char *data, size_t n) {
+static int on_chunk(void *ud, const char *data, size_t n) {
   sse_parser_t *p = (sse_parser_t *)ud;
   for (size_t i = 0; i < n; i++) {
     char c = data[i];
     if (c != '\n') { buf_putc_(&p->line, c); continue; }
     feed_line(p, p->line.data ? p->line.data : "");
     buf_clear(&p->line);
+    if (p->done) return 1;              /* 收完了:让取数层别陪着等超时 */
   }
+  return p->done;
 }
 
 /* 整个响应体当一次性输入再喂一遍(非流式 / 末尾没有换行的最后一行) */

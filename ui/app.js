@@ -252,7 +252,7 @@ function renderStatus(s) {
   }
   if (sideName) sideName.textContent = poolSize ? `授权池 ${poolSize} 个主机` : '先加一个授权主机';
   const introModel = $('intro-model');
-  if (introModel) introModel.textContent = s.model ? '恒脑在线' : '离线规则';
+  if (introModel) introModel.textContent = s.model ? (s.modelName || '模型在线') : '离线规则';
 
   /* 起手式与工作台各自的读数：同一份状态，两处写法不同 */
   const hs = $('home-scope');
@@ -265,7 +265,7 @@ function renderStatus(s) {
   }
   /* 工作台右上角不再有目标选择器 —— 目标由用户这句话决定 */
   const wm = $('work-model');
-  if (wm) wm.textContent = s.model ? '恒脑在线' : '离线规则';
+  if (wm) wm.textContent = s.model ? (s.modelName || '模型在线') : '离线规则';
   const rb = $('rail-boundary');
   if (rb) {
     rb.innerHTML = '';
@@ -442,16 +442,40 @@ function onBlockStart(e) {
   }
 }
 
+/* 流式渲染的合并:模型的正文是一小块一小块到的(有时一秒钟上百个),
+   每来一块就写一次 DOM + 量一次滚动位置,会让主线程一直在排版。
+   这里把"这一帧要改哪些块"攒起来,一帧只写一次 —— 看起来一样是边收边出,
+   但连续的 delta 不再各自触发一次 reflow。 */
+const dirtyBlocks = new Set();
+let flushPending = false;
+
+function scheduleFlush() {
+  if (flushPending) return;
+  flushPending = true;
+  requestAnimationFrame(flushStream);
+}
+
+function flushStream() {
+  flushPending = false;
+  for (const b of dirtyBlocks) {
+    if (b.node && b.node.isConnected) b.node.textContent = b.text;
+  }
+  dirtyBlocks.clear();
+  if (current && current.lastText) {
+    const t = current.lastText.trim();
+    if (/^\[第 \d+ 步/.test(t) || /^\[需要你补充信息\]/.test(t)) trace.textContent = current.lastText;
+  }
+  scrollBottom();
+}
+
 function onBlockDelta(e) {
   const b = getBlock(e.index);
   if (!b || !e.delta) return;
   if (e.delta.type === 'text_delta') {
     b.text = (b.text || '') + e.delta.text;
-    b.node.textContent = b.text;
-    if (/^\[第 \d+ 步/.test(b.text.trim()) || /^\[需要你补充信息\]/.test(b.text.trim())) {
-      trace.textContent = b.text;
-    }
-    scrollBottom();
+    current.lastText = b.text;
+    dirtyBlocks.add(b);
+    scheduleFlush();
   } else if (e.delta.type === 'input_json_delta') {
     b.args.textContent = e.delta.partialJson || '';
     if (e.delta.partialJson && e.delta.partialJson !== '{}') b.args.classList.remove('hidden');
@@ -478,10 +502,20 @@ function onToolStatus(e) {
     b.out.classList.remove('hidden');
     b.note.textContent = (e.note || '').split('\n')[0].slice(0, 60) || '完成';
   }
-  trace.textContent = (trace.textContent || '') + '\n' + (e.status === 'running' ? '→ ' : '✓ ') +
-    e.toolUseId + ' [' + e.status + '] ' + (e.note || '').split('\n')[0].slice(0, 100);
+  appendTrace((e.status === 'running' ? '→ ' : '✓ ') + e.toolUseId + ' [' + e.status + '] ' +
+    (e.note || '').split('\n')[0].slice(0, 100));
   renderStepCard(e, b);
   scrollBottom();
+}
+
+/* 过程直播是"越跑越长"的:长巡视几十步之后,这个文本框能到几十万字。
+   留着尾巴就够了(往前翻历史另有运行记录),否则整页排版会越来越慢。 */
+const TRACE_MAX = 20000;
+function appendTrace(line) {
+  if (!trace) return;
+  const next = (trace.textContent || '') + '\n' + line;
+  trace.textContent = next.length > TRACE_MAX ? next.slice(next.length - TRACE_MAX) : next;
+  trace.scrollTop = trace.scrollHeight;
 }
 
 /* 过程要点：把每一步的"为什么"留下来（评审最想看的是这个） */
@@ -505,6 +539,7 @@ function renderStepCard(e, block) {
 
 function onMessageStop(e) {
   if (!current) return;
+  flushStream();                       /* 收尾前把这一帧还没写出去的正文落下去 */
   current.stopReason = e.stopReason;
   const seconds = ((Date.now() - current.startedAt) / 1000).toFixed(1);
   const line = el('div', 'stopline');

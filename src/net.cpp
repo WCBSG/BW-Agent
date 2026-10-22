@@ -716,11 +716,15 @@ static void post_json_ex(const char *url, const char *headers, int timeout_ms,
     } else {
       DWORD timeout = (DWORD)(timeout_ms > 0 ? timeout_ms : 20000);
       /* 三个超时都要设:只设接收超时的话,对端"接了但不回"或"连不上"都会
-         把整个会话挂在一次调用上 —— 实测恒脑被 WAF 拦时就出现过一次调用卡 80 秒。 */
+         把整个会话挂在一次调用上 —— 实测恒脑被 WAF 拦时就出现过一次调用卡 80 秒。
+         接收超时故意切成小片(800ms):这样"停止"不必等到整段超时才生效,
+         总时长仍由 deadline 兜住。 */
       DWORD conn_to = 8000, send_to = 15000;
+      DWORD slice = 800;
       WinHttpSetOption(req, WINHTTP_OPTION_CONNECT_TIMEOUT, &conn_to, sizeof(conn_to));
       WinHttpSetOption(req, WINHTTP_OPTION_SEND_TIMEOUT, &send_to, sizeof(send_to));
-      WinHttpSetOption(req, WINHTTP_OPTION_RECEIVE_TIMEOUT, &timeout, sizeof(timeout));
+      WinHttpSetOption(req, WINHTTP_OPTION_RECEIVE_TIMEOUT, &slice, sizeof(slice));
+      DWORD deadline = GetTickCount() + timeout;
       const wchar_t *whdrs = headers && headers[0] ? u8_to_w(headers) : NULL;
       BOOL ok = WinHttpSendRequest(req, whdrs ? whdrs : WINHTTP_NO_ADDITIONAL_HEADERS,
                                    whdrs ? (DWORD)-1L : 0,
@@ -741,16 +745,36 @@ static void post_json_ex(const char *url, const char *headers, int timeout_ms,
         resp->status = (int)status;
         buf_t acc;
         buf_init(&acc);
-        DWORD avail = 0;
-        while (WinHttpQueryDataAvailable(req, &avail) && avail > 0) {
+        for (;;) {
+          /* 用户点了"停止"就别再等模型了:每片最多 800ms,响应是及时的。
+             以前这里只在"下一次请求之前"才看停止标,模型正在吐字时就只能干等。 */
+          if (net_cancelled()) {
+            resp->error = xstrdup("本轮已被叫停");
+            break;
+          }
+          DWORD avail = 0;
+          if (!WinHttpQueryDataAvailable(req, &avail)) {
+            DWORD err = GetLastError();
+            if (err == ERROR_WINHTTP_TIMEOUT) {
+              if ((long)(GetTickCount() - deadline) < 0) continue;   /* 只是这一片没数据 */
+              /* 到点了:一个字都没收到才算失败。已经收到完整正文、只是对端
+                 不肯关连接(SSE 常见)是正常收尾,不能报错。 */
+              if (acc.len == 0) resp->error = xstrdup("等待模型响应超时");
+              break;
+            }
+            if (!resp->error) resp->error = xstrdup("读取响应失败");
+            break;
+          }
+          if (avail == 0) break;
           if (acc.len > 8 * 1024 * 1024) break;
           char *chunk = (char *)xmalloc(avail + 1);
           DWORD got = 0;
           if (!WinHttpReadData(req, chunk, avail, &got) || got == 0) { free(chunk); break; }
           chunk[got] = 0;
           /* 边收边回调:模型分几段发,界面就分几段显示,
-             不必等整段响应落地才"啪"地出现一大坨文字。 */
-          if (cb) cb(ud, chunk, got);
+             不必等整段响应落地才"啪"地出现一大坨文字。
+             回调说"收完了"(SSE 的 [DONE])就直接断开,不再等对端关连接。 */
+          if (cb && cb(ud, chunk, got)) { buf_putn(&acc, chunk, got); free(chunk); break; }
           buf_putn(&acc, chunk, got);
           free(chunk);
         }

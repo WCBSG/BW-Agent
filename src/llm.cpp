@@ -378,6 +378,8 @@ int llm_decide(agent_t *a, const char *user_text, json_t *observations,
                const char *scope_note, decision_t *out) {
   memset(out, 0, sizeof(*out));
   if (!llm_enabled()) { llm_set_last_error("没有可用的模型配置"); return -1; }
+  /* 已经叫停:连这一次请求都不发 —— 省掉一次无意义的往返 */
+  if (net_cancelled()) { llm_set_last_error("本轮已被叫停"); return -1; }
   /* 全都失败过就先别试:一轮要决策 6 次,每次都白等一次超时的话,
      用户看到的就是"智能体在发呆"。冷却期内直接走本地规则,并保留失败原因。 */
   if (g_fail_until_ms > 0 && now_ms() < g_fail_until_ms) return -1;
