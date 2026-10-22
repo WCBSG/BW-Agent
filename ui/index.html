@@ -21,11 +21,9 @@
     <span class="brand"><img class="mark" src="/ui/logo.png" alt="" aria-hidden="true">网站安全巡检</span>
     <nav class="home-nav" aria-label="数据视图">
       <button class="link" data-goto="report">报告</button>
-      <button class="link" data-goto="history">历史</button>
+      <button class="link" data-goto="history">日志</button>
       <button class="link" data-goto="assets">资产</button>
       <button class="link" data-goto="eval">证据</button>
-      <button class="link" data-goto="rules">规则</button>
-      <button class="link" data-goto="caps">能力</button>
       <button class="link" data-goto="config">配置</button>
     </nav>
     <div class="home-right">
@@ -82,10 +80,6 @@
           <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6.5"/><path d="m16 16 4.5 4.5"/></svg>
           <span>搜索</span>
           <kbd>Ctrl K</kbd>
-        </button>
-        <button class="act" data-goto="caps" type="button" title="已装技能、MCP 与外部工具">
-          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 4v3M15 4v3"/><rect x="4" y="7" width="16" height="13" rx="2.5"/><path d="M9.5 12h5M9.5 15.5h3"/></svg>
-          <span>能力</span>
         </button>
         <button class="act" data-goto="automation" type="button" title="定时巡检">
           <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12.8" r="7.2"/><path d="M12 9.6v3.6l2.4 1.6"/><path d="M7 4.4 5 6.4M17 4.4l2 2"/></svg>
@@ -305,39 +299,7 @@
         <div class="panel-head"><div><h2>需要补证据的结论</h2></div><span class="hint">没有证据就不该下结论</span></div>
         <div class="cards" id="eval-missing"></div>
       </section>
-    </section>
-
-    <!-- 生效规则 -->
-    <section class="view" id="view-rules">
-      <section class="panel">
-        <div class="panel-head"><div><h2>这次按什么定义检查</h2></div><span class="hint" id="rules-source"></span></div>
-        <p class="note">本次巡检使用的判定规则与落点。改完点「让规则生效」。</p>
-        <div class="table-wrap"><table class="table" id="rules-table"></table></div>
-      </section>
-      <section class="panel">
-        <div class="panel-head"><div><h2>落点清单</h2></div><span class="hint" id="rules-paths-hint"></span></div>
-        <div class="chips" id="rules-paths"></div>
-      </section>
-      <section class="panel">
-        <div class="panel-head"><div><h2>目录清单</h2></div><span class="hint" id="rules-dirs-hint"></span></div>
-        <div class="chips" id="rules-dirs"></div>
-      </section>
-    </section>
-
-    <!-- 能力清单 -->
-    <section class="view" id="view-caps">
-      <section class="panel">
-        <div class="panel-head"><div><h2>能力清单</h2></div><span class="hint" id="cap-count"></span></div>
-        <div class="tabs">
-          <button class="tab active" data-tab="skills">技能</button>
-          <button class="tab" data-tab="tools">工具</button>
-        </div>
-        <div class="tabpane" id="pane-skills"></div>
-        <div class="tabpane hidden" id="pane-tools"></div>
-      </section>
-    </section>
-
-    <!-- 配置编辑 -->
+    </section><!-- 配置编辑 -->
     <!-- 自动化（周期巡检） -->
     <section class="view" id="view-automation">
       <section class="panel">
@@ -537,14 +499,21 @@
             </div>
           </section>
 
-          <div class="set-panel" id="cfg-advanced">
-            <div class="market-bar">
-              <span class="muted">寻找现成能力</span>
-              <a class="market-link" href="https://skillsmp.com/zh" target="_blank" rel="noopener noreferrer">Skill 市场 ↗</a>
-              <a class="market-link" href="https://gc.das-ai.com/marketplace/tools/mcp" target="_blank" rel="noopener noreferrer">官方 MCP 市场 ↗</a>
-              <span class="muted">技能放 <code>skills\</code>，MCP 写 <code>mcp.json</code>，工具放 <code>tools\</code></span>
+          <div class="set-panel" id="cap-panel">
+            <div class="cap-bar">
+              <span class="cap-title" id="cap-kind-label">技能</span>
+              <span class="cap-count" id="cap-stat"></span>
+              <span class="grow"></span>
+              <button class="ghost" type="button" id="cap-btn-market">从市场导入</button>
+              <button class="ghost" type="button" id="cap-btn-gen">用大模型创建</button>
+              <button type="button" id="cap-btn-new">＋ 新建</button>
             </div>
-            <div class="config-grid">
+            <div class="cap-aux" id="cap-aux"></div>
+            <div class="cap-list" id="cap-list"></div>
+            <div class="cap-edit" id="cap-edit"></div>
+          </div>
+
+          <div class="set-panel" id="cfg-advanced">            <div class="config-grid">
               <div class="config-side">
                 <div class="config-side-head"><span>可编辑文件</span><button class="ghost tiny" id="cfg-new">＋ 新建</button></div>
                 <div class="filelist" id="cfg-list"></div>
@@ -633,7 +602,6 @@
     <h3 id="warn-title">切换到「全部允许」？</h3>
     <p class="muted">开启后，智能体调用任何工具都不会再问你一句。它仍然只能访问<strong>授权池内</strong>的主机、
       只用只读方法、全程留痕 —— 但「要不要动手」这道确认就没有了。</p>
-    <p class="field-help">演示时可以开；对着真实生产站点跑的巡检，建议保留「询问」或收紧自定义策略。</p>
     <div class="modal-actions">
       <button class="ghost" id="warn-cancel">保持当前策略</button>
       <button id="warn-ok">我已了解，开启</button>

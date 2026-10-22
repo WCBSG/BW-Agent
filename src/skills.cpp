@@ -123,6 +123,19 @@ int skills_count(void) {
   return (int)(sizeof(g_skills) / sizeof(g_skills[0])) + g_ext_count;
 }
 
+/* 清掉所有外部技能(重新加载扩展前清场用)。字符都是 xstrdup 出来的,一并释放。 */
+void skills_reset_external(void) {
+  for (int i = 0; i < g_ext_count; i++) {
+    skill_t *s = &g_ext_skills[i];
+    free((void *)s->name);
+    free((void *)s->title);
+    free((void *)s->purpose);
+    free((void *)s->when);
+    free((void *)s->tools);
+  }
+  g_ext_count = 0;
+}
+
 /* 被"使用者改过的说明文字"覆盖过的内置技能:这些字段是我们 xstrdup 出来的,
    下一次覆盖要先释放(没被覆盖过的内置字段是字符串常量,不能 free)。 */
 static unsigned int g_builtin_owned = 0;

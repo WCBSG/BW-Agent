@@ -796,6 +796,95 @@ void net_post_stream(const char *url, const char *headers, int timeout_ms,
   post_json_ex(url, headers, timeout_ms, body, cb, ud, resp, "post");
 }
 
+/* 取一段外部文本(市场里的技能/工具定义)。
+   为什么不做成 net_request:那条路是"对被检目标发请求",要过授权池、限速、只读三道闸;
+   这里取的是使用者自己填的下载地址,属于依赖获取。但同样限制协议、限制大小、留审计 ——
+   一个能任意读本地文件或拉超大响应的"导入"按钮,本身就是个洞。 */
+int net_get_text(const char *url, char **out, size_t *out_len, char *err, size_t errcap) {
+  if (out) *out = NULL;
+  if (out_len) *out_len = 0;
+  if (err && errcap) err[0] = 0;
+  if (!url || !*url) {
+    if (err) snprintf(err, errcap, "缺少地址");
+    return -1;
+  }
+  if (!str_startswith(url, "http://") && !str_startswith(url, "https://")) {
+    if (err) snprintf(err, errcap, "只接受 http:// 或 https:// 地址");
+    return -1;
+  }
+  if (!g_session) net_init();
+  if (!g_session) {
+    if (err) snprintf(err, errcap, "WinHTTP 未初始化");
+    return -1;
+  }
+
+  wchar_t whost[256], wpath[2048];
+  int https = 0;
+  INTERNET_PORT port = 0;
+  parse_url(url, whost, 256, wpath, 2048, &https, &port);
+
+  int rc = -1;
+  HINTERNET conn = WinHttpConnect(g_session, whost, port, 0);
+  if (!conn) {
+    if (err) snprintf(err, errcap, "连接失败");
+  } else {
+    HINTERNET req = WinHttpOpenRequest(conn, L"GET", wpath, NULL,
+                                       WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES,
+                                       https ? WINHTTP_FLAG_SECURE : 0);
+    if (!req) {
+      if (err) snprintf(err, errcap, "创建请求失败");
+    } else {
+      DWORD conn_to = 8000, recv_to = 20000;
+      WinHttpSetOption(req, WINHTTP_OPTION_CONNECT_TIMEOUT, &conn_to, sizeof(conn_to));
+      WinHttpSetOption(req, WINHTTP_OPTION_RECEIVE_TIMEOUT, &recv_to, sizeof(recv_to));
+      if (!WinHttpSendRequest(req, WINHTTP_NO_ADDITIONAL_HEADERS, 0, NULL, 0, 0, 0) ||
+          !WinHttpReceiveResponse(req, NULL)) {
+        if (err) snprintf(err, errcap, "下载失败(err=%lu)", GetLastError());
+      } else {
+        DWORD status = 0, slen = sizeof(status);
+        WinHttpQueryHeaders(req, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
+                            WINHTTP_HEADER_NAME_BY_INDEX, &status, &slen, WINHTTP_NO_HEADER_INDEX);
+        if (status != 200) {
+          if (err) snprintf(err, errcap, "服务器返回 HTTP %lu", status);
+        } else {
+          buf_t acc;
+          buf_init(&acc);
+          DWORD avail = 0;
+          int too_big = 0;
+          while (WinHttpQueryDataAvailable(req, &avail) && avail > 0) {
+            if (acc.len > 512 * 1024) { too_big = 1; break; }
+            char *chunk = (char *)xmalloc(avail + 1);
+            DWORD got = 0;
+            if (!WinHttpReadData(req, chunk, avail, &got) || got == 0) { free(chunk); break; }
+            chunk[got] = 0;
+            buf_putn(&acc, chunk, got);
+            free(chunk);
+          }
+          if (too_big) {
+            if (err) snprintf(err, errcap, "文件超过 512KB,不像是一份技能/工具定义");
+            buf_free(&acc);
+          } else {
+            *out = buf_take(&acc);
+            if (out_len) *out_len = *out ? strlen(*out) : 0;
+            rc = 0;
+          }
+        }
+      }
+      WinHttpCloseHandle(req);
+    }
+    WinHttpCloseHandle(conn);
+  }
+  {
+    buf_t d;
+    buf_init(&d);
+    buf_printf(&d, "GET %s%s%s", rc == 0 ? "ok" : "fail",
+               rc == 0 ? "" : " ", rc == 0 ? "" : (err ? err : ""));
+    net_audit("import", url, rc == 0 ? 1 : 0, d.data, NULL);
+    buf_free(&d);
+  }
+  return rc;
+}
+
 /* 告警投递:只发到使用者自己配的 webhook(rules.json 的 alerts.webhook),
    与"巡检目标"无关,因此不参与授权池判定;带 Bearer 令牌可选。 */
 void net_webhook_post(const char *url, const char *token, const char *body,

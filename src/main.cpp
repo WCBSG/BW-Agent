@@ -977,7 +977,7 @@ int app_main(int argc, char **argv) {
   log_set_level((have_console || have_log_file) ? LOG_INFO : LOG_WARN);
   tools_init();          /* 注册表必须先建好,后面所有分支都依赖它 */
   skills_init();
-  /* 首次运行就把可改的规则/使用说明/测试集落到数据目录(任何入口都一样:
+  /* 首次运行就把可改的规则/测试集落到数据目录(任何入口都一样:
      selftest 除外 —— 自检不该往使用者的数据目录里写东西) */
   if (!(argc > 1 && str_ieq(argv[1], "selftest"))) res_bootstrap_data_dir();
   rules_init(app_dir());  /* 站点知识来自规则文件(数据目录/exe 旁/内置),读不到用内置默认 */

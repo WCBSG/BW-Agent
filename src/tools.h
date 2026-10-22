@@ -37,6 +37,8 @@ int         tools_register_external(const char *name, const char *description,
                                     const char *schema_json, const char *kind,
                                     const char *source_url,
                                     int (*run)(tool_ctx_t *, json_t *, tool_result_t *));
+/* 退回到只有内置工具(重新加载扩展前清场用) */
+void        tools_reset_external(void);
 json_t     *tools_decl_json(void);       /* 工具清单(命题⑤交付物) */
 void        tools_manifest(buf_t *out);  /* 给模型看的清单文本 */
 

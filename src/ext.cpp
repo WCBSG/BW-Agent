@@ -108,13 +108,27 @@ static int list_files(const char *dir, const char *ext, char ***out) {
   u8dir = xstrdup(dir ? dir : "");
   wchar_t *w = u8_to_w(u8dir);
   if (!w) { free(u8dir); return 0; }
-  swprintf(wdir, MAX_PATH * 2, L"%s", w);
-  swprintf(wpattern, MAX_PATH * 2, L"%s\\*%S", w, ext ? ext : "");
+  /* 注意:MinGW 的 swprintf 里 "%s" 认的是**窄串**(MSVC 那套语义),
+     宽串必须写 "%ls"。之前写成 "%s" 时路径被截成 "C",通配符变成 "C\*.",
+     目录里明明有文件却一个都列不出来 —— 外部技能/工具因此全部加载不到。 */
+  wchar_t *wext = u8_to_w(ext ? ext : "");
+  swprintf(wdir, MAX_PATH * 2, L"%ls", w);
+  swprintf(wpattern, MAX_PATH * 2, L"%ls\\*%ls", w, wext ? wext : L"");
   free(w);
+  free(wext);
 
   WIN32_FIND_DATAW fd;
   HANDLE h = FindFirstFileW(wpattern, &fd);
-  if (h == INVALID_HANDLE_VALUE) { free(u8dir); return 0; }
+  if (h == INVALID_HANDLE_VALUE) {
+    /* 目录里没有这种文件是正常情况(比如还没加过外部工具),不当成错误刷日志 */
+    if (GetLastError() != ERROR_FILE_NOT_FOUND) {
+      char *dbg = w_to_u8_alloc(wpattern, (int)wcslen(wpattern));
+      log_warn("[扩展] 目录列不出来: %s (err=%lu)", dbg ? dbg : "?", GetLastError());
+      free(dbg);
+    }
+    free(u8dir);
+    return 0;
+  }
   do {
     if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) continue;
     char *name = w_to_u8(fd.cFileName);
@@ -396,6 +410,7 @@ static int load_skills_dir(const char *dir) {
     sk.source_file = xstrdup(path);
     g_eskills = (ext_skill_t *)xrealloc(g_eskills, sizeof(ext_skill_t) * (size_t)(g_eskill_count + 1));
     g_eskills[g_eskill_count++] = sk;
+    log_info("[扩展] 载入技能包 %s(%s)", sk.name, path);
     n++;
   }
   str_free_list(files, total);
@@ -949,8 +964,7 @@ void ext_register_all(void) {
 /* ================= 首次运行:把内置技能落到数据目录,让人看得见、改得动 =================
    不放"示例文件":能力清单里本来就有的技能,才是使用者真正要读、要改的东西。
    每个内置技能导出一份 Markdown(名字=技能名),里面的说明文字改了之后会被采用
-   (实现仍在程序里,所以改文字不会把程序改坏)。工具与 MCP 的格式写在「使用说明.txt」里,
-   使用者照着自己建文件即可,程序不会替他生成空壳。 */
+   (实现仍在程序里,所以改文字不会把程序改坏)。想加工具或接 MCP,在界面「设置 → 工具」里填表单即可。 */
 static void write_skill_md(const char *file, skill_t *sk) {
   buf_t b;
   buf_init(&b);
@@ -1017,7 +1031,7 @@ static int export_builtin_skills(void) {
 void ext_bootstrap(void) {
   char path[MAX_PATH * 2];
 
-  /* 工具与 MCP 的目录只建好、不放东西:使用者按「使用说明.txt」里的格式自己加 */
+  /* 工具与 MCP 的目录只建好、不放东西:要加就在界面里加(设置 → 工具),不必手写文件 */
   ext_dir(path, sizeof(path), "tools");
   ensure_dir(path);
 
@@ -1054,4 +1068,254 @@ void ext_stats(int *tools, int *skills, int *mcp, int *mcp_tools) {
   if (skills) *skills = g_eskill_count;
   if (mcp) *mcp = g_mcp_count;
   if (mcp_tools) *mcp_tools = g_mcp_tool_count;
+}
+
+/* ================= 能力管理(界面用) =================
+   为什么要在界面里做:让人为"加一个技能"去手写带 front-matter 的 Markdown、
+   为"加一个工具"去拼 JSON,是把工具的麻烦转嫁给使用者。这里把同一份文件
+   用表单生成 —— 落盘格式和手写完全一样,想手改随时还能改。 */
+
+json_t *ext_inventory_json(void) {
+  json_t *root = j_obj();
+
+  json_t *skills = j_arr();
+  for (int i = 0; i < g_eskill_count; i++) {
+    ext_skill_t *s = &g_eskills[i];
+    json_t *o = j_obj();
+    j_set_str(o, "name", s->name);
+    j_set_str(o, "title", s->title ? s->title : "");
+    j_set_str(o, "purpose", s->purpose ? s->purpose : "");
+    j_set_str(o, "when", s->when ? s->when : "");
+    j_set_str(o, "tools", s->tools ? s->tools : "");
+    j_set_str(o, "body", s->body ? s->body : "");
+    j_set_str(o, "command", s->command ? s->command : "");
+    j_set_bool(o, "allow", s->allow ? 1 : 0);
+    j_set_num(o, "timeout_ms", s->timeout_ms);
+    j_set_str(o, "file", s->source_file ? s->source_file : "");
+    j_add(skills, o);
+  }
+  j_set(root, "skills", skills);
+
+  json_t *tools = j_arr();
+  for (int i = 0; i < g_etool_count; i++) {
+    ext_tool_t *t = &g_etools[i];
+    json_t *o = j_obj();
+    j_set_str(o, "name", t->name);
+    j_set_str(o, "description", t->description ? t->description : "");
+    j_set_str(o, "command", t->command ? t->command : "");
+    j_set_str(o, "schema", t->schema ? t->schema : "");
+    j_set_str(o, "kind", t->kind ? t->kind : "");
+    j_set_bool(o, "allow", t->allow ? 1 : 0);
+    j_set_num(o, "timeout_ms", t->timeout_ms);
+    j_set_str(o, "file", t->source_file ? t->source_file : "");
+    j_add(tools, o);
+  }
+  j_set(root, "tools", tools);
+
+  json_t *mcp = j_arr();
+  for (int i = 0; i < g_mcp_count; i++) {
+    json_t *o = j_obj();
+    j_set_str(o, "name", g_mcp[i].name);
+    j_set_num(o, "tools", j_len(g_mcp[i].tools));
+    j_set_bool(o, "allowed", g_mcp[i].allow ? 1 : 0);
+    j_add(mcp, o);
+  }
+  j_set(root, "mcp", mcp);
+  return root;
+}
+
+/* 名字要能当文件名用:只留字母数字与 _ - .(中文也允许,Windows 下没问题) */
+static int safe_stem(const char *name, char *out, size_t cap, char *err, size_t errcap) {
+  if (!name || !*name) {
+    if (err) snprintf(err, errcap, "名称不能为空");
+    return -1;
+  }
+  size_t n = 0;
+  for (const char *p = name; *p; p++) {
+    unsigned char c = (unsigned char)*p;
+    /* 路径分隔符、冒号、控制字符一律不许:技能名会被拼进文件名 */
+    if (c == '\\' || c == '/' || c == ':' || c == '*' || c == '?' || c == '"' ||
+        c == '<' || c == '>' || c == '|' || c < 0x20) {
+      if (err) snprintf(err, errcap, "名称里不能有 \\ / : * ? \" < > | 这些字符");
+      return -1;
+    }
+    if (n + 1 < cap) out[n++] = (char)c;
+  }
+  out[n] = 0;
+  if (!out[0]) {
+    if (err) snprintf(err, errcap, "名称不合法");
+    return -1;
+  }
+  return 0;
+}
+
+int ext_save_skill(const char *name, const char *title, const char *purpose,
+                   const char *when, const char *tools, const char *body,
+                   const char *command, int allow, int timeout_ms,
+                   char *err, size_t errcap) {
+  char stem[MAX_PATH];
+  if (safe_stem(name, stem, sizeof(stem), err, errcap) != 0) return -1;
+  if (!str_startswith(stem, "skill_")) {
+    if (err) snprintf(err, errcap, "技能名要以 skill_ 开头(决策时按名字调用)");
+    return -1;
+  }
+  char dir[MAX_PATH * 2], path[MAX_PATH * 4];
+  ext_dir(dir, sizeof(dir), "skills");
+  ensure_dir(dir);
+  snprintf(path, sizeof(path), "%s\\%s.md", dir, stem);
+
+  buf_t b;
+  buf_init(&b);
+  buf_puts(&b, "\xEF\xBB\xBF");           /* BOM:记事本能认出 UTF-8 */
+  buf_puts(&b, "---\r\n");
+  buf_printf(&b, "name: %s\r\n", stem);
+  buf_printf(&b, "title: %s\r\n", title && *title ? title : stem);
+  buf_printf(&b, "purpose: %s\r\n", purpose ? purpose : "");
+  buf_printf(&b, "when: %s\r\n", when ? when : "");
+  buf_printf(&b, "tools: %s\r\n", tools ? tools : "");
+  if (command && *command) {
+    buf_printf(&b, "command: %s\r\n", command);
+    buf_printf(&b, "timeout_ms: %d\r\n", timeout_ms > 0 ? timeout_ms : 20000);
+    buf_printf(&b, "allow: %s\r\n", allow ? "true" : "false");
+  }
+  buf_puts(&b, "---\r\n\r\n");
+  if (body && *body) buf_puts(&b, body);
+  else buf_printf(&b, "【%s】%s\r\n\r\n什么时候用:%s\r\n",
+                  title && *title ? title : stem, purpose ? purpose : "",
+                  when ? when : "");
+  int rc = file_write_all(path, b.data, b.len);
+  buf_free(&b);
+  if (rc != 0) {
+    if (err) snprintf(err, errcap, "写入失败:%s", path);
+    return -1;
+  }
+  return 0;
+}
+
+int ext_save_tool(const char *name, const char *description, const char *command,
+                  const char *schema, const char *kind, int allow, int timeout_ms,
+                  char *err, size_t errcap) {
+  char stem[MAX_PATH];
+  if (safe_stem(name, stem, sizeof(stem), err, errcap) != 0) return -1;
+  if (!command || !*command) {
+    if (err) snprintf(err, errcap, "外部工具必须有一条要执行的命令");
+    return -1;
+  }
+  char dir[MAX_PATH * 2], path[MAX_PATH * 4];
+  ext_dir(dir, sizeof(dir), "tools");
+  ensure_dir(dir);
+  snprintf(path, sizeof(path), "%s\\%s.json", dir, stem);
+
+  json_t *o = j_obj();
+  j_set_str(o, "name", stem);
+  j_set_str(o, "description", description ? description : "外部工具(界面创建)");
+  j_set_str(o, "command", command);
+  j_set_str(o, "kind", kind && *kind ? kind : "外部工具");
+  j_set_num(o, "timeout_ms", timeout_ms > 0 ? timeout_ms : 20000);
+  j_set_bool(o, "allow", allow ? 1 : 0);
+  if (schema && *schema) {
+    json_t *sc = json_parse(schema);
+    if (sc) j_set(o, "schema", sc);
+    else {
+      json_free(o);
+      if (err) snprintf(err, errcap, "参数定义(JSON Schema)不是合法 JSON");
+      return -1;
+    }
+  } else {
+    j_set(o, "schema", j_obj());
+  }
+  char *text = json_dump_pretty(o);
+  int rc = text ? file_write_all(path, text, strlen(text)) : -1;
+  free(text);
+  json_free(o);
+  if (rc != 0) {
+    if (err) snprintf(err, errcap, "写入失败:%s", path);
+    return -1;
+  }
+  return 0;
+}
+
+static int delete_file_quiet(const char *path) {
+  if (!path || !*path) return -1;
+  if (file_size(path) < 0) return -1;
+  wchar_t *w = u8_to_w(path);
+  if (!w) return -1;
+  BOOL ok = DeleteFileW(w);
+  free(w);
+  return ok ? 0 : -1;
+}
+
+int ext_delete_skill(const char *name, char *err, size_t errcap) {
+  if (!name || !*name) {
+    if (err) snprintf(err, errcap, "缺少名称");
+    return -1;
+  }
+  /* 先按已载入的找(拿到真实路径),再按名字兜底拼一个 */
+  for (int i = 0; i < g_eskill_count; i++) {
+    if (str_ieq(g_eskills[i].name, name)) {
+      if (delete_file_quiet(g_eskills[i].source_file) == 0) return 0;
+      break;
+    }
+  }
+  char dir[MAX_PATH * 2], path[MAX_PATH * 4];
+  ext_dir(dir, sizeof(dir), "skills");
+  snprintf(path, sizeof(path), "%s\\%s.md", dir, name);
+  if (delete_file_quiet(path) == 0) return 0;
+  if (err) snprintf(err, errcap, "没找到这个技能的文件(内置技能本来就没有文件可删)");
+  return -1;
+}
+
+int ext_delete_tool(const char *name, char *err, size_t errcap) {
+  if (!name || !*name) {
+    if (err) snprintf(err, errcap, "缺少名称");
+    return -1;
+  }
+  for (int i = 0; i < g_etool_count; i++) {
+    if (str_ieq(g_etools[i].name, name)) {
+      if (delete_file_quiet(g_etools[i].source_file) == 0) return 0;
+      break;
+    }
+  }
+  char dir[MAX_PATH * 2], path[MAX_PATH * 4];
+  ext_dir(dir, sizeof(dir), "tools");
+  snprintf(path, sizeof(path), "%s\\%s.json", dir, name);
+  if (delete_file_quiet(path) == 0) return 0;
+  if (err) snprintf(err, errcap, "没找到这个工具的文件(内置工具不可删除)");
+  return -1;
+}
+
+/* 重新加载:先清场,再按磁盘重新登记。
+   清场是必须的 —— 只加不减的话,删掉的能力还会留在注册表里,改过名的会各占一份。 */
+int ext_reload_local(void) {
+  for (int i = 0; i < g_etool_count; i++) {
+    ext_tool_t *t = &g_etools[i];
+    free(t->name); free(t->description); free(t->schema);
+    free(t->command); free(t->kind); free(t->workdir); free(t->source_file);
+  }
+  free(g_etools);
+  g_etools = NULL;
+  g_etool_count = 0;
+
+  for (int i = 0; i < g_eskill_count; i++) {
+    ext_skill_t *s = &g_eskills[i];
+    free(s->name); free(s->title); free(s->when); free(s->purpose);
+    free(s->tools); free(s->body); free(s->command); free(s->source_file);
+  }
+  free(g_eskills);
+  g_eskills = NULL;
+  g_eskill_count = 0;
+
+  tools_reset_external();
+  skills_reset_external();
+
+  char dir[MAX_PATH * 2];
+  int n = 0;
+  ext_dir(dir, sizeof(dir), "tools");
+  n += load_tools_dir(dir);
+  ext_dir(dir, sizeof(dir), "skills");
+  n += load_skills_dir(dir);
+
+  ext_register_all();      /* 连同已在跑的 MCP 工具一起重新挂回去 */
+  log_info("[扩展] 已重新加载:外部工具 %d 个、技能包 %d 个", g_etool_count, g_eskill_count);
+  return n;
 }

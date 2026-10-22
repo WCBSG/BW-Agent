@@ -11,6 +11,7 @@
 
 #include "common.h"
 #include "http.h"
+#include "tray.h"
 
 /* 这两个必须先有 windows.h(common.h 里已经含了)再含 */
 #include <shellapi.h>
@@ -131,6 +132,15 @@ static DWORD WINAPI watch_thread(LPVOID param) {
   WaitForSingleObject(h, INFINITE);
   if (!g_stop_on_close) {
     log_info("界面窗口已关闭(--debug:服务继续运行,界面地址仍然可用;关掉命令行窗口或按 Ctrl+C 结束)");
+    return 0;
+  }
+  /* 有托盘时:窗口关掉只是"收起来",不是退出。
+     直接消失到后台最糟 —— 使用者看不见它,却还在周期巡检、还占着端口。
+     托盘图标 + 一条气泡把这件事说明白,退出留给右键菜单。 */
+  if (tray_active()) {
+    log_info("界面窗口已关闭,程序已最小化到托盘(右键托盘图标可重新打开或彻底退出)");
+    g_have_proc = 0;                 /* 窗口没了,之后再打开是新的进程树 */
+    tray_balloon("仍在后台运行", "周期巡检会继续。右键托盘图标可重新打开界面或彻底退出。");
     return 0;
   }
   log_info("界面窗口已关闭,服务随之停止");

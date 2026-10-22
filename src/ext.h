@@ -44,4 +44,25 @@ void ext_bootstrap(void);
 int  ext_run_capture(const char *cmdline, const char *workdir, int timeout_ms,
                      char **out_text, int *out_exit);
 
+/* ================= 界面里的"能力管理"(图形化,不用手写文件) ================= */
+
+/* 重新读 tools\ 与 skills\ —— 界面里改完立刻生效,不必重启。
+   MCP 服务器不动(重启它们会打断正在用的会话)。返回重新登记的外部能力个数。 */
+int ext_reload_local(void);
+
+/* 能力清单的结构化快照:技能包 / 外部工具 / MCP 服务器(内置项由调用方另取) */
+json_t *ext_inventory_json(void);
+
+/* 写一个技能包(md)或一个外部工具(json);失败时 err 里是人话。返回 0 成功。 */
+int ext_save_skill(const char *name, const char *title, const char *purpose,
+                   const char *when, const char *tools, const char *body,
+                   const char *command, int allow, int timeout_ms,
+                   char *err, size_t errcap);
+int ext_save_tool(const char *name, const char *description, const char *command,
+                  const char *schema, const char *kind, int allow, int timeout_ms,
+                  char *err, size_t errcap);
+/* 删掉数据目录里的那份定义(内置技能删的是"改过的说明",回到出厂文字) */
+int ext_delete_skill(const char *name, char *err, size_t errcap);
+int ext_delete_tool(const char *name, char *err, size_t errcap);
+
 #endif /* AGENT_EXT_H */

@@ -388,30 +388,6 @@ function bindPoolImport() {
   });
 }
 
-function renderManifest(m) {  state.manifest = m;
-  $('cap-count').textContent = `${(m.skills || []).length} 技能 / ${(m.tools || []).length} 工具`;
-  const fill = (pane, list, isSkill) => {
-    pane.innerHTML = '';
-    for (const x of list || []) {
-      const d = el('div', 'cap');
-      d.appendChild(el('div', 'n', x.name + (x.title ? '（' + x.title + '）' : '')));
-      d.appendChild(el('div', 'd', x.description || x.purpose || ''));
-      const meta = [];
-      if (x.when) meta.push('何时用：' + x.when);
-      if (x.purpose) meta.push('解决什么：' + x.purpose);
-      if (x.tools) meta.push('用到：' + x.tools);
-      if (x.kind) meta.push('类型：' + x.kind);
-      if (x.multi_step) meta.push('可多步');
-      if (x.source_url) meta.push(x.source_url);
-      if (meta.length) d.appendChild(el('div', 'k', meta.join(' · ')));
-      void isSkill;
-      pane.appendChild(d);
-    }
-    if (!(list || []).length) pane.appendChild(el('div', 'muted', '（空）'));
-  };
-  fill($('pane-skills'), m.skills, true);
-  fill($('pane-tools'), m.tools, false);
-}
 
 /* ============ 事件流渲染 ============ */
 
@@ -947,39 +923,6 @@ async function renderEvalView() {
     }
   }
 }
-async function renderRulesView() {
-  const r = state.cache['rules'] || (state.cache['rules'] = await api('/api/rules'));
-  $('rules-source').textContent = `${r.source} · ${r.from_file ? '来自文件（可改）' : '内置默认'} · ${r.signature_count} 条内容特征`;
-
-  const table = $('rules-table');
-  table.innerHTML = '';
-  const head = el('tr');
-  for (const h of ['特征名', '类别', '等级', '指纹标签']) head.appendChild(el('th', null, h));
-  const thead = el('thead'); thead.appendChild(head); table.appendChild(thead);
-  const tbody = el('tbody'); table.appendChild(tbody);
-  for (const s of r.signatures || []) {
-    const tr = el('tr');
-    const c1 = el('td');
-    c1.appendChild(el('span', null, s.name || ''));
-    tr.appendChild(c1);
-    tr.appendChild(el('td', null, s.kind || ''));
-    const cs = el('td');
-    cs.appendChild(sevBadge(s.severity));
-    tr.appendChild(cs);
-    tr.appendChild(el('td', 'mono', s.tag || ''));
-    tbody.appendChild(tr);
-  }
-
-  const paths = $('rules-paths');
-  paths.innerHTML = '';
-  for (const p of r.sensitive_paths || []) paths.appendChild(el('span', 'chip', p));
-  $('rules-paths-hint').textContent = `${(r.sensitive_paths || []).length} 个落点`;
-
-  const dirs = $('rules-dirs');
-  dirs.innerHTML = '';
-  for (const d of r.dir_candidates || []) dirs.appendChild(el('span', 'chip', d));
-  $('rules-dirs-hint').textContent = `${(r.dir_candidates || []).length} 个目录`;
-}
 
 /* ============ 起手式与工作台的列表 ============
    两个列表都只画后端真的落过盘的东西：没有运行记录就写"还没有"，不摆假数据。 */
@@ -1185,7 +1128,6 @@ async function loadView(name) {
     history: renderHistoryView,
     assets: renderAssetsView,
     eval: renderEvalView,
-    rules: renderRulesView,
     automation: renderAutomationView,
     config: renderConfigView,
   };
@@ -2016,6 +1958,8 @@ const SET_SCHEMA = [
       { k: 'suspicious_tlds', label: '可疑域名后缀', type: 'lines' }] },
   { id: 'tamper', title: '篡改判定', desc: '外链数量阈值',
     fields: [{ k: 'tamper.report_external_hosts', label: '外链超过多少算异常', type: 'number' }] },
+  { id: 'skills', title: '技能', desc: '智能体的专业能力' },
+  { id: 'tools', title: '工具', desc: '智能体能做的动作' },
   { id: 'advanced', title: '高级 · 文件', desc: '直接编辑原始文件' },
 ];
 
@@ -2162,15 +2106,20 @@ function setRenderPage() {
   const foot = $('set-foot');
   const isAdv = page.id === 'advanced';
   const isUi = page.id === 'ui';
+  const isSkills = page.id === 'skills';
+  const isTools = page.id === 'tools';
   if ($('set-title')) $('set-title').textContent = page.title;
   if ($('set-desc')) $('set-desc').textContent = page.desc || '';
   if (head) head.style.display = '';
-  if (foot) foot.style.display = (isAdv || isUi) ? 'none' : '';
-  if (form) form.style.display = (isAdv || isUi) ? 'none' : '';
+  if (foot) foot.style.display = (isAdv || isUi || isSkills || isTools) ? 'none' : '';
+  if (form) form.style.display = (isAdv || isUi || isSkills || isTools) ? 'none' : '';
   if (adv) adv.style.display = isAdv ? 'block' : 'none';
   const uiPanel = $('ui-panel');
   if (uiPanel) uiPanel.style.display = isUi ? 'block' : 'none';
+  const capPanel = $('cap-panel');
+  if (capPanel) capPanel.style.display = (isSkills || isTools) ? 'block' : 'none';
   if (isUi) return;
+  if (isSkills || isTools) { capsOpen(isSkills ? 'skill' : 'tool'); return; }
   if (isAdv) {
     renderConfigFiles().catch(() => {});
     return;
@@ -2259,11 +2208,414 @@ if (setSaveBtn) setSaveBtn.addEventListener('click', setSave);
 const setResetBtn = $('set-reset');
 if (setResetBtn) setResetBtn.addEventListener('click', () => setLoad(true).catch(() => {}));
 
+/* ============ 技能 / 工具：图形化管理 ============
+   加一个能力不该要求会写 front-matter、会拼 JSON。这里把同一份落盘文件用表单生成，
+   并提供"用大模型起草"和"从市场导入"两条更省事的路。 */
+
+const CAP = { kind: 'skill', data: null, editing: null };
+
+function capApi(body) {
+  return api('/api/caps', { method: 'POST', body: JSON.stringify(body) });
+}
+
+async function capsOpen(kind) {
+  const changed = CAP.kind !== kind;
+  CAP.kind = kind;
+  if (changed) { CAP.data = null; CAP.editing = null; }
+  if (!CAP.data) {
+    try { CAP.data = await api('/api/caps'); }
+    catch (e) { CAP.data = { skills: [], tools: [] }; }
+  }
+  const label = kind === 'skill' ? '技能' : '工具';
+  if ($('cap-kind-label')) $('cap-kind-label').textContent = label;
+  const st = (CAP.data && CAP.data.stats) || {};
+  if ($('cap-stat')) {
+    $('cap-stat').textContent = kind === 'skill'
+      ? `共 ${st.skills || 0} 个（技能包 ${st.extSkills || 0}）`
+      : `共 ${st.tools || 0} 个（外部 ${st.extTools || 0} · MCP ${st.mcpTools || 0}）`;
+  }
+  capsRenderList();
+  capsRenderForm(CAP.editing);
+}
+
+function capsSrcTag(x) {
+  const src = x.source || '内置';
+  const cls = src === 'MCP' ? 'mcp' : (src === '外部' || src === '技能包' ? 'ext' : '');
+  return { text: x.customized ? '已改说明' : src, cls: x.customized ? 'mine' : cls };
+}
+
+function capsRenderList() {
+  const box = $('cap-list');
+  if (!box) return;
+  box.innerHTML = '';
+  const list = CAP.kind === 'skill' ? (CAP.data.skills || []) : (CAP.data.tools || []);
+  if (!list.length) {
+    box.appendChild(el('div', 'muted', '还没有可用的' + (CAP.kind === 'skill' ? '技能' : '工具') + '。'));
+    return;
+  }
+  for (const x of list) {
+    const row = el('div', 'cap-item');
+    const main = el('div', 'ci-main');
+    const head = el('div');
+    head.appendChild(el('span', 'ci-name', x.name || ''));
+    if (x.title) head.appendChild(el('span', 'ci-title', x.title));
+    const tag = capsSrcTag(x);
+    head.appendChild(el('span', 'ci-tag' + (tag.cls ? ' ' + tag.cls : ''), tag.text));
+    main.appendChild(head);
+    const desc = CAP.kind === 'skill'
+      ? (x.purpose || x.when || '')
+      : (x.description || x.extDescription || '');
+    main.appendChild(el('div', 'ci-desc', desc));
+    row.appendChild(main);
+
+    const act = el('div', 'ci-act');
+    const edit = el('button', null, '编辑');
+    edit.type = 'button';
+    edit.addEventListener('click', () => capsEditExisting(x));
+    act.appendChild(edit);
+    if (x.source === '外部' || x.source === '技能包' || x.customized) {
+      const del = el('button', null, '删除');
+      del.type = 'button';
+      del.addEventListener('click', () => capsDelete(x));
+      act.appendChild(del);
+    }
+    row.appendChild(act);
+    box.appendChild(row);
+  }
+}
+
+function capsEditExisting(x) {
+  if (CAP.kind === 'skill') {
+    CAP.editing = {
+      name: x.name || '', title: x.title || '', purpose: x.purpose || '',
+      when: x.when || '', tools: x.tools || '', body: x.body || '',
+      command: x.command || '', allow: !!x.allow, timeout_ms: 20000
+    };
+  } else {
+    CAP.editing = {
+      name: x.name || '', description: x.extDescription || x.description || '',
+      command: x.command || '', schema: x.schema || '', kind: x.kind || '',
+      allow: x.allow !== undefined ? !!x.allow : true,
+      timeout_ms: x.timeout_ms || 20000
+    };
+  }
+  capsRenderForm(CAP.editing);
+  const panel = $('cap-edit');
+  if (panel) panel.scrollIntoView({ block: 'nearest' });
+}
+
+function capField(label, id, value, opts) {
+  const o = opts || {};
+  const wrap = el('div', 'cap-field' + (o.wide ? ' wide' : ''));
+  const lb = document.createElement('label');
+  lb.textContent = label;
+  lb.setAttribute('for', id);
+  wrap.appendChild(lb);
+  let ctl;
+  if (o.area) {
+    ctl = el('textarea');
+    ctl.rows = o.rows || 4;
+    ctl.value = value === undefined || value === null ? '' : value;
+  } else if (o.check) {
+    ctl = document.createElement('input');
+    ctl.type = 'checkbox';
+    ctl.checked = !!value;
+  } else {
+    ctl = el('input');
+    if (o.num) { ctl.type = 'number'; ctl.step = o.step || '1'; } else { ctl.type = 'text'; }
+    if (o.mono) ctl.classList.add('mono');
+    ctl.value = value === undefined || value === null ? '' : value;
+  }
+  ctl.id = id;
+  if (o.ph) ctl.placeholder = o.ph;
+  wrap.appendChild(ctl);
+  return wrap;
+}
+
+function capsRenderForm(model) {
+  const box = $('cap-edit');
+  if (!box) return;
+  box.innerHTML = '';
+  if (!model) { box.classList.remove('on'); return; }
+  box.classList.add('on');
+
+  const grid = el('div', 'cap-grid');
+  if (CAP.kind === 'skill') {
+    grid.appendChild(capField('名称（skill_ 开头）', 'cap-name', model.name, { ph: 'skill_my_check' }));
+    grid.appendChild(capField('标题', 'cap-title', model.title, { ph: '自定义检查' }));
+    grid.appendChild(capField('解决什么问题', 'cap-purpose', model.purpose, { wide: true, ph: '一句话说明' }));
+    grid.appendChild(capField('什么时候该用', 'cap-when', model.when, { wide: true, ph: '用户提出…时' }));
+    grid.appendChild(capField('用到的工具（逗号分隔）', 'cap-tools', model.tools, { wide: true, ph: 'site_crawl,sensitive_file_probe' }));
+    grid.appendChild(capField('做法说明（给模型看）', 'cap-body', model.body, { wide: true, area: true, rows: 6 }));
+    grid.appendChild(capField('额外执行的命令（可留空）', 'cap-command', model.command, { wide: true, ph: 'powershell -NoProfile -File ...' }));
+    grid.appendChild(capField('允许执行命令', 'cap-allow', model.allow, { check: true }));
+    grid.appendChild(capField('命令超时（毫秒）', 'cap-timeout', model.timeout_ms || 20000, { num: true }));
+  } else {
+    grid.appendChild(capField('名称', 'cap-name', model.name, { ph: 'my_check' }));
+    grid.appendChild(capField('类型', 'cap-kind', model.kind, { ph: '外部工具' }));
+    grid.appendChild(capField('说明（模型据此决定用不用）', 'cap-desc', model.description, { wide: true }));
+    grid.appendChild(capField('命令（参数用 $参数名 占位）', 'cap-command', model.command, { wide: true, ph: 'powershell -NoProfile -Command "..."' }));
+    grid.appendChild(capField('参数定义（JSON Schema）', 'cap-schema', model.schema, { wide: true, area: true, rows: 4, ph: '{"type":"object","properties":{...}}' }));
+    grid.appendChild(capField('允许执行命令', 'cap-allow', model.allow, { check: true }));
+    grid.appendChild(capField('超时（毫秒）', 'cap-timeout', model.timeout_ms || 20000, { num: true }));
+  }
+  box.appendChild(grid);
+
+  const foot = el('div', 'cap-foot');
+  const save = el('button', null, '保存并生效');
+  save.type = 'button';
+  save.id = 'cap-save';
+  save.addEventListener('click', capsSave);
+  foot.appendChild(save);
+  const cancel = el('button', 'ghost', '取消');
+  cancel.type = 'button';
+  cancel.addEventListener('click', () => { CAP.editing = null; capsRenderForm(null); });
+  foot.appendChild(cancel);
+  const msg = el('span', 'cap-msg');
+  msg.id = 'cap-msg';
+  foot.appendChild(msg);
+  box.appendChild(foot);
+}
+
+function capsCollect() {
+  const val = (id) => { const n = $(id); return n ? n.value : ''; };
+  const chk = (id) => { const n = $(id); return n ? !!n.checked : false; };
+  if (CAP.kind === 'skill') {
+    return {
+      action: 'save_skill', name: val('cap-name').trim(), title: val('cap-title').trim(),
+      purpose: val('cap-purpose').trim(), when: val('cap-when').trim(),
+      tools: val('cap-tools').trim(), body: val('cap-body'),
+      command: val('cap-command').trim(), allow: chk('cap-allow') ? 1 : 0,
+      timeout_ms: Number(val('cap-timeout')) || 20000
+    };
+  }
+  return {
+    action: 'save_tool', name: val('cap-name').trim(), description: val('cap-desc').trim(),
+    command: val('cap-command').trim(), schema: val('cap-schema').trim(),
+    kind: val('cap-kind').trim(), allow: chk('cap-allow') ? 1 : 0,
+    timeout_ms: Number(val('cap-timeout')) || 20000
+  };
+}
+
+async function capsSave() {
+  const msg = $('cap-msg');
+  const btn = $('cap-save');
+  if (btn) btn.disabled = true;
+  if (msg) msg.textContent = '正在保存…';
+  try {
+    const r = await capApi(capsCollect());
+    CAP.data = await api('/api/caps');
+    CAP.editing = null;
+    capsRenderForm(null);
+    capsRenderList();
+    if ($('cap-msg')) $('cap-msg').textContent = '';
+    const st = CAP.data.stats || {};
+    if ($('cap-stat')) {
+      $('cap-stat').textContent = CAP.kind === 'skill'
+        ? `共 ${st.skills || 0} 个（技能包 ${st.extSkills || 0}）`
+        : `共 ${st.tools || 0} 个（外部 ${st.extTools || 0} · MCP ${st.mcpTools || 0}）`;
+    }
+    void r;
+  } catch (e) {
+    if ($('cap-msg')) $('cap-msg').textContent = '保存失败：' + ((e && e.message) || e);
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+async function capsDelete(x) {
+  if (!window.confirm('确定删除「' + (x.name || '') + '」？数据目录里的定义文件会被删掉。')) return;
+  try {
+    await capApi({ action: CAP.kind === 'skill' ? 'delete_skill' : 'delete_tool', name: x.name });
+    CAP.data = await api('/api/caps');
+    CAP.editing = null;
+    capsRenderList();
+    capsRenderForm(null);
+  } catch (e) {
+    window.alert('删除失败：' + ((e && e.message) || e));
+  }
+}
+
+/* —— 辅助面板：用大模型创建 / 从市场导入 —— */
+function capsAux(kind) {
+  const box = $('cap-aux');
+  if (!box) return;
+  box.innerHTML = '';
+  box.classList.add('on');
+  const inner = el('div', 'cap-aux-box');
+
+  if (kind === 'gen') {
+    inner.appendChild(el('h4', null, '用大模型创建'));
+    inner.appendChild(el('p', null,
+      '写一句你想要的能力，模型会产出一份草稿；模型不可用时给一份可直接改的模板。草稿不会自动保存，你确认后才落盘。'));
+    const row = el('div', 'cap-aux-row');
+    const inp = el('input');
+    inp.id = 'cap-brief';
+    inp.placeholder = CAP.kind === 'skill' ? '例如：检查站点是否把 .git 目录暴露出来' : '例如：调用本机 nmap 做一次端口探测';
+    row.appendChild(inp);
+    const go = el('button', null, '生成草稿');
+    go.type = 'button';
+    row.appendChild(go);
+    inner.appendChild(row);
+    const msg = el('div', 'cap-aux-msg');
+    msg.id = 'cap-aux-msg';
+    inner.appendChild(msg);
+
+    go.addEventListener('click', async () => {
+      const brief = inp.value.trim();
+      if (!brief) { inp.focus(); return; }
+      go.disabled = true;
+      msg.textContent = '正在生成…';
+      try {
+        const r = await capApi({ action: 'draft', kind: CAP.kind, brief });
+        const d = r.draft || {};
+        CAP.editing = CAP.kind === 'skill'
+          ? { name: d.name || '', title: d.title || '', purpose: d.purpose || '',
+              when: d.when || '', tools: d.tools || '', body: d.body || '',
+              command: '', allow: false, timeout_ms: 20000 }
+          : { name: d.name || '', description: d.description || '', command: d.command || '',
+              schema: typeof d.schema === 'string' ? d.schema : JSON.stringify(d.schema || {}, null, 2),
+              kind: '', allow: false, timeout_ms: d.timeout_ms || 20000 };
+        capsRenderForm(CAP.editing);
+        msg.textContent = r.fromModel ? '已按你的描述生成草稿，确认后点「保存并生效」。'
+                                      : ('用了模板（' + (r.note || '模型不可用') + '），改完再保存。');
+      } catch (e) {
+        msg.textContent = '生成失败：' + ((e && e.message) || e);
+      } finally {
+        go.disabled = false;
+      }
+    });
+  } else {
+    inner.appendChild(el('h4', null, '从市场导入'));
+    inner.appendChild(el('p', null,
+      '粘贴一份技能（Markdown）或工具（JSON），或者填一个 http(s) 地址下载。内容会先填进表单，确认后才保存。'));
+    const row = el('div', 'cap-aux-row');
+    const inp = el('input');
+    inp.id = 'cap-url';
+    inp.placeholder = 'https://…/skill_xxx.md';
+    row.appendChild(inp);
+    const go = el('button', null, '下载');
+    go.type = 'button';
+    row.appendChild(go);
+    inner.appendChild(row);
+    const ta = el('textarea');
+    ta.id = 'cap-paste';
+    ta.rows = 6;
+    ta.placeholder = '或者直接把内容粘到这里：\n---\nname: skill_xxx\ntitle: …\n---\n\n正文…';
+    inner.appendChild(ta);
+    const row2 = el('div', 'cap-aux-row');
+    const usePaste = el('button', null, '用这段内容');
+    usePaste.type = 'button';
+    row2.appendChild(usePaste);
+    const links = el('span', 'cap-aux-msg');
+    links.innerHTML = '市场：<a href="https://skillsmp.com/zh" target="_blank" rel="noopener noreferrer">Skill 市场 ↗</a> · ' +
+                      '<a href="https://gc.das-ai.com/marketplace/tools/mcp" target="_blank" rel="noopener noreferrer">MCP 工具 ↗</a>';
+    row2.appendChild(links);
+    inner.appendChild(row2);
+    const msg = el('div', 'cap-aux-msg');
+    msg.id = 'cap-aux-msg';
+    inner.appendChild(msg);
+
+    const fill = (text, source) => {
+      const parsed = capParseImport(text);
+      if (!parsed) { msg.textContent = '没认出格式：技能要有 --- 开头的 front-matter，工具要是一段 JSON。'; return; }
+      CAP.editing = parsed;
+      capsRenderForm(CAP.editing);
+      msg.textContent = '已从' + source + '读入，确认后点「保存并生效」。';
+    };
+
+    go.addEventListener('click', async () => {
+      const url = inp.value.trim();
+      if (!url) { inp.focus(); return; }
+      go.disabled = true;
+      msg.textContent = '正在下载…';
+      try {
+        const r = await capApi({ action: 'fetch', url });
+        fill(r.text || '', '下载内容');
+      } catch (e) {
+        msg.textContent = '下载失败：' + ((e && e.message) || e);
+      } finally {
+        go.disabled = false;
+      }
+    });
+    usePaste.addEventListener('click', () => {
+      const text = ta.value.trim();
+      if (!text) { ta.focus(); return; }
+      fill(text, '粘贴内容');
+    });
+  }
+
+  const close = el('button', 'ghost', '收起');
+  close.type = 'button';
+  close.style.marginTop = '8px';
+  close.addEventListener('click', () => { box.classList.remove('on'); box.innerHTML = ''; });
+  inner.appendChild(close);
+  box.appendChild(inner);
+}
+
+/* 市场里的两种格式：技能的 front-matter Markdown、工具的 JSON */
+function capParseImport(text) {
+  const raw = String(text || '').replace(/^\uFEFF/, '');
+  const t = raw.trim();
+  if (!t) return null;
+
+  if (CAP.kind === 'skill') {
+    const m = /^---\r?\n([\s\S]*?)\r?\n---/.exec(t);
+    const f = {};
+    let body = t;
+    if (m) {
+      for (const line of m[1].split(/\r?\n/)) {
+        const i = line.indexOf(':');
+        if (i < 0) continue;
+        f[line.slice(0, i).trim().toLowerCase()] = line.slice(i + 1).trim();
+      }
+      body = t.slice(m[0].length).trim();
+    }
+    return {
+      name: f.name || '', title: f.title || '', purpose: f.purpose || '',
+      when: f.when || '', tools: f.tools || '', body,
+      command: f.command || '', allow: String(f.allow || '').toLowerCase() === 'true',
+      timeout_ms: Number(f.timeout_ms) || 20000
+    };
+  }
+
+  let j = null;
+  try { j = JSON.parse(t); } catch { return null; }
+  if (Array.isArray(j)) j = j[0];
+  if (!j || typeof j !== 'object') return null;
+  return {
+    name: j.name || '', description: j.description || '', command: j.command || '',
+    schema: typeof j.schema === 'string' ? j.schema : JSON.stringify(j.schema || {}, null, 2),
+    kind: j.kind || '', allow: !!j.allow, timeout_ms: Number(j.timeout_ms) || 20000
+  };
+}
+
+function capsBind() {
+  const mk = $('cap-btn-new');
+  if (mk) {
+    mk.addEventListener('click', () => {
+      CAP.editing = CAP.kind === 'skill'
+        ? { name: 'skill_', title: '', purpose: '', when: '', tools: '', body: '',
+            command: '', allow: false, timeout_ms: 20000 }
+        : { name: '', description: '', command: '', schema:
+            '{\n  "type": "object",\n  "properties": {\n    "target": { "type": "string" }\n  },\n  "required": ["target"]\n}',
+            kind: '', allow: false, timeout_ms: 20000 };
+      capsRenderForm(CAP.editing);
+      const n = $('cap-name');
+      if (n) { n.focus(); n.select(); }
+    });
+  }
+  const gen = $('cap-btn-gen');
+  if (gen) gen.addEventListener('click', () => capsAux('gen'));
+  const mkt = $('cap-btn-market');
+  if (mkt) mkt.addEventListener('click', () => capsAux('market'));
+}
+capsBind();
+
 async function renderConfigView() {
   await setLoad(false);
   await renderConfigFiles();
 }
-
 async function renderConfigFiles() {
   const r = await api('/api/config/list');
   CFG.files = r.files || [];
@@ -2778,9 +3130,9 @@ const PAL = { open: false, rows: [], sel: 0 };
 
 const PAL_VIEWS = [
   ['report', '视图 · 报告与告警'], ['history', '视图 · 巡检历史'], ['assets', '视图 · 资产底账'],
-  ['eval', '视图 · 证据与闭环'], ['rules', '视图 · 生效规则'], ['caps', '视图 · 能力清单'],
+  ['eval', '视图 · 证据与闭环'],
   ['automation', '视图 · 周期巡检'],
-  ['config', '视图 · 配置编辑'],
+  ['config', '视图 · 配置与能力'],
 ];
 
 async function palLoad() {
@@ -2903,9 +3255,6 @@ document.addEventListener('keydown', (e) => {
 /* ============ 启动 ============ */
 (async () => {
   initTheme();
-  try {
-    renderManifest(await api('/api/manifest'));
-  } catch { /* 清单拿不到不影响主流程 */ }
   try {
     renderStatus(await api('/api/status'));
   } catch (e) {

@@ -50,7 +50,9 @@ if exist "third_party\windres.exe" set "WINDRES=third_party\windres.exe"
 if not defined WINDRES for %%d in ("%GXX%") do if exist "%%~dpdwindres.exe" set "WINDRES=%%~dpdwindres.exe"
 if not defined WINDRES where windres >nul 2>nul && set "WINDRES=windres"
 if defined WINDRES (
-    "%WINDRES%" -I . -I src -i src\app.rc -o build\app_res.o
+    rem --codepage=65001:app.rc 是 UTF-8 存的。不加这一条 windres 按 ANSI 读,
+    rem 版本资源里的中文会变成乱码,而 Windows 的通知气泡正是拿它当"应用名"显示。
+    "%WINDRES%" --codepage=65001 -I . -I src -i src\app.rc -o build\app_res.o
     if errorlevel 1 ( echo [失败] 图标资源编译失败 & exit /b 1 )
 )
 

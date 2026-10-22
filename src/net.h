@@ -49,6 +49,11 @@ void net_post_stream(const char *url, const char *headers, int timeout_ms,
                      const char *body, net_stream_fn cb, void *ud, http_resp_t *resp);
 void hn_http_post_stream(const char *url, const char *app_key, const char *sign,
                          const char *body, net_stream_fn cb, void *ud, http_resp_t *resp);
+
+/* 取一段外部文本(技能/工具市场里的 .md/.json)。
+   与"巡检目标"不同:这是使用者自己填的下载地址,属于依赖获取,不走授权池;
+   但仍然限制协议、大小,并写审计。成功返回 0,out 用 free 释放。 */
+int net_get_text(const char *url, char **out, size_t *out_len, char *err, size_t errcap);
 /* 目标地址对齐:把巡检起点指向本地靶站(如 http://127.0.0.1:8081)或非默认端口的站点。
    只改"协议+端口",主机名不变 —— 授权校验只认域名,不受影响。
    不设置时该功能完全不生效(生产环境就是 https://<授权域名>)。 */

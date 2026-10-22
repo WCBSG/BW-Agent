@@ -63,5 +63,7 @@ int      skills_register_external(const char *name, const char *title, const cha
    返回 1 = 覆盖成功,0 = 没有这个名字。 */
 int      skills_override_text(const char *name, const char *title, const char *purpose,
                               const char *when, const char *tools);
+/* 清掉所有外部技能(重新加载扩展前清场用) */
+void     skills_reset_external(void);
 
 #endif /* AGENT_SKILLS_H */

@@ -116,6 +116,13 @@ void tools_init(void) {
   g_tool_cap = 0;                      /* 0 = 现在用的还是内置静态表 */
 }
 
+/* 退回到"只有内置工具"。界面里改完扩展配置后重新加载,用这个把上次登记的外部项清干净 ——
+   不清就等于越加越多,同名还会被 tools_find 挡掉。 */
+void tools_reset_external(void) {
+  if (g_tool_cap == 0) return;         /* 从来没扩过容,本来就是内置 */
+  g_tool_count = (int)(sizeof(g_registry) / sizeof(g_registry[0]));
+}
+
 /* 追加外部工具:容量不够时把内置表复制到堆上再扩容。
    内置 8 个永远排在前面 —— 外部同名不覆盖内置(tools_find 先命中内置)。 */
 int tools_register_external(const char *name, const char *description,

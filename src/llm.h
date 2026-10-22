@@ -47,4 +47,9 @@ void llm_make_sign(const char *app_key, const char *app_secret, char *out, size_
 /* 从模型输出里抠出决策 JSON(容错:代码块/前后废话/截断/复读) */
 int llm_extract_action(const char *raw, decision_t *out);
 
+/* 自由问答:把 prompt 整段发给模型,拿回纯文本。
+   用途:界面里"用大模型生成技能/工具"这类一次性生成,不走决策循环。
+   返回 0 成功;非 0 表示模型不可用(调用方应给模板兜底)。 */
+int llm_ask(const char *prompt, buf_t *out);
+
 #endif /* AGENT_LLM_H */

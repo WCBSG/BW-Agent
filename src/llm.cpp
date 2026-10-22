@@ -583,6 +583,20 @@ int llm_decide(agent_t *a, const char *user_text, json_t *observations,
   return pr == 0 ? 0 : -2;
 }
 
+int llm_ask(const char *prompt, buf_t *out) {
+  if (!g_cfg.enabled) return -1;
+  if (g_fail_until_ms > 0 && now_ms() < g_fail_until_ms) return -1;
+  if (!g_cfg.agent_id[0]) return -1;
+  if (!prompt || !*prompt) return -1;
+  int rc = hn_call(NULL, prompt, out);
+  if (rc != 0) {
+    g_fail_until_ms = now_ms() + 120000;
+    return -1;
+  }
+  g_fail_until_ms = 0;
+  return 0;
+}
+
 /* ================= 本地规则路由(降级通道) =================
    规则不是"简化版智能体",而是**没网时的保底**:覆盖最常见的几类意图,
    保证演示现场网络抖动也能把流程走完。纯粹的关键词+正则,不猜。 */
