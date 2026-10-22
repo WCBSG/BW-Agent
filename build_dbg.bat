@@ -40,7 +40,7 @@ for %%f in (src\*.cpp) do set "SRC=!SRC! %%f"
 
 echo [构建] 调试版: -O0 -g
 "%GXX%" -std=c++20 -O0 -g -w -DAGENT_GUI_BUILD -mwindows -static ^
-    -I src -I third_party\webview2 ^
+    -I src ^
     -o build\agent_dbg.exe !SRC! build\resources.cpp build\app_res.o ^
     -lws2_32 -lwinhttp -lbcrypt -lcrypt32 -lole32 -loleaut32 -luuid -luser32 -lgdi32 -lshell32 -ladvapi32
 if errorlevel 1 ( echo [失败] 编译出错 & exit /b 1 )

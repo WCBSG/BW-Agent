@@ -1,11 +1,12 @@
-/* ui.cpp —— 界面宿主的三级降级实现。
+/* ui.cpp —— 界面宿主:把内置网页显示出来。
  *
- * 探测顺序(可用性优先):
- *   webview  内嵌 WebView2 控件
- *   app      系统 Edge/Chrome 的 --app 应用窗口
- *   browser  系统默认浏览器
+ * 当前形态:系统 Edge/Chrome 的 --app 应用窗口(无地址栏);找不到 Chromium 才退回默认浏览器。
+ * 环境变量 UI_MODE 可强制指定 app / browser / off,方便答辩现场切换。
  *
- * 环境变量 UI_MODE 可强制指定(auto 为默认),方便答辩时按现场环境切换。
+ * 为什么不把网页嵌进本进程:
+ *   曾经试过 WebView2 嵌入模式,这台机器上环境对象能创建、渲染进程却起不来
+ *   (约 1.1 秒后整棵树退出,无崩溃转储),窗口停在纯白。与其带一个"有时白屏"的
+ *   运行时依赖,不如用系统自带的浏览器当宿主:零额外依赖,观感靠 --app 也够用。
  */
 #include "ui.h"
 
@@ -63,16 +64,6 @@ static int find_chromium(char *out, size_t cap) {
     }
   }
   return 0;
-}
-
-/* ---------- 内嵌 WebView2 ---------- */
-/* 内嵌模式的完整实现见 exp/probe.c(受控实验)。
-   这里保留开关:能用的机器上设 UI_MODE=webview 即可切回内嵌。
-   之所以不默认走内嵌:本机实测 browser 进程在"该创建 renderer 那一瞬"退出,
-   窗口会停在纯白。降到 --app 后界面正常可用。 */
-static int try_webview(int port) {
-  (void)port;
-  return 0;   /* 见 ui.h 注释:本机不可用,一律走降级 */
 }
 
 /* ---------- --app 应用窗口 ---------- */
@@ -258,7 +249,6 @@ static int launch_shell(int port) {
 static DWORD WINAPI open_thread(LPVOID param) {
   int port = (int)(INT_PTR)param;
   const char *force = getenv("UI_MODE");
-  int want_webview = force && str_ieq(force, "webview");
   int want_app = force && str_ieq(force, "app");
   int want_browser = force && str_ieq(force, "browser");
   /* UI_MODE=off/none:只起服务不开窗口(定时任务、无人值守、自动化测试用) */
@@ -273,12 +263,6 @@ static DWORD WINAPI open_thread(LPVOID param) {
   if (!wait_service_ready(port, 3000)) {
     log_warn("服务没有起来(端口 %d),不再打开界面窗口", port);
     return 0;
-  }
-
-  if (want_webview && try_webview(port)) return 0;
-  if (!want_webview && !want_app && !want_browser) {
-    /* auto:先试内嵌,不行就 --app */
-    if (try_webview(port)) return 0;
   }
 
   char exe[MAX_PATH];

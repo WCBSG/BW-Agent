@@ -68,7 +68,7 @@ echo.
 
 "%GXX%" -std=c++20 -O2 -Wall -Wextra -Wno-unused-parameter -Wno-missing-field-initializers ^
     -DAGENT_GUI_BUILD -mwindows -static -s ^
-    -I src -I third_party\webview2 ^
+    -I src ^
     -o build\agent.exe !SRC! !EXTRA! ^
     -lws2_32 -lwinhttp -lbcrypt -lcrypt32 -lole32 -loleaut32 -luuid -luser32 -lgdi32 -lshell32 -ladvapi32
 

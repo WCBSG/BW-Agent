@@ -2853,7 +2853,7 @@ int serve_run(const char *domain, int port, int open_ui) {
     /* 先挂托盘,再开窗口 —— 顺序反了的话,窗口一关就找不到"留在托盘"这条路,
        程序会当场退出(托盘还没建好)。 */
     tray_start(port, "网站安全巡检智能体");
-    /* 界面用系统浏览器打开。为什么不用进程内嵌 WebView2 见 exp/probe.c 的取证结论。 */
+    /* 界面用系统浏览器的 --app 窗口打开:零额外依赖,观感也够用。 */
     ui_open_url_async(port);
   }
 

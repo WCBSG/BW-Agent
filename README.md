@@ -511,8 +511,6 @@ build\agent.exe run skill_我的技能
 │   └─ ui/                        界面源码(编译时被打进 exe)
 ├─ ui/                            界面源码(index.html / app.css / app.js / logo.ico)
 ├─ data/                          开发目录里的规则与测试集(rules.json / testcases.jsonl)
-├─ third_party/webview2/          WebView2 头文件与加载器(内嵌窗口用;不可用时自动降级)
-└─ exp/                           WebView2 排障程序源码(README 里引用的取证依据)
 ```
 
 ### 运行时数据目录（`C:\Users\<用户名>\.bw_agent`）
@@ -531,8 +529,8 @@ build\agent.exe run skill_我的技能
 
 ### 关于界面窗口
 
-宿主提供三级降级：内嵌 WebView2 → Edge `--app` 应用窗口 → 默认浏览器。
-本机实测 WebView2 **嵌入模式**只能创建环境对象却起不来渲染进程（~1.1 秒后整棵树退出，无崩溃转储；
+宿主只有一档：Edge `--app` 应用窗口，找不到 Chromium 才退回默认浏览器。
+内嵌浏览器控件这条路已放弃：本机实测只能创建环境对象却起不来渲染进程（~1.1 秒后整棵树退出，无崩溃转储；
 而系统 Edge 以 `--app` 方式同样渲染正常，说明不是沙箱/HVCI 层面的问题），因此默认走 `--app` 应用窗口，
 观感与桌面程序一致。`exp\probe.c` 是当时的取证程序。
 
