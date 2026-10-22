@@ -447,6 +447,10 @@ static int token_ok(const http_req_t *req) {
 }
 
 /* /api/* 的统一门禁:Host → Origin → 令牌 → POST 只收 JSON */
+/* /api/* 的统一门禁:Host → Origin → 令牌 → POST 只收 JSON。
+   /api/health 是"存活探针",故意免令牌:它只回答"我在不在",不暴露任何数据,
+   而运维脚本/端口探测(以及我们自己的"端口被占就换一个"逻辑)拿不到令牌。
+   Host 与 Origin 仍然校验,所以别的网页还是打不进来。 */
 static int api_guard(const http_req_t *req, http_res_t *res) {
   if (!host_ok(req)) {
     log_warn("[接口] 拒绝请求:Host=%s 不是本机", req->host);
@@ -460,7 +464,7 @@ static int api_guard(const http_req_t *req, http_res_t *res) {
                   "{\"ok\":false,\"error\":\"跨站来源被拒绝\"}");
     return 0;
   }
-  if (!token_ok(req)) {
+  if (strcmp(req->path, "/api/health") != 0 && !token_ok(req)) {
     http_res_text(res, 401, "application/json; charset=utf-8",
                   "{\"ok\":false,\"error\":\"缺少或错误的接口令牌(请从本程序打开的界面操作)\"}");
     return 0;
