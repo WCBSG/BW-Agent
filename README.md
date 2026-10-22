@@ -506,6 +506,7 @@ build\agent.exe run skill_我的技能
 ├─ .env.example                   大模型凭证样例(复制成 .env 填自己的密钥)
 ├─ src/                           后端源码(约 1.3 万行, C++20, 零第三方依赖)
 │   ├─ main.cpp                   入口:零参数启动 / selftest / run / tool / chat / serve / rules
+│   ├─ selftest.cpp               自检套件(基础件/JSON/决策/技能/循环),`agent.exe selftest` 跑的就是它
 │   ├─ agent.cpp                  循环:决策、执行、观察、反思、收敛
 │   ├─ ext.cpp ext.h                扩展层:外部工具、技能包、MCP 客户端(都在数据目录里读)
 │   ├─ skills.cpp skills_closure.cpp 技能:检查类 + 收尾类(复测/报告/证据核对)
