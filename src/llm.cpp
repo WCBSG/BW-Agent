@@ -47,6 +47,8 @@ void llm_make_sign(const char *app_key, const char *app_secret, char *out, size_
 /* ================= 配置 ================= */
 /* 最近一次调用模型失败的原因(界面/命令行可以据此说明"为什么降级了") */
 static char *g_last_error = NULL;
+/* 失败冷却截止时刻(毫秒时间戳):失败后短时间内不再重试,避免每步都白等一次超时 */
+static long long g_fail_until_ms = 0;
 
 void llm_set_last_error(const char *msg) {
   free(g_last_error);
@@ -197,6 +199,47 @@ int llm_extract_action(const char *raw, decision_t *out) {
   buf_free(&clean);
 
   if (j && j->type == J_OBJ) {
+    /* 原生 function calling 形态:模型若直接给出结构化调用,
+       优先认它 —— 比"从散文里抠 JSON"可靠得多。
+       支持 OpenAI 的 {"tool_calls":[{"function":{"name","arguments"}}]}
+       与简化的 {"name":"x","arguments":{…}}。 */
+    json_t *calls = j_get(j, "tool_calls");
+    json_t *fn = NULL;
+    if (calls && calls->type == J_ARR && j_len(calls) > 0) {
+      json_t *c0 = j_at(calls, 0);
+      if (c0) fn = j_get(c0, "function");
+    } else if (j_get(j, "name") && j_get(j, "arguments")) {
+      fn = j;
+    }
+    if (fn) {
+      const char *fname = j_s(fn, "name", NULL);
+      const char *fwhy = j_s(fn, "reason", NULL);
+      if (fname && *fname) {
+        out->kind = ACT_ACT;
+        out->tool = xstrdup(fname);
+        out->reason = (fwhy && *fwhy) ? xstrdup(fwhy) : NULL;
+        out->raw = xstrdup(raw);
+        out->from_model = 1;
+        json_t *aa = j_get(fn, "arguments");
+        if (aa && aa->type == J_STR && aa->str) {
+          json_t *tmp = json_parse(aa->str);
+          if (tmp) {
+            char *dump = json_dump(tmp);
+            out->args = json_parse(dump);
+            free(dump);
+            json_free(tmp);
+          }
+        } else if (aa && aa->type == J_OBJ) {
+          char *dump = json_dump(aa);
+          out->args = json_parse(dump);
+          free(dump);
+        }
+        if (!out->args) out->args = j_obj();
+        json_free(j);
+        return 0;
+      }
+    }
+
     const char *tool = j_s(j, "tool", NULL);
     const char *skill = j_s(j, "skill", NULL);
     const char *final = j_s(j, "final", NULL);
@@ -272,6 +315,31 @@ void decision_free(decision_t *d) {
 /* ================= 提示词 ================= */
 /* 提示词里既给工具也给技能:工具是"能做什么动作",技能是"该怎么把一件事做完"。
    模型的任务是选一个技能或一个工具,并给参数。 */
+/* 观察结果按"单步 + 总量"双重截断:一轮 6 步、每步上万字时,
+   全文塞进提示词只会把真正有用的信息挤出去,还可能超出模型的输入上限。
+   截断保留头尾 —— 结论通常在末尾,链接与样本通常在开头。 */
+#define OBS_PER_STEP_MAX 4000
+#define OBS_TOTAL_MAX 20000
+#define HISTORY_TURNS 6
+#define HISTORY_PER_TURN 600
+
+static void put_clipped(buf_t *out, const char *s, size_t cap) {
+  if (!s || !*s) return;
+  size_t n = strlen(s);
+  if (n <= cap) {
+    buf_puts(out, s);
+    return;
+  }
+  size_t head = cap * 2 / 3;
+  size_t tail = cap - head;
+  buf_puts(out, "[结果较长,已截断,原文共 ");
+  buf_printf(out, "%zu", n);
+  buf_puts(out, " 字符]\n");
+  buf_putn(out, s, head);
+  buf_puts(out, "\n…(中间省略)…\n");
+  buf_puts(out, s + (n - tail));
+}
+
 static void build_prompt(buf_t *out, agent_t *a, const char *user_text,
                          json_t *observations, const char *scope_note) {
   buf_puts(out,
@@ -296,14 +364,41 @@ static void build_prompt(buf_t *out, agent_t *a, const char *user_text,
     buf_puts(out, "\n目标不在授权范围内的,不要动手,直接说明。\n");
   }
 
+  /* 多轮上下文:没有这一段,"继续""那个站也一样查一下"就没法消解 ——
+     模型只会看到孤立的一句话,于是要么重复上一件事,要么反问用户。 */
+  {
+    int total = agent_history_count(a);
+    int from = total > HISTORY_TURNS ? total - HISTORY_TURNS : 0;
+    if (total > 0) {
+      buf_puts(out, "\n## 最近的对话(按时间顺序,供你理解指代)\n");
+      for (int i = from; i < total; i++) {
+        const char *role = "";
+        const char *text = agent_history_at(a, i, &role);
+        if (!text || !*text) continue;
+        buf_puts(out, (role && strcmp(role, "assistant") == 0) ? "- 你:" : "- 用户:");
+        put_clipped(out, text, HISTORY_PER_TURN);
+        buf_puts(out, "\n");
+      }
+    }
+  }
+
   if (observations && j_len(observations) > 0) {
     buf_puts(out, "\n## 已经拿到的观察结果(按时间顺序)\n");
+    int budget = OBS_TOTAL_MAX;
     for (int i = 0; i < j_len(observations); i++) {
       json_t *o = j_at(observations, i);
       const char *tool = j_s(o, "tool", "?");
       const char *result = j_s(o, "result", "");
       buf_printf(out, "--- 第 %d 步 [%s] ---\n", i + 1, tool);
-      buf_puts(out, result);
+      if (budget <= 0) {
+        buf_puts(out, "(前面的观察已经占满上下文预算,这一步的结果从略)\n");
+        continue;
+      }
+      size_t cap = OBS_PER_STEP_MAX;
+      if ((int)cap > budget) cap = (size_t)budget;
+      size_t before = out->len;
+      put_clipped(out, result, cap);
+      budget -= (int)(out->len - before);
       buf_puts(out, "\n");
     }
   }
@@ -320,7 +415,45 @@ static void build_prompt(buf_t *out, agent_t *a, const char *user_text,
 }
 
 /* 解析 JSON 里的 SSE 数据行 */
-static int hn_call(const char *prompt, buf_t *answer_out) {
+typedef struct {
+  buf_t line;       /* 行缓冲:一次 read 可能只到半行 */
+  agent_t *agent;   /* 用来把正文增量推给界面 */
+  int suppress;     /* 判定为决策 JSON 后,这一轮不再往外播 */
+} sse_stream_t;
+
+static void sse_emit_prose(sse_stream_t *st, const char *content) {
+  if (st->suppress || !content || !*content) return;
+  const char *p = content;
+  while (*p == ' ' || *p == '\n' || *p == '\r' || *p == '\t') p++;
+  /* 决策本身是 JSON(或 JSON 的前半截),不是给人读的正文 —— 别一个字一个字地抖 */
+  if (*p == '{' || *p == '[' || *p == '"') { st->suppress = 1; return; }
+  agent_emit_delta(st->agent, content);
+}
+
+static void sse_on_chunk(void *ud, const char *data, size_t n) {
+  sse_stream_t *st = (sse_stream_t *)ud;
+  for (size_t i = 0; i < n; i++) {
+    char c = data[i];
+    if (c != '\n') { buf_putc_(&st->line, c); continue; }
+    char *ln = str_trim(st->line.data ? st->line.data : (char *)"");
+    /* 先解析再清空:buf_clear 会把缓冲首字节置 0,先清后读等于什么都没读 */
+    if (ln[0] && str_startswith(ln, "data:")) {
+      char *js = str_trim(ln + 5);
+      if (js[0] && js[0] != '[') {
+        json_t *o = json_parse(js);
+        if (o) {
+          json_t *d = j_get(o, "data");
+          const char *content = j_s(d, "content", NULL);
+          sse_emit_prose(st, content);
+          json_free(o);
+        }
+      }
+    }
+    buf_clear(&st->line);
+  }
+}
+
+static int hn_call(agent_t *a, const char *prompt, buf_t *answer_out) {
   if (!g_cfg.enabled) return -1;
   char sign[512];
   llm_make_sign(g_cfg.app_key, g_cfg.app_secret, sign, sizeof(sign));
@@ -346,7 +479,12 @@ static int hn_call(const char *prompt, buf_t *answer_out) {
   http_resp_t resp;
   /* 模型端点是"我们的依赖",不是"被检目标",所以不套用被检目标的只读限制;
      但它同样要留审计 —— 调用失败必须能查。 */
-  hn_http_post(url, g_cfg.app_key, sign, payload.data, &resp);
+  sse_stream_t st;
+  memset(&st, 0, sizeof(st));
+  buf_init(&st.line);
+  st.agent = a;
+  hn_http_post_stream(url, g_cfg.app_key, sign, payload.data, sse_on_chunk, &st, &resp);
+  buf_free(&st.line);
   buf_free(&payload);
 
   int rc = -1;
@@ -410,6 +548,9 @@ int llm_decide(agent_t *a, const char *user_text, json_t *observations,
                const char *scope_note, decision_t *out) {
   memset(out, 0, sizeof(*out));
   if (!g_cfg.enabled) return -1;
+  /* 端点刚失败过就先别试:一轮要决策 6 次,每次都白等一次超时的话,
+     用户看到的就是"智能体在发呆"。冷却期内直接走本地规则,并保留失败原因。 */
+  if (g_fail_until_ms > 0 && now_ms() < g_fail_until_ms) return -1;
   if (!g_cfg.agent_id[0]) {
     /* 没配智能体 ID 就按关键词检索一个 —— 与 Python 版同样的策略 */
     log_warn("未配置 DAS_AGENT_ID,本次先用本地规则路由");
@@ -422,15 +563,21 @@ int llm_decide(agent_t *a, const char *user_text, json_t *observations,
 
   buf_t answer;
   buf_init(&answer);
-  int rc = hn_call(prompt.data, &answer);
+  int rc = hn_call(a, prompt.data, &answer);
   buf_free(&prompt);
 
-  if (rc != 0) { buf_free(&answer); return -1; }
+  if (rc != 0) {
+    buf_free(&answer);
+    g_fail_until_ms = now_ms() + 120000;      /* 两分钟内不再重试同一个端点 */
+    return -1;
+  }
 
   int pr = llm_extract_action(answer.data, out);
   if (pr != 0) {
     log_warn("模型输出无法解析为决策(rc=%d),长度 %zu", pr, answer.len);
     net_audit("llm_bad_output", "hn", 0, answer.data ? answer.data : "", NULL);
+  } else {
+    g_fail_until_ms = 0;
   }
   buf_free(&answer);
   return pr == 0 ? 0 : -2;

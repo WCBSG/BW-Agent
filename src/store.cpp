@@ -3,14 +3,23 @@
    "只追加"的代价是同一 id 会留下多行,所以读的时候要取最后一行(store_all 已处理)。 */
 #include "store.h"
 
+#include <algorithm>
 #include <cctype>
 #include <string>
 #include <unordered_set>
+#include <vector>
 
 struct store {
   char dir[MAX_PATH * 2];
   CRITICAL_SECTION lock;
 };
+
+/* 当前线程正在跑的那次对话(见 store_set_chat) */
+static thread_local char g_chat_sid[64] = "";
+
+void store_set_chat(const char *session_id) {
+  snprintf(g_chat_sid, sizeof(g_chat_sid), "%s", session_id ? session_id : "");
+}
 
 /* 集合名 → 编号前缀(与合同 fixtures 完全一致) */
 typedef struct { const char *name; const char *prefix; int jsonl; } coll_t;
@@ -19,6 +28,7 @@ static const coll_t COLLECTIONS[] = {
     {"testcases", "TC", 1},   {"tasks", "T", 0},       {"profiles", "SP", 0},
     {"baselines", "B", 0},    {"diffs", "D", 0},       {"runs", "RUN", 0},
     {"reports", "R", 0},      {"evals", "EV", 0},      {"automations", "AUTO", 0},
+    {"chats", "CH", 0},
 };
 
 static const coll_t *coll_find(const char *name) {
@@ -338,6 +348,13 @@ char *store_ensure_task(store_t *s, const char **domains, int count, const char 
       if (strcmp(j_at(ad, k)->str, domains[k]) != 0) same = 0;
     }
     if (same) {
+      /* 任务按主机归并,但名字要跟着"这一次的目标"走 ——
+         否则界面上永远显示第一次巡检时的端口/路径,看起来像串了台。 */
+      const char *cur_name = j_s(t, "name", "");
+      if (name && name[0] && strcmp(cur_name, name) != 0) {
+        j_set_str(t, "name", name);
+        store_save(s, "tasks", t);
+      }
       char *id = xstrdup(j_s(t, "id", ""));
       json_free(all);
       return id;
@@ -428,6 +445,7 @@ char *store_run_start(store_t *s, const char *task_id, const char *triggered_by,
   json_t *r = j_obj();
   j_set_str(r, "id", id);
   j_set_str(r, "task_id", task_id ? task_id : "");
+  j_set_str(r, "session", g_chat_sid);          /* 属于哪次对话 */
   j_set_str(r, "triggered_by", triggered_by ? triggered_by : "手动");
   j_set_str(r, "scope", (scope && *scope) ? scope : "full");
   j_set_str(r, "status", "running");
@@ -554,7 +572,13 @@ int store_transcript(store_t *s, const char *session_id, json_t *event) {
   char dir[MAX_PATH * 2], name[MAX_PATH], path[MAX_PATH * 4];
   path_join(dir, sizeof(dir), s->dir, "transcripts");
   ensure_dir(dir);
-  snprintf(name, sizeof(name), "%s.jsonl", session_id && *session_id ? session_id : "default");
+  /* 会话 id 来自请求,必须是文件名安全的:否则一个 ../../ 就能写到别处去 */
+  char safe[64];
+  snprintf(safe, sizeof(safe), "%s", session_id && *session_id ? session_id : "default");
+  for (char *p = safe; *p; p++) {
+    if (!isalnum((unsigned char)*p) && *p != '-' && *p != '_') *p = '_';
+  }
+  snprintf(name, sizeof(name), "%s.jsonl", safe);
   path_join(path, sizeof(path), dir, name);
   char *line = json_dump(event);
   buf_t b;
@@ -566,6 +590,96 @@ int store_transcript(store_t *s, const char *session_id, json_t *event) {
   free(line);
   return rc;
 }
+
+/* 会话列表:一个文件 = 一次对话。标题取第一句用户输入,时间取最后一条。
+   按最后活动时间倒序 —— "最近聊的"就应该排在最上面。 */
+json_t *store_transcript_list(store_t *s) {
+  json_t *out = j_arr();
+  if (!s) return out;
+  char dir[MAX_PATH * 2];
+  path_join(dir, sizeof(dir), s->dir, "transcripts");
+
+  typedef struct { std::string id; std::string title; std::string updated; int count; } row_t;
+  std::vector<row_t> rows;
+
+  std::vector<std::string> files = fs_list_files(dir, ".jsonl");
+  for (const std::string &fn : files) {
+    std::string sid = fn.substr(0, fn.size() > 6 ? fn.size() - 6 : fn.size());
+    char path[MAX_PATH * 4];
+    snprintf(path, sizeof(path), "%s\\%s", dir, fn.c_str());
+    size_t len = 0;
+    char *text = file_read_all(path, &len);
+    if (!text) continue;
+    row_t row;
+    row.id = sid;
+    row.count = 0;
+    /* 逐行解析:只取需要的三个字段,不把整段转录读进内存结构 */
+    char **lines = NULL;
+    int n = str_split(text, '\n', &lines, 0);
+    for (int i = 0; i < n; i++) {
+      char *ln = str_trim(lines[i]);
+      if (!ln[0]) continue;
+      json_t *o = json_parse(ln);
+      if (!o) continue;
+      const char *role = j_s(o, "role", "");
+      const char *t = j_s(o, "text", "");
+      const char *ts = j_s(o, "time", "");
+      if (ts[0]) row.updated = ts;
+      if (role && strcmp(role, "user") == 0 && row.title.empty() && t && t[0]) {
+        row.title = t;
+        if (row.title.size() > 40) row.title = row.title.substr(0, 40) + "…";
+      }
+      row.count++;
+      json_free(o);
+    }
+    str_free_list(lines, n);
+    free(text);
+    if (row.count == 0) continue;
+    rows.push_back(row);
+  }
+  std::sort(rows.begin(), rows.end(),
+            [](const row_t &a, const row_t &b) { return a.updated > b.updated; });
+
+  for (const row_t &r : rows) {
+    json_t *o = j_obj();
+    j_set_str(o, "id", r.id.c_str());
+    j_set_str(o, "title", r.title.empty() ? "(未命名对话)" : r.title.c_str());
+    j_set_str(o, "updated_at", r.updated.c_str());
+    j_set_num(o, "messages", r.count);
+    j_add(out, o);
+  }
+  return out;
+}
+
+json_t *store_transcript_read(store_t *s, const char *session_id) {
+  json_t *out = j_arr();
+  if (!s || !session_id || !*session_id) return out;
+  char safe[64];
+  snprintf(safe, sizeof(safe), "%s", session_id);
+  for (char *p = safe; *p; p++) {
+    if (!isalnum((unsigned char)*p) && *p != '-' && *p != '_') *p = '_';
+  }
+  char dir[MAX_PATH * 2], path[MAX_PATH * 4];
+  path_join(dir, sizeof(dir), s->dir, "transcripts");
+  snprintf(path, sizeof(path), "%s\\%s.jsonl", dir, safe);
+  size_t len = 0;
+  char *text = file_read_all(path, &len);
+  if (!text) return out;
+  char **lines = NULL;
+  int n = str_split(text, '\n', &lines, 0);
+  for (int i = 0; i < n; i++) {
+    char *ln = str_trim(lines[i]);
+    if (!ln[0]) continue;
+    json_t *o = json_parse(ln);
+    if (o) j_add(out, o);
+  }
+  str_free_list(lines, n);
+  free(text);
+  return out;
+}
+
+/* 运行记录带上会话 id:界面上"这次运行"和"那次对话"才能互相跳转 */
+void store_set_chat(const char *session_id);
 
 /* ================= 快照 ================= */
 char *store_write_snapshot(store_t *s, const char *id, const char *content) {

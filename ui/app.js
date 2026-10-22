@@ -56,6 +56,78 @@ function scrollBottom(force) {
 /* 接口令牌:由后端在发送 index.html 时注入 meta —— 用来挡住"别的网页借我们的手扫别人" */
 const BW_TOKEN = (document.querySelector('meta[name="bw-token"]') || {}).content || '';
 
+/* 会话 id:每个标签页一个。同一条会话的上下文在后端是独立的,
+   所以两个标签页可以各查各的站,互不打断。
+   "新建巡检"会换一个 id —— 换了 id 就是新对话,旧对话留在左栏可回看。 */
+function newChatId() {
+  return 's-' + Math.random().toString(36).slice(2, 10) + Date.now().toString(36).slice(-4);
+}
+let BW_SID = (() => {
+  try {
+    let v = sessionStorage.getItem('bw-sid');
+    if (!v) {
+      v = newChatId();
+      sessionStorage.setItem('bw-sid', v);
+    }
+    return v;
+  } catch (e) {
+    return newChatId();
+  }
+})();
+
+/* 本轮待发送的附件:先上传换一个 id,聊天时只带 id。
+   不把长文本塞进 URL —— 几千行的日志会直接把查询串撑爆。 */
+const pendingAtt = [];
+
+function renderAttachList() {
+  const box = $('attach-list');
+  if (!box) return;
+  box.innerHTML = '';
+  for (let i = 0; i < pendingAtt.length; i++) {
+    const a = pendingAtt[i];
+    const chip = el('span', 'attach-chip');
+    chip.appendChild(el('span', 'nm', a.name));
+    chip.appendChild(el('b', null, a.kind === 'image' ? '图片' : a.size + 'B'));
+    const x = el('button', null, '×');
+    x.type = 'button';
+    x.title = '移除';
+    x.addEventListener('click', () => { pendingAtt.splice(i, 1); renderAttachList(); });
+    chip.appendChild(x);
+    box.appendChild(chip);
+  }
+}
+
+function clearAttachments() {
+  pendingAtt.length = 0;
+  renderAttachList();
+}
+
+async function uploadAttachment(file) {
+  const isImg = /^image\//.test(file.type || '') || /\.(png|jpe?g|webp)$/i.test(file.name || '');
+  let text;
+  if (isImg) {
+    text = await new Promise((resolve, reject) => {
+      const fr = new FileReader();
+      fr.onload = () => resolve(fr.result);
+      fr.onerror = () => reject(fr.error);
+      fr.readAsDataURL(file);
+    });
+  } else {
+    text = (await file.text()).slice(0, 200000);   /* 单文件 200KB 上限,够放日志了 */
+  }
+  const r = await api('/api/attach', {
+    method: 'POST',
+    body: JSON.stringify({ sid: BW_SID, name: file.name, kind: isImg ? 'image' : 'text', text })
+  });
+  pendingAtt.push({
+    id: r.id,
+    name: r.name || file.name,
+    kind: r.kind || (isImg ? 'image' : 'text'),
+    size: r.size || text.length
+  });
+  renderAttachList();
+}
+
 async function api(path, opts) {
   const o = Object.assign({}, opts);
   o.headers = Object.assign({ 'X-BW-Token': BW_TOKEN }, (opts && opts.headers) || {});
@@ -466,6 +538,13 @@ function setBusy(on) {
   $('btn-send').disabled = on;
   $('btn-send').textContent = on ? '执行中…' : '执行';
   $('q').disabled = on;
+  /* 停止:只在"有东西在跑"的时候出现 —— 和主流 agent 一样,
+     已经开始的动作必须能被人中途叫停。 */
+  const stop = $('btn-stop');
+  if (stop) {
+    stop.hidden = !on;
+    if (on) { stop.disabled = false; stop.textContent = '停止'; }
+  }
 }
 
 function endTurn() {
@@ -479,15 +558,29 @@ function endTurn() {
 
 function send(text) {
   const q = (text || '').trim();
-  if (!q || busy) return;
+  if (!q && !pendingAtt.length) return;
+  if (busy) return;
 
   showWork();
-  if ($('task-title')) $('task-title').textContent = q.length > 26 ? q.slice(0, 26) + '…' : q;
+  const title = q || (pendingAtt.length ? '（附件）' + pendingAtt[0].name : '巡检');
+  if ($('task-title')) $('task-title').textContent = title.length > 26 ? title.slice(0, 26) + '…' : title;
   if ($('stream-empty')) $('stream-empty').remove();
   const wrap = el('div', 'msg user');
-  wrap.appendChild(el('div', 'body', q));
+  const ub = el('div', 'body');
+  ub.appendChild(el('div', null, q || '（只说附件）'));
+  for (const a of pendingAtt) {
+    const tag = el('div', 'attach-chip');
+    tag.appendChild(el('span', 'nm', a.name));
+    tag.appendChild(el('b', null, a.kind === 'image' ? '图片' : a.size + 'B'));
+    ub.appendChild(tag);
+  }
+  wrap.appendChild(ub);
   stream.appendChild(wrap);
   scrollBottom(true);
+  /* 先把这一轮的附件 id 抄下来再清空 —— URL 是后面才拼的,
+     顺序反了就会"文件传上去了,但这一轮没带上"。 */
+  const attIds = pendingAtt.map((a) => a.id).join(',');
+  clearAttachments();
 
   $('q').value = '';
   $('q').style.height = 'auto';
@@ -501,6 +594,8 @@ function send(text) {
   /* 目标不再是全局设定:这一轮看哪个站,由用户这句话决定。
      边界交给授权池,越池的请求在取数通道就被掐断。 */
   const es = new EventSource('/api/chat?q=' + encodeURIComponent(q) +
+                             '&sid=' + encodeURIComponent(BW_SID) +
+                             (attIds ? '&att=' + encodeURIComponent(attIds) : '') +
                              (BW_TOKEN ? '&t=' + encodeURIComponent(BW_TOKEN) : ''));
   let closed = false;
 
@@ -972,7 +1067,10 @@ function taskRow(r, t) {
   row.addEventListener('click', () => {
     document.querySelectorAll('.titem').forEach((x) => x.setAttribute('aria-current', 'false'));
     row.setAttribute('aria-current', 'true');
-    switchView('history'); loadView('history');
+    /* 点一条运行记录 = 回到它所在的那次对话。
+       没有 session 的是旧数据(当时还没记会话),退回历史视图。 */
+    if (r.session) openChat(r.session);
+    else { switchView('history'); loadView('history'); }
   });
   return row;
 }
@@ -1059,6 +1157,90 @@ function showHome() {
 }
 function showWork() {
   raise('work');
+}
+
+/* 清空中间的流，回到"还没有开始"的样子 —— 新建对话时用 */
+function resetStream(title, text) {
+  stream.innerHTML = '';
+  const empty = el('div', 'empty');
+  empty.id = 'stream-empty';
+  empty.appendChild(el('b', null, title || '还没有开始'));
+  empty.appendChild(el('p', null, text || '在下面写一句要做什么，它会把每一步的决定和证据摊在这个位置。'));
+  stream.appendChild(empty);
+  current = null;
+  if (stepsBox) stepsBox.innerHTML = '<div class="muted">执行后这里按步列出「为什么这么做」。</div>';
+  if (trace) trace.textContent = '';
+  if ($('task-title')) $('task-title').textContent = '巡检会话';
+}
+
+/* 新建对话:换一个会话 id、清空中间那一片。
+   注意这是"同一块屏换个新会话"，不是回首页 —— 回首页是 HOME 按钮的事。 */
+function newChat() {
+  BW_SID = newChatId();
+  try { sessionStorage.setItem('bw-sid', BW_SID); } catch (e) { /* 隐私模式下也能用 */ }
+  setBusy(false);
+  closeSheet();
+  clearAttachments();
+  resetStream();
+  showWork();
+  renderTasks();
+  const q = $('q');
+  if (q) setTimeout(() => q.focus(), 180);
+}
+
+/* 打开某一次历史对话:把后端落下来的转录原样铺回中间，
+   并且把当前会话切到它 —— 接着往下说，就是在这条对话上继续。 */
+async function openChat(sid) {
+  if (!sid) { switchView('history'); loadView('history'); return; }
+  closeSheet();
+  showWork();
+  setBusy(false);
+  BW_SID = sid;
+  try { sessionStorage.setItem('bw-sid', sid); } catch (e) { /* 忽略 */ }
+  resetStream('正在打开对话…', '从数据目录里读这次对话的转录。');
+  let r;
+  try {
+    r = await api('/api/chats?sid=' + encodeURIComponent(sid));
+  } catch (e) {
+    resetStream('这条对话打不开', String((e && e.message) || e));
+    return;
+  }
+  const msgs = r.messages || [];
+  if (!msgs.length) {
+    resetStream('这条对话没有留下转录', '可能这一轮当时还没跑完，或者是旧版本产生的运行记录。');
+    return;
+  }
+  stream.innerHTML = '';
+  let title = '';
+  for (const m of msgs) {
+    if (m.role === 'user') {
+      if (!title && m.text) title = m.text;
+      const wrap = el('div', 'msg user');
+      const ub = el('div', 'body');
+      ub.appendChild(el('div', null, m.text || '（只说附件）'));
+      for (const a of m.attachments || []) {
+        const chip = el('span', 'attach-chip');
+        chip.appendChild(el('span', 'nm', a.id || a.name || '附件'));
+        chip.appendChild(el('b', null, a.kind === 'image' ? '图片' : '文本'));
+        ub.appendChild(chip);
+      }
+      wrap.appendChild(ub);
+      stream.appendChild(wrap);
+    } else if (m.role === 'assistant') {
+      const wrap = el('div', 'msg agent');
+      wrap.appendChild(el('div', 'who', '智能体 · ' + (m.target || '')));
+      const body = el('div', 'body');
+      body.appendChild(el('div', null, m.text || '(这一轮没有给出结论)'));
+      if (m.stop) {
+        body.appendChild(el('div', 'stopline',
+          '停止原因 ' + m.stop + (m.steps ? ' · ' + m.steps + ' 步' : '')));
+      }
+      wrap.appendChild(body);
+      stream.appendChild(wrap);
+    }
+  }
+  if ($('task-title')) $('task-title').textContent = (title || '巡检会话').slice(0, 30);
+  scrollBottom(true);
 }
 
 /** 抽屉叠在基线之上，从上方压下来。关掉时原样露出下面那层，不必判断"从哪来"。 */
@@ -1765,6 +1947,37 @@ $('q').addEventListener('keydown', (e) => {
   }
 });
 
+/* 附件:选了就先传上去,拿到 id 挂在这一轮里 */
+const attachBtn = $('btn-attach');
+const attachInput = $('attach');
+if (attachBtn && attachInput) {
+  attachBtn.addEventListener('click', () => attachInput.click());
+  attachInput.addEventListener('change', async () => {
+    for (const f of Array.from(attachInput.files || [])) {
+      try { await uploadAttachment(f); }
+      catch (e) { if (trace) trace.textContent = '附件没传上去：' + ((e && e.message) || e); }
+    }
+    attachInput.value = '';
+  });
+}
+
+/* 停止:把信号打给后端,循环会在下一次请求前撒手。
+   不关 EventSource —— 让后端把"已停下"这一句正常播完,界面才知道停在哪一步。 */
+const stopBtn = $('btn-stop');
+if (stopBtn) {
+  stopBtn.addEventListener('click', () => {
+    stopBtn.disabled = true;
+    stopBtn.textContent = '正在停…';
+    api('/api/cancel', {
+      method: 'POST',
+      body: JSON.stringify({ sid: BW_SID })
+    }).catch(() => {}).finally(() => {
+      stopBtn.disabled = false;
+      stopBtn.textContent = '停止';
+    });
+  });
+}
+
 const ta = $('q');
 ta.addEventListener('input', () => {
   ta.style.height = 'auto';
@@ -1823,10 +2036,11 @@ document.querySelectorAll('[data-goto]').forEach((b) => {
 });
 
 $('btn-back').addEventListener('click', closeSheet);
-$('btn-new').addEventListener('click', () => {
-  showHome();
-  if (hq) hq.focus();
-});
+/* 新建巡检 = 新开一条对话（留在工作台），不是回首页 */
+$('btn-new').addEventListener('click', newChat);
+/* HOME = 回起手式（首页） */
+const homeBtn = $('btn-home');
+if (homeBtn) homeBtn.addEventListener('click', showHome);
 $('btn-refresh2').addEventListener('click', async () => {
   state.cache = {};
   try { renderStatus(await api('/api/status')); } catch { /* 后端可能刚停 */ }

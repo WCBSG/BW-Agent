@@ -12,20 +12,43 @@
 static HINTERNET g_session = NULL;
 static int g_readonly = 0;
 
-static char g_task_id[64] = {0};
-static char **g_domains = NULL;
-static int g_domain_count = 0;
+/* 授权范围(**按线程隔离**)、越界标记、目标基准地址,都放在线程本地。
+   为什么必须隔离:服务端可能同时跑多个会话,而"这一轮的授权范围"是合规硬边界。
+   共用一份的话,A 会话的越界会记到 B 头上、B 的目标会放行 A 的请求 —— 这是安全问题,
+   不是体验问题。每个会话线程各自持有一份,谁也别想串味。
+   用一个小对象持有,连接线程退出时自动释放,不留悬挂指针。 */
+struct thread_scope_t {
+  char task_id[64] = {0};
+  char *domains[32] = {NULL};
+  int count = 0;
+  int violation = 0;
+  char target_base[512] = {0};
+
+  ~thread_scope_t() {
+    for (int i = 0; i < count; i++) free(domains[i]);
+  }
+  void set(const char *tid, const char **d, int n) {
+    for (int i = 0; i < count; i++) free(domains[i]);
+    count = 0;
+    snprintf(task_id, sizeof(task_id), "%s", tid ? tid : "");
+    if (d && n > 0) {
+      int cap = (int)(sizeof(domains) / sizeof(domains[0]));
+      for (int i = 0; i < n && count < cap; i++) domains[count++] = xstrdup(d[i]);
+    }
+  }
+};
+
+static thread_local thread_scope_t g_scope;
 
 /* 授权池:允许访问的主机白名单。池子非空时它就是唯一边界 ——
-   "这一轮看哪个站"只是焦点,不是边界;越池即拒,并置 violation 让循环立刻收束。 */
+   "这一轮看哪个站"只是焦点,不是边界;越池即拒,并置 violation 让循环立刻收束。
+   池子是**全进程共享的策略**(一个部署一套策略),读取时加锁。 */
 static char **g_pool = NULL;
 static int g_pool_count = 0;
-static volatile LONG g_violation = 0;
 
 static int host_allowed(const char *host, int port, const char *path);   /* 边界判定,实现在下方 */
 
 static char g_audit_path[MAX_PATH * 2] = {0};
-static char g_target_base[512] = {0};
 static double g_qps = 2.0;
 static long long g_last_ms = 0;            /* 单主机限速:简化成全局节流 */
 static CRITICAL_SECTION g_net_lock;
@@ -91,7 +114,7 @@ void net_init(void) {
 
 void net_shutdown(void) {
   if (g_session) { WinHttpCloseHandle(g_session); g_session = NULL; }
-  if (g_domains) { str_free_list(g_domains, g_domain_count); g_domains = NULL; g_domain_count = 0; }
+  g_scope.set("", NULL, 0);
   net_lock_init();
   EnterCriticalSection(&g_net_lock);
   if (g_pool) { str_free_list(g_pool, g_pool_count); g_pool = NULL; g_pool_count = 0; }
@@ -101,17 +124,7 @@ void net_shutdown(void) {
 void net_set_readonly(int on) { g_readonly = on ? 1 : 0; }
 
 void net_set_scope(const char *task_id, const char **domains, int count) {
-  net_lock_init();
-  EnterCriticalSection(&g_net_lock);
-  if (g_domains) { str_free_list(g_domains, g_domain_count); g_domains = NULL; }
-  g_domain_count = 0;
-  if (domains && count > 0) {
-    g_domains = (char **)xcalloc((size_t)count, sizeof(char *));
-    for (int i = 0; i < count; i++) g_domains[i] = xstrdup(domains[i]);
-    g_domain_count = count;
-  }
-  strncpy_s(g_task_id, sizeof(g_task_id), task_id ? task_id : "", _TRUNCATE);
-  LeaveCriticalSection(&g_net_lock);
+  g_scope.set(task_id, domains, count);
 }
 
 void net_set_audit_path(const char *path) {
@@ -171,36 +184,42 @@ int net_pool_has(const char *host, int port, const char *path) {
   return host_allowed(host, port, path);
 }
 
-int net_scope_violation(void) { return (int)g_violation; }
-void net_scope_violation_clear(void) { InterlockedExchange(&g_violation, 0); }
+int net_scope_violation(void) { return g_scope.violation; }
+void net_scope_violation_clear(void) { g_scope.violation = 0; }
 
 void net_set_rate_limit(double qps) { g_qps = (qps > 0) ? qps : 2.0; }
 
-void net_set_target_base(const char *base) {
-  strncpy_s(g_target_base, sizeof(g_target_base), base ? base : "", _TRUNCATE);
-  char *t = str_trim(g_target_base);
-  if (t != g_target_base) memmove(g_target_base, t, strlen(t) + 1);
+/* 叫停信号:指向循环持有的那个标志。请求前看一眼,这样"停止"点下去,
+   正在跑的那一轮会在下一次请求前就撒手,而不是跑完整个技能才停。 */
+static thread_local volatile LONG *g_cancel_flag = NULL;
+
+void net_set_cancel(volatile LONG *flag) { g_cancel_flag = flag; }
+int net_cancelled(void) { return (g_cancel_flag && *g_cancel_flag) ? 1 : 0; }void net_set_target_base(const char *base) {
+  strncpy_s(g_scope.target_base, sizeof(g_scope.target_base), base ? base : "", _TRUNCATE);
+  char *t = str_trim(g_scope.target_base);
+  if (t != g_scope.target_base) memmove(g_scope.target_base, t, strlen(t) + 1);
 }
 
 /* 把 URL 的"协议+端口"换成 target base 的(仅当主机名相同)。
    为什么需要:本地靶站跑在 http://127.0.0.1:8081 这类端口上,而用户/模型只会说
    "127.0.0.1" —— 不对齐就会去请求 443 端口,然后误判成"站点不可达"。 */
 void net_align_url(const char *url, char *out, size_t cap) {
-  if (!g_target_base[0] || !url || !*url) {
+  const char *base = g_scope.target_base;
+  if (!base[0] || !url || !*url) {
     snprintf(out, cap, "%s", url ? url : "");
     return;
   }
   char base_host[256], url_host[256];
-  net_host_of(g_target_base, base_host, sizeof(base_host));
+  net_host_of(base, base_host, sizeof(base_host));
   net_host_of(url, url_host, sizeof(url_host));
   if (!str_ieq(base_host, url_host)) {
     snprintf(out, cap, "%s", url);
     return;
   }
   /* target base 的"协议 + 主机 + 端口"这一段(authority),原 URL 只保留路径与查询 */
-  const char *scheme_end = strstr(g_target_base, "://");
-  size_t scheme_len = scheme_end ? (size_t)(scheme_end - g_target_base) + 3 : 0;
-  const char *auth = g_target_base + scheme_len;
+  const char *scheme_end = strstr(base, "://");
+  size_t scheme_len = scheme_end ? (size_t)(scheme_end - base) + 3 : 0;
+  const char *auth = base + scheme_len;
   size_t auth_len = 0;
   while (auth[auth_len] && auth[auth_len] != '/' && auth[auth_len] != '?' &&
          auth[auth_len] != '#') {
@@ -209,7 +228,7 @@ void net_align_url(const char *url, char *out, size_t cap) {
   /* 原 URL 的路径 */
   const char *path = strstr(url, "://");
   path = path ? strchr(path + 3, '/') : NULL;
-  snprintf(out, cap, "%.*s%.*s%s", (int)scheme_len, g_target_base, (int)auth_len, auth,
+  snprintf(out, cap, "%.*s%.*s%s", (int)scheme_len, base, (int)auth_len, auth,
            path ? path : "/");
 }
 
@@ -349,8 +368,8 @@ static int host_allowed(const char *host, int port, const char *path) {
   LeaveCriticalSection(&g_net_lock);
   if (have_pool) return denied ? 0 : allowed;
 
-  for (int i = 0; i < g_domain_count; i++) {
-    if (entry_matches(g_domains[i], host, port, path)) return 1;
+  for (int i = 0; i < g_scope.count; i++) {
+    if (entry_matches(g_scope.domains[i], host, port, path)) return 1;
   }
   return 0;
 }
@@ -366,7 +385,7 @@ void net_audit(const char *action, const char *target, int allowed, const char *
   j_set_str(row, "actor", "agent-c");
   j_set_str(row, "action", action ? action : "");
   j_set_str(row, "target", target ? target : "");
-  j_set_str(row, "task_id", g_task_id);
+  j_set_str(row, "task_id", g_scope.task_id);
   j_set_str(row, "run_id", run_id ? run_id : "");
   j_set_bool(row, "allowed", allowed);
   j_set_str(row, "detail", detail ? detail : "");
@@ -485,10 +504,9 @@ void net_request(const char *url, const char *method, const char *content_type,
   }
   int pooled = net_pool_count() > 0;
   /* 池子空、本轮也没有授权范围 ⇒ 没有任何边界可言,一律不发。
-     "什么都没配"绝不能等价于"什么都能访问"。 */
-  if (!pooled && g_domain_count == 0) {
+     "什么都没配"绝不能等价于"什么都能访问"。 */  if (!pooled && g_scope.count == 0) {
     resp->error = xstrdup("还没有授权目标:先把主机加进授权池");
-    InterlockedExchange(&g_violation, 1);
+    g_scope.violation = 1;
     net_audit("authorize", url, 0, resp->error, NULL);
     return;
   }
@@ -499,13 +517,17 @@ void net_request(const char *url, const char *method, const char *content_type,
     else buf_printf(&e, "目标 %s 不在授权域名内", host_u8);
     resp->error = buf_take(&e);
     /* 越权就是越权:置标记,让决策循环下一步立刻收束,而不是继续试别的路径 */
-    InterlockedExchange(&g_violation, 1);
+    g_scope.violation = 1;
     net_audit("authorize", url, 0, resp->error, NULL);
     log_warn("[合规] 拒绝越权目标: %s", url);
     return;
   }
 
   /* —— 合规第 2 道:限速 —— */
+  if (net_cancelled()) {
+    resp->error = xstrdup("本轮已被叫停,不再发请求");
+    return;
+  }
   rate_wait();
 
   wchar_t whost[256], wpath[2048];
@@ -669,8 +691,9 @@ int net_bench(const char *url, int n, int *out_conns, int *out_requests) {
    为什么要单独一个:恒脑要 appKey/sign 两个自定义头,net_request 的头是固定的。
    它们指向的是"我们的依赖",不是被检目标,所以不套被检目标的授权/只读限制;
    但失败同样要留审计 —— 调用不通必须能查。 */
-static void post_json(const char *url, const char *headers, int timeout_ms,
-                      const char *body, http_resp_t *resp, const char *audit_tag) {
+static void post_json_ex(const char *url, const char *headers, int timeout_ms,
+                         const char *body, net_stream_fn cb, void *ud,
+                         http_resp_t *resp, const char *audit_tag) {
   memset(resp, 0, sizeof(*resp));
   long long t0 = now_ms();
   if (!g_session) net_init();
@@ -692,6 +715,11 @@ static void post_json(const char *url, const char *headers, int timeout_ms,
       resp->error = xstrdup("创建请求失败");
     } else {
       DWORD timeout = (DWORD)(timeout_ms > 0 ? timeout_ms : 20000);
+      /* 三个超时都要设:只设接收超时的话,对端"接了但不回"或"连不上"都会
+         把整个会话挂在一次调用上 —— 实测恒脑被 WAF 拦时就出现过一次调用卡 80 秒。 */
+      DWORD conn_to = 8000, send_to = 15000;
+      WinHttpSetOption(req, WINHTTP_OPTION_CONNECT_TIMEOUT, &conn_to, sizeof(conn_to));
+      WinHttpSetOption(req, WINHTTP_OPTION_SEND_TIMEOUT, &send_to, sizeof(send_to));
       WinHttpSetOption(req, WINHTTP_OPTION_RECEIVE_TIMEOUT, &timeout, sizeof(timeout));
       const wchar_t *whdrs = headers && headers[0] ? u8_to_w(headers) : NULL;
       BOOL ok = WinHttpSendRequest(req, whdrs ? whdrs : WINHTTP_NO_ADDITIONAL_HEADERS,
@@ -720,6 +748,9 @@ static void post_json(const char *url, const char *headers, int timeout_ms,
           DWORD got = 0;
           if (!WinHttpReadData(req, chunk, avail, &got) || got == 0) { free(chunk); break; }
           chunk[got] = 0;
+          /* 边收边回调:模型分几段发,界面就分几段显示,
+             不必等整段响应落地才"啪"地出现一大坨文字。 */
+          if (cb) cb(ud, chunk, got);
           buf_putn(&acc, chunk, got);
           free(chunk);
         }
@@ -743,13 +774,26 @@ static void post_json(const char *url, const char *headers, int timeout_ms,
 
 void hn_http_post(const char *url, const char *app_key, const char *sign,
                   const char *body, http_resp_t *resp) {
+  hn_http_post_stream(url, app_key, sign, body, NULL, NULL, resp);
+}
+
+/* 带增量回调的版本:给"边收边显示"用。resp 仍然拿完整响应体,
+   解析逻辑不用写两份 —— 回调只负责把新到的那一段顺手播出去。 */
+void hn_http_post_stream(const char *url, const char *app_key, const char *sign,
+                         const char *body, net_stream_fn cb, void *ud,
+                         http_resp_t *resp) {
   buf_t hdrs;
   buf_init(&hdrs);
   buf_printf(&hdrs, "Content-Type: application/json\r\nappKey: %s\r\nsign: %s\r\n"
                     "ext: child_preview:0;reason:1\r\n",
              app_key ? app_key : "", sign ? sign : "");
-  post_json(url, hdrs.data, 90000, body, resp, "llm");   /* 模型可能要几十秒,给足 */
+  post_json_ex(url, hdrs.data, 45000, body, cb, ud, resp, "llm");
   buf_free(&hdrs);
+}
+
+void net_post_stream(const char *url, const char *headers, int timeout_ms,
+                     const char *body, net_stream_fn cb, void *ud, http_resp_t *resp) {
+  post_json_ex(url, headers, timeout_ms, body, cb, ud, resp, "post");
 }
 
 /* 告警投递:只发到使用者自己配的 webhook(rules.json 的 alerts.webhook),
@@ -760,7 +804,7 @@ void net_webhook_post(const char *url, const char *token, const char *body,
   buf_init(&hdrs);
   buf_puts(&hdrs, "Content-Type: application/json\r\n");
   if (token && token[0]) buf_printf(&hdrs, "Authorization: Bearer %s\r\n", token);
-  post_json(url, hdrs.data, 15000, body, resp, "notify");
+  post_json_ex(url, hdrs.data, 15000, body, NULL, NULL, resp, "notify");
   buf_free(&hdrs);
 }
 

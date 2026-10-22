@@ -82,6 +82,10 @@
     <div class="side-top">
       <span class="brand"><s aria-hidden="true"></s>网站安全巡检</span>
       <div class="side-actions">
+        <button class="act" id="btn-home" type="button" title="返回首页（起手式）">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 11.2 12 4l8 7.2"/><path d="M6.5 10.4V20h11v-9.6"/></svg>
+          <span>HOME</span>
+        </button>
         <button class="act" id="btn-search" type="button" title="搜索任务、发现、资产（Ctrl+K）">
           <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6.5"/><path d="m16 16 4.5 4.5"/></svg>
           <span>搜索</span>
@@ -147,9 +151,16 @@
         </div>
       </div>
       <div class="field">
+        <button type="button" class="clip" id="btn-attach" title="添加附件：日志、配置、导出文件或截图" aria-label="添加附件">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8.5 12.5 15 6a3.2 3.2 0 0 1 4.5 4.5l-7.6 7.6a5 5 0 0 1-7.1-7.1l7.3-7.3"/></svg>
+        </button>
+        <input type="file" id="attach" multiple hidden
+               accept=".txt,.log,.json,.md,.csv,.ini,.conf,.cfg,.xml,.html,.yml,.yaml,.sql,.env,.png,.jpg,.jpeg,.webp">
         <textarea id="q" rows="1" aria-label="巡检指令" placeholder="继续追问，或让它在同一任务上接着做"></textarea>
+        <button type="button" id="btn-stop" class="stop-btn" hidden>停止</button>
         <button type="submit" id="btn-send">执行</button>
       </div>
+      <div class="attach-list" id="attach-list"></div>
       <div class="hints">
         <button type="button" class="hint-btn" data-q="复测没修复的那几条">复测这几条</button>
         <button type="button" class="hint-btn" data-q="出一份巡检报告">出报告</button>

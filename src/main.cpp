@@ -165,6 +165,21 @@ static void selftest_llm(void) {
         "截断的 JSON 也能捞回工具名");
   decision_free(&d);
 
+  /* 原生 function calling:平台若按 OpenAI 形态回结构化调用,直接认 */
+  check(llm_extract_action(
+            "{\"tool_calls\":[{\"type\":\"function\",\"function\":{\"name\":\"site_crawl\","
+            "\"arguments\":\"{\\\"target\\\":\\\"b.cn\\\"}\"}}]}", &d) == 0 &&
+        d.kind == ACT_ACT && d.tool && strcmp(d.tool, "site_crawl") == 0 && d.args &&
+        strcmp(j_s(d.args, "target", ""), "b.cn") == 0,
+        "解析原生 tool_calls(含字符串化参数)");
+  decision_free(&d);
+
+  check(llm_extract_action("{\"name\":\"page_diff\",\"arguments\":{\"target\":\"c.cn\"}}", &d) == 0 &&
+        d.kind == ACT_ACT && d.tool && strcmp(d.tool, "page_diff") == 0 && d.args &&
+        strcmp(j_s(d.args, "target", ""), "c.cn") == 0,
+        "解析简化的 name/arguments 形态");
+  decision_free(&d);
+
   check(llm_extract_action("完全不是 JSON", &d) != 0, "非 JSON 输出被拒绝");
   decision_free(&d);
 

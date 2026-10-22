@@ -39,6 +39,16 @@ int  net_scope_violation(void);
 void net_scope_violation_clear(void);
 void net_set_audit_path(const char *path);
 void net_set_rate_limit(double qps);
+/* 叫停信号:请求发出之前检查一次,让"停止"能立刻生效 */
+void net_set_cancel(volatile LONG *flag);
+int  net_cancelled(void);
+
+/* 增量回调:POST 的响应分块到达时调用(用于模型输出的边收边显示) */
+typedef void (*net_stream_fn)(void *ud, const char *data, size_t len);
+void net_post_stream(const char *url, const char *headers, int timeout_ms,
+                     const char *body, net_stream_fn cb, void *ud, http_resp_t *resp);
+void hn_http_post_stream(const char *url, const char *app_key, const char *sign,
+                         const char *body, net_stream_fn cb, void *ud, http_resp_t *resp);
 /* 目标地址对齐:把巡检起点指向本地靶站(如 http://127.0.0.1:8081)或非默认端口的站点。
    只改"协议+端口",主机名不变 —— 授权校验只认域名,不受影响。
    不设置时该功能完全不生效(生产环境就是 https://<授权域名>)。 */

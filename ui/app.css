@@ -460,6 +460,31 @@ code,pre,.mono{font-family:var(--mono)}
   font-size:13px;font-weight:500;white-space:nowrap;
 }
 .field button:disabled{opacity:.55;cursor:default}
+/* 停止:执行中才出现,样式刻意比"执行"轻一档 —— 它是刹车,不是第二个油门 */
+.field button.stop-btn{
+  background:var(--panel);color:var(--ink-2);border:1px solid var(--line-2);
+  font-weight:500;
+}
+.field button.stop-btn:hover{border-color:#c9c9c1;color:var(--ink)}
+.field button.stop-btn:disabled{opacity:.55;cursor:default}
+/* 附件:回形针 + 已选清单。清单一空就整行收起来,不占地方 */
+.field .clip{
+  background:none;color:var(--ink-3);padding:4px 2px;border-radius:5px;
+  display:flex;align-items:center;flex:0 0 auto;
+}
+.field .clip svg{width:16px;height:16px;fill:none;stroke:currentColor;stroke-width:1.6;stroke-linecap:round}
+.field .clip:hover{color:var(--ink);background:#f4f4f0}
+.attach-list{max-width:760px;margin:6px auto 0;display:flex;flex-wrap:wrap;gap:6px}
+.attach-list:empty{display:none}
+.attach-chip{
+  display:inline-flex;align-items:center;gap:6px;font-size:12px;color:var(--ink-2);
+  border:1px solid var(--line-2);border-radius:6px;background:var(--panel);padding:3px 7px;
+  font-family:var(--mono);max-width:260px;
+}
+.attach-chip .nm{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.attach-chip b{font-weight:500;color:var(--ink-3)}
+.attach-chip button{color:var(--ink-3);font-size:13px;line-height:1;padding:0 1px}
+.attach-chip button:hover{color:#a33}
 .hints{max-width:760px;margin:7px auto 0;display:flex;align-items:center;gap:14px;font-size:12px;color:var(--ink-3);flex-wrap:wrap}
 .hint-btn{color:var(--ink-2);font-size:12px;text-decoration:underline;text-underline-offset:3px}
 .hint-btn:hover{color:var(--ink)}

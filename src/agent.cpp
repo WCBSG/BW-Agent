@@ -43,6 +43,8 @@ struct agent {
   int turn_index;
   /* 步数预算:兜底用,正常情况下靠"反思"提前收尾 */
   int max_steps;
+  /* 用户叫停:跨线程写、循环线程读。动作用的是原子读,不用锁。 */
+  volatile LONG cancel;
   buf_t scope_note;      /* 拼好的授权范围说明(提示词里用) */
 };
 
@@ -115,12 +117,45 @@ void agent_set_store(agent_t *a, void *store, const char *run_id) {
   snprintf(a->run_id, sizeof(a->run_id), "%s", run_id ? run_id : "");
 }
 
+/* 叫停本轮:界面点"停止"时从另一个线程写,循环在下一步 / 下一次请求前读到。 */
+void agent_cancel(agent_t *a) {
+  if (a) InterlockedExchange(&a->cancel, 1);
+}
+
+void agent_cancel_clear(agent_t *a) {
+  if (a) InterlockedExchange(&a->cancel, 0);
+}
+
+int agent_cancelled(agent_t *a) { return a ? (int)InterlockedCompareExchange(&a->cancel, 0, 0) : 0; }
+
+void agent_emit_delta(agent_t *a, const char *text) {
+  if (!a || !a->hooks.on_delta || !text || !*text) return;
+  a->hooks.on_delta(a->hooks.userdata, text);
+}
+
 void agent_add_history(agent_t *a, const char *role, const char *text) {
   if (!a) return;
   json_t *turn = j_obj();
   j_set_str(turn, "role", role);
   j_set_str(turn, "text", text);
   j_add(a->history, turn);
+  /* 历史只为"多轮指代"服务,不该无限膨胀 —— 留最近 20 条足够。 */
+  while (j_len(a->history) > 20) {
+    json_t *keep = j_arr();
+    for (int i = 1; i < j_len(a->history); i++)
+      j_add(keep, json_parse(json_dump(j_at(a->history, i))));
+    json_free(a->history);
+    a->history = keep;
+  }
+}
+
+int agent_history_count(agent_t *a) { return a ? j_len(a->history) : 0; }
+
+const char *agent_history_at(agent_t *a, int i, const char **role_out) {
+  if (!a || i < 0 || i >= j_len(a->history)) return NULL;
+  json_t *t = j_at(a->history, i);
+  if (role_out) *role_out = j_s(t, "role", "");
+  return j_s(t, "text", "");
 }
 
 /* ================= 反思:程序侧的收敛判定 =================
@@ -138,13 +173,21 @@ static int observed_blocker(json_t *observations, char **why) {
     return 1;
   }
   for (int i = 0; i < j_len(observations); i++) {
-    const char *res = j_s(j_at(observations, i), "result", "");
+    json_t *o = j_at(observations, i);
+    const char *res = j_s(o, "result", "");
+    int is_err = j_b(o, "is_error", 0);
+    /* 越权是硬事实,不挑文本:只要出现过就收束 */
     if (str_icontains(res, "不在授权池内") || str_icontains(res, "不在授权域名内")) {
       if (why) *why = xstrdup("目标不在授权范围内,已按合规要求停止");
       return 1;
     }
-    if (str_icontains(res, "全部请求都失败") || str_icontains(res, "不可达") ||
-        str_icontains(res, "连不上")) {
+    /* "不可达"必须落在**失败的那一条**上才算数。
+       以前是全文子串匹配,结果一段正常汇报里出现"2 个地址返回异常(5xx 或连不上)"
+       也会被当成整站不可达,整轮白跑 —— 这是误判,不是能力。 */
+    if (is_err &&
+        (str_icontains(res, "全部请求都失败") || str_icontains(res, "一次都没成功") ||
+         str_icontains(res, "目标不可达") || str_icontains(res, "连不上端口") ||
+         str_icontains(res, "域名解析不了"))) {
       if (why) *why = xstrdup("目标不可达,继续跑其他检查没有意义");
       return 1;
     }
@@ -250,6 +293,17 @@ static int run_step(agent_t *a, tool_ctx_t *ctx, const char *name, json_t *args,
                        sk ? sk->when : tl->description);
   }
 
+  /* —— 用户叫停 —— */
+  if (a->cancel) {
+    buf_t msg;
+    buf_init(&msg);
+    buf_puts(&msg, "已按你的要求停下,这一步没有执行。");
+    EMIT_ANSWER(a, msg.data);
+    observation_append(observations, name, args, msg.data, 1);
+    buf_free(&msg);
+    return -1;
+  }
+
   /* —— 权限审批 ——
      主流 Agent 的做法:动手之前先问一句。拒绝不是"报错",而是一条观察 ——
      模型能读到"这一步被拒了、原因是什么",然后换路子或老实收束。
@@ -326,6 +380,15 @@ int agent_run_turn(agent_t *a, const char *user_text, loop_state_t *st) {
   int findings_total = 0;
   int rc = 0;
 
+  /* 授权范围由智能体自己持有,并在本轮开始时落到本线程的取数通道上。
+     这样即使服务端同时在跑别的会话,本轮的边界也只认自己的那一份。 */
+  net_set_scope(a->task_id, (const char **)a->domains, a->domain_count);
+  net_scope_violation_clear();
+  agent_cancel_clear(a);
+  /* 叫停信号也接到取数通道上:一轮里有几十上百次请求,
+     只在步与步之间检查的话,"停止"点下去还要等半分钟才生效。 */
+  net_set_cancel(&a->cancel);
+
   /* 决策上下文:授权范围 + 运行编号 + 探测通道 + 存储 */
   tool_ctx_t ctx;
   memset(&ctx, 0, sizeof(ctx));
@@ -351,6 +414,24 @@ int agent_run_turn(agent_t *a, const char *user_text, loop_state_t *st) {
   const char *scope = a->scope_note.data ? a->scope_note.data : "";
 
   for (int step = 0; step < a->max_steps; step++) {
+    /* ---- 用户叫停:比任何反思都优先 ---- */
+    if (a->cancel) {
+      if (st) {
+        st->stop_code = STOP_CANCELLED;
+        snprintf(st->stop_reason, sizeof(st->stop_reason), "用户中途叫停");
+      }
+      buf_t n;
+      buf_init(&n);
+      buf_puts(&n, "已按你的要求停下。");
+      if (findings_total > 0)
+        buf_printf(&n, "停下前已确认 %d 条风险,详见结果卡片。", findings_total);
+      else
+        buf_puts(&n, "还没有确认到风险。");
+      EMIT_ANSWER(a, n.data);
+      buf_free(&n);
+      break;
+    }
+
     /* ---- 反思(先于决策):程序侧的硬性收敛判定 ---- */
     char *blocker = NULL;
     if (step > 0 && observed_blocker(observations, &blocker)) {
@@ -419,6 +500,27 @@ int agent_run_turn(agent_t *a, const char *user_text, loop_state_t *st) {
       rule_decide(user_text, scope, &d);        /* 降级:本地规则 */
       if (decided != 0 && llm_enabled()) {
         log_warn("模型决策不可用,已降级为本地规则(d=%d)", decided);
+      }
+      /* 规则只看用户这句话,不知道刚才已经做过什么。它选出的动作如果本轮
+         已经跑过,再跑一遍只是空转 —— 直接收尾,并把已有的结论说清楚。 */
+      if (d.kind == ACT_ACT && d.tool && d.tool[0]) {
+        int already = 0;
+        for (int i = 0; i < j_len(observations); i++) {
+          const char *t = j_s(j_at(observations, i), "tool", "");
+          if (t[0] && strcmp(t, d.tool) == 0) { already = 1; break; }
+        }
+        if (already) {
+          char *tool = d.tool ? xstrdup(d.tool) : NULL;
+          decision_free(&d);
+          d.kind = ACT_ANSWER;
+          buf_t n;
+          buf_init(&n);
+          buf_printf(&n, "「%s」这一轮已经跑完了,结论就在上面的结果里。", tool ? tool : "这项检查");
+          if (findings_total > 0) buf_printf(&n, "共确认 %d 条风险。", findings_total);
+          buf_puts(&n, "需要继续的话,可以针对某一条复测、出报告,或指定某个页面做更深的单点检查。");
+          d.text = buf_take(&n);
+          free(tool);
+        }
       }
     }
 
@@ -493,6 +595,8 @@ int agent_run_turn(agent_t *a, const char *user_text, loop_state_t *st) {
   }
 
   /* ---- 收尾:如果循环是"步数用完"退出的,要如实说明 ---- */
+  net_set_cancel(NULL);
+
   if (st && (st->stop_code == STOP_BUDGET || st->stop_code == STOP_NONE)) {
     buf_t n;
     buf_init(&n);

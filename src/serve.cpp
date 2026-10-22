@@ -36,15 +36,19 @@
 #include "ui.h"
 
 static store_t *g_store = NULL;
-static agent_t *g_agent = NULL;
 static CRITICAL_SECTION g_lock;
 static CRITICAL_SECTION g_status_lock;
 /* 会话状态用缓存发出去:外面查状态时绝不阻塞正在跑的循环 ——
    循环一跑就是几十秒,界面这时候不该卡住 */
 static char *g_status_cache = NULL;
 static char g_session[128] = "web-session";
-static char g_task[64] = "WEB-TASK";
-static char g_domain[256] = "";
+/* 当前任务的"展示态":谁最后发起巡检就显示谁。真正的合规边界不在这里 ——
+   那是 net 层的线程本地授权范围,多会话并发也不会互相污染。 */
+static char g_task_disp[64] = "WEB-TASK";
+static char g_domain_disp[256] = "";
+/* 本线程正在处理的目标与任务:审计行要记到正确的那一轮上,所以按线程隔离 */
+static thread_local char g_task[64] = "";
+static thread_local char g_domain[256] = "";
 /* 授权池:允许被检查的主机白名单(host 或 host:port)。
    以前这里是"一个全局巡检目标",那样做有两个毛病:
      · 换一个站就得先改全局设置,不然智能体被自己的配置挡住;
@@ -73,9 +77,12 @@ typedef struct {
   int tool_open;             /* 当前是否有打开的 tool_use 块 */
   char pending_note[512];    /* 比动作先到的状态说明,等卡片开出来再填 */
   int aborted;
+  buf_t answer;              /* 本轮说给用户的最终话(要落进会话转录) */
 } sse_ctx_t;
 
-static sse_ctx_t *g_sse = NULL;
+/* 每个连接线程各有一份直播上下文:一个会话在跑的时候,别的会话照样能开自己的流。
+   以前这里是全局单例,两个标签页同时说话会互相抢流 —— 表现就是"另一个页面卡住"。 */
+static thread_local sse_ctx_t *g_sse = NULL;
 
 static void sse_send(sse_ctx_t *c, const char *json) {
   if (!c || c->aborted) return;
@@ -292,6 +299,21 @@ static void hook_answer(void *ud, const char *text) {
   t_close_tool(c);
   t_put_text(c, text);
   t_close_text(c);
+  /* 记下最后一句:一轮结束时它是"这次对话的结论",要进会话转录 */
+  if (text && *text) {
+    buf_clear(&c->answer);
+    buf_puts(&c->answer, text);
+  }
+}
+
+/* 模型边收边到的正文:直接追加到当前文本块。
+   和"一步一跳"的思考相比,这是唯一能让人看到"模型在写字"的地方。 */
+static void hook_delta(void *ud, const char *text) {
+  (void)ud;
+  sse_ctx_t *c = g_sse;
+  if (!c || !text || !*text) return;
+  if (c->tool_open) t_close_tool(c);
+  t_put_text(c, text);
 }
 
 static void hook_ask(void *ud, const char *text) {
@@ -317,26 +339,34 @@ static void hook_ask(void *ud, const char *text) {
  * 超时按"拒绝"处理 —— 无人值守时宁可不动手。
  */
 typedef struct {
-  CRITICAL_SECTION lock;
   HANDLE event;
   char id[40];
   int decision;          /* 0 未定 / 1 允许 / 2 拒绝 */
   int pending;
 } approval_slot_t;
 
-static approval_slot_t g_appr;
+/* 审批槽做成"一组"而不是一个:两个会话同时撞上需要确认的动作时,
+   后来的那个不该把前一个的等待覆盖掉(覆盖的结果是前一轮永远等不到答复)。 */
+#define MAX_APPROVAL_SLOTS 8
+
+static approval_slot_t g_appr_slots[MAX_APPROVAL_SLOTS];
+static CRITICAL_SECTION g_appr_lock;
 static int g_appr_ready = 0;
 static volatile LONG g_appr_seq = 0;
 /* 定时任务不该被"询问"卡住:规则是你自己建的,到点就等同于预授权。
-   但它同样受授权池、只读、限速、审计约束 —— 少掉的只是"每步点一次"。 */
-static volatile LONG g_appr_unattended = 0;
+   但它同样受授权池、只读、限速、审计约束 —— 少掉的只是"每步点一次"。
+   线程本地:只有调度线程自己放行,不会顺手把用户会话里的确认也一起放过去。 */
+static thread_local int g_appr_unattended = 0;
 
 static void approval_init(void) {
   if (g_appr_ready) return;
-  InitializeCriticalSection(&g_appr.lock);
-  g_appr.event = CreateEventA(NULL, TRUE, FALSE, NULL);   /* 手动复位:决定一次只生效一次 */
-  g_appr.pending = 0;
-  g_appr.decision = 0;
+  InitializeCriticalSection(&g_appr_lock);
+  for (int i = 0; i < MAX_APPROVAL_SLOTS; i++) {
+    g_appr_slots[i].event = CreateEventA(NULL, TRUE, FALSE, NULL);  /* 手动复位:决定一次只生效一次 */
+    g_appr_slots[i].id[0] = 0;
+    g_appr_slots[i].pending = 0;
+    g_appr_slots[i].decision = 0;
+  }
   g_appr_ready = 1;
 }
 
@@ -363,16 +393,28 @@ static int hook_approval(void *ud, const char *tool, json_t *args, char **reason
     return 0;
   }
 
+  /* 占一个空槽:并发会话各等各的,互不覆盖 */
+  int seq = (int)InterlockedIncrement(&g_appr_seq);
   char id[40];
-  snprintf(id, sizeof(id), "ap-%ld-%04d", (long)GetCurrentProcessId(),
-           (int)InterlockedIncrement(&g_appr_seq));
+  snprintf(id, sizeof(id), "ap-%ld-%04d", (long)GetCurrentProcessId(), seq);
 
-  EnterCriticalSection(&g_appr.lock);
-  snprintf(g_appr.id, sizeof(g_appr.id), "%s", id);
-  g_appr.decision = 0;
-  g_appr.pending = 1;
-  ResetEvent(g_appr.event);
-  LeaveCriticalSection(&g_appr.lock);
+  approval_slot_t *slot = NULL;
+  EnterCriticalSection(&g_appr_lock);
+  for (int i = 0; i < MAX_APPROVAL_SLOTS; i++) {
+    if (!g_appr_slots[i].pending) { slot = &g_appr_slots[i]; break; }
+  }
+  if (slot) {
+    snprintf(slot->id, sizeof(slot->id), "%s", id);
+    slot->decision = 0;
+    slot->pending = 1;
+    ResetEvent(slot->event);
+  }
+  LeaveCriticalSection(&g_appr_lock);
+
+  if (!slot) {
+    if (reason) *reason = xstrdup("同时等待确认的动作太多了,这一步先不执行");
+    return 0;
+  }
 
   char *argtext = args ? json_dump(args) : NULL;
   buf_t b;
@@ -394,12 +436,12 @@ static int hook_approval(void *ud, const char *tool, json_t *args, char **reason
   ev_tool_status(c, c->tool_use_id, "waiting_approval", "等你确认:允许还是拒绝?");
 
   DWORD wait_ms = 15 * 60 * 1000;      /* 15 分钟没人理就当拒绝 */
-  DWORD got = WaitForSingleObject(g_appr.event, wait_ms);
+  DWORD got = WaitForSingleObject(slot->event, wait_ms);
 
-  EnterCriticalSection(&g_appr.lock);
-  int decision = g_appr.decision;
-  g_appr.pending = 0;
-  LeaveCriticalSection(&g_appr.lock);
+  EnterCriticalSection(&g_appr_lock);
+  int decision = slot->decision;
+  slot->pending = 0;
+  LeaveCriticalSection(&g_appr_lock);
 
   if (got != WAIT_OBJECT_0 || decision == 0) {
     if (reason) *reason = xstrdup("等你确认超时了,这一步没有执行");
@@ -412,7 +454,58 @@ static int hook_approval(void *ud, const char *tool, json_t *args, char **reason
 
 static const agent_hooks_t g_hooks = {
     NULL, hook_thinking, hook_action, hook_status,
-    hook_observation, hook_answer, hook_ask, hook_approval};
+    hook_observation, hook_answer, hook_ask, hook_approval, hook_delta};
+
+/* ================= 会话表(每个会话一个智能体实例) =================
+   并发的前提:每个会话有自己的历史、自己的步数、自己的审批等待。
+   共用同一个 agent 实例的话,两个标签页会互相改对方的对话上下文。 */
+#define MAX_AGENT_SLOTS 8
+typedef struct {
+  char id[64];
+  agent_t *a;
+  CRITICAL_SECTION lock;     /* 同一会话内串行:两个标签页点同一个会话也不会撞车 */
+} agent_slot_t;
+
+static agent_slot_t g_agents[MAX_AGENT_SLOTS];
+static int g_agent_count = 0;
+static CRITICAL_SECTION g_agent_lock;
+static agent_t *g_sched_agent = NULL;   /* 周期巡检专用,不和用户会话抢上下文 */
+
+static void agents_init(void) {
+  InitializeCriticalSection(&g_agent_lock);
+}
+
+static agent_slot_t *agent_slot_of(const char *sid) {
+  char key[64];
+  snprintf(key, sizeof(key), "%s", (sid && *sid) ? sid : g_session);
+  agent_slot_t *found = NULL;
+  EnterCriticalSection(&g_agent_lock);
+  for (int i = 0; i < g_agent_count; i++) {
+    if (strcmp(g_agents[i].id, key) == 0) { found = &g_agents[i]; break; }
+  }
+  if (!found && g_agent_count < MAX_AGENT_SLOTS) {
+    found = &g_agents[g_agent_count++];
+    snprintf(found->id, sizeof(found->id), "%s", key);
+    InitializeCriticalSection(&found->lock);
+    found->a = agent_create(found->id);
+    agent_set_store(found->a, g_store, "");
+    agent_set_hooks(found->a, &g_hooks);
+  }
+  LeaveCriticalSection(&g_agent_lock);
+  return found;
+}
+
+static agent_slot_t *agent_slot_find(const char *sid) {
+  char key[64];
+  snprintf(key, sizeof(key), "%s", (sid && *sid) ? sid : g_session);
+  agent_slot_t *found = NULL;
+  EnterCriticalSection(&g_agent_lock);
+  for (int i = 0; i < g_agent_count; i++) {
+    if (strcmp(g_agents[i].id, key) == 0) { found = &g_agents[i]; break; }
+  }
+  LeaveCriticalSection(&g_agent_lock);
+  return found;
+}
 
 /* ================= 会话状态 ================= */
 
@@ -530,6 +623,7 @@ static int pool_remove(const char *entry) {
 static void apply_scope(const char *domain) {
   if (domain && *domain) {
     snprintf(g_domain, sizeof(g_domain), "%s", domain);
+    snprintf(g_domain_disp, sizeof(g_domain_disp), "%s", domain);
     /* 授权范围只认主机名(端口不参与授权判断),但端口要拿去做"地址对齐":
        否则用户写 127.0.0.1 而站点在 8081 时,请求全会打到 443 上去。 */
     char host_only[256];
@@ -538,6 +632,10 @@ static void apply_scope(const char *domain) {
     net_align_base_from(domain);
     const char *doms[1];
     doms[0] = host_only;
+    /* 授权范围:池子按"主机 + 路径"判,所以给的是原始目标(保留子路径);
+       任务与报告按主机归档,用 host_only。 */
+    const char *scope_entry[1];
+    scope_entry[0] = domain;
     /* 授权范围一确定,就把"任务"与"敏感信息定义"落成正式业务对象:
        任务 = 授权域名 + 只读约束 + 用哪套定义。报告与历史页都引用它,
        这样"这次巡检为什么合法、按什么口径"是可查的,而不是只存在于会话里。 */
@@ -554,16 +652,24 @@ static void apply_scope(const char *domain) {
       char tname[320];
       snprintf(tname, sizeof(tname), "对 %s 的授权巡检", g_domain);
       char *tid = store_ensure_task(g_store, doms, 1, tname, pid);
-      if (tid) snprintf(g_task, sizeof(g_task), "%s", tid);
+      if (tid) {
+        snprintf(g_task, sizeof(g_task), "%s", tid);
+        snprintf(g_task_disp, sizeof(g_task_disp), "%s", tid);
+      }
       free(pid);
       free(tid);
       json_free(kws);
       json_free(fts);
     }
-    agent_set_scope(g_agent, g_task, doms, 1);
+    /* 合规边界落在线程本地(net 层):只有本线程后续的请求受它约束,
+       别的会话同时在跑也不会被这一行改掉。
+       注意这里传的是**带路径的原始目标**:目标写成 /l1/ 时,这一轮的边界
+       就是那棵子树 —— 只留主机名会把它悄悄放大成整站。 */
+    net_set_scope(g_task, scope_entry, 1);
   } else {
     g_domain[0] = 0;
-    agent_set_scope(g_agent, g_task, NULL, 0);
+    g_domain_disp[0] = 0;
+    net_set_scope(g_task, NULL, 0);
   }
 }
 
@@ -573,10 +679,10 @@ static char *build_status_json(void) {
   buf_puts(&b, "{\"ok\":true,\"sessionId\":");
   buf_json_str(&b, g_session);
   buf_puts(&b, ",\"taskId\":");
-  buf_json_str(&b, g_task);
+  buf_json_str(&b, g_task_disp);
   buf_puts(&b, ",\"domain\":");
-  buf_json_str(&b, g_domain);
-  buf_printf(&b, ",\"authorized\":%s", (g_domain[0] || net_pool_count() > 0) ? "true" : "false");
+  buf_json_str(&b, g_domain_disp);
+  buf_printf(&b, ",\"authorized\":%s", (g_domain_disp[0] || net_pool_count() > 0) ? "true" : "false");
   buf_puts(&b, ",\"pool\":");          /* 授权池:界面上"能检查谁"就照这个渲染 */
   buf_puts(&b, g_pool_json);
   buf_printf(&b, ",\"poolSize\":%d", net_pool_count());
@@ -681,7 +787,6 @@ static int token_ok(const http_req_t *req) {
   return t[0] && strcmp(t, g_token) == 0;
 }
 
-/* /api/* 的统一门禁:Host → Origin → 令牌 → POST 只收 JSON */
 /* /api/* 的统一门禁:Host → Origin → 令牌 → POST 只收 JSON。
    /api/health 是"存活探针",故意免令牌:它只回答"我在不在",不暴露任何数据,
    而运维脚本/端口探测(以及我们自己的"端口被占就换一个"逻辑)拿不到令牌。
@@ -1325,13 +1430,17 @@ static void h_approval_decision(const http_req_t *req, http_res_t *res) {
     return;
   }
   approval_init();
-  EnterCriticalSection(&g_appr.lock);
-  int match = g_appr.pending && strcmp(g_appr.id, id) == 0;
-  if (match) {
-    g_appr.decision = str_ieq(decision, "allow") ? 1 : 2;
-    SetEvent(g_appr.event);
+  int match = 0;
+  EnterCriticalSection(&g_appr_lock);
+  for (int i = 0; i < MAX_APPROVAL_SLOTS; i++) {
+    if (g_appr_slots[i].pending && strcmp(g_appr_slots[i].id, id) == 0) {
+      g_appr_slots[i].decision = str_ieq(decision, "allow") ? 1 : 2;
+      SetEvent(g_appr_slots[i].event);
+      match = 1;
+      break;
+    }
   }
-  LeaveCriticalSection(&g_appr.lock);
+  LeaveCriticalSection(&g_appr_lock);
   if (body) json_free(body);
   if (!match) {
     http_res_json(res, 409,
@@ -1400,7 +1509,7 @@ static DWORD WINAPI sched_thread(LPVOID param) {
   while (!g_sched_stop) {
     Sleep(1000);
     if (g_sched_stop) break;
-    if (!g_agent) break;
+    if (!g_sched_agent) break;
 
     if (!TryEnterCriticalSection(&g_lock)) continue;     /* 手动那一轮还在跑 */
 
@@ -1440,6 +1549,10 @@ static DWORD WINAPI sched_thread(LPVOID param) {
     log_info("周期巡检: %s → %s(范围 %s%s%s)", rule.id, rule.domain, sig,
              rule.profile_id[0] ? ",定义 " : "", rule.profile_id);
 
+    /* 规则已经认领、范围也设好了,就放开全局锁 —— 一轮巡检几十秒,
+       不能让别人(包括界面本身)在门外干等。 */
+    LeaveCriticalSection(&g_lock);
+
     /* 全流程巡检会自己建运行记录(技能内部);收窄范围的那些技能不建,
        所以这里替它建一份 —— 否则「这一轮跑了什么」在历史里看不见。 */
     int is_full = str_ieq(sig, "full");
@@ -1447,23 +1560,19 @@ static DWORD WINAPI sched_thread(LPVOID param) {
     char *wrap_run = NULL;
     if (!is_full) {
       wrap_run = store_run_start(g_store, g_task, "周期巡检", sig);
-      agent_set_store(g_agent, g_store, wrap_run ? wrap_run : "");
+      agent_set_store(g_sched_agent, g_store, wrap_run ? wrap_run : "");
     }
 
-    sse_ctx_t *saved_sse = g_sse;
-    g_sse = NULL;                       /* 无人值守:没有界面在等这些事件 */
     store_set_trigger("周期巡检");
-    InterlockedExchange(&g_appr_unattended, 1);
+    g_appr_unattended = 1;
     net_scope_violation_clear();        /* 每轮从零开始记越界 */
-    agent_add_history(g_agent, "user", instr);
     loop_state_t st;
     memset(&st, 0, sizeof(st));
-    int rc = agent_run_turn(g_agent, instr, &st);
+    int rc = agent_run_turn(g_sched_agent, instr, &st);
     int violated = net_scope_violation();
     net_scope_violation_clear();
-    InterlockedExchange(&g_appr_unattended, 0);
+    g_appr_unattended = 0;
     store_set_trigger("手动");
-    g_sse = saved_sse;
 
     char *run_id = is_full ? auto_latest_run_of_domain(g_store, rule.domain)
                            : (wrap_run ? xstrdup(wrap_run) : NULL);
@@ -1473,7 +1582,7 @@ static DWORD WINAPI sched_thread(LPVOID param) {
       json_free(fs);
       store_run_finish(g_store, wrap_run, rc == 0 ? "done" : "failed",
                        0, net_http_calls() - calls_before, nf, rc == 0 ? "" : "巡检未正常收束");
-      agent_set_store(g_agent, g_store, "");
+      agent_set_store(g_sched_agent, g_store, "");
     }
 
     int changed = 0;
@@ -1497,7 +1606,6 @@ static DWORD WINAPI sched_thread(LPVOID param) {
     apply_profile(prev_profile);
     if (prev_task[0]) snprintf(g_task, sizeof(g_task), "%s", prev_task);
     refresh_status_cache();
-    LeaveCriticalSection(&g_lock);
   }
   return 0;
 }
@@ -1836,6 +1944,8 @@ static void h_pool(const http_req_t *req, http_res_t *res) {
   buf_free(&b);
 }
 
+static char *attach_read(const char *sid, const char *id, size_t cap, size_t *out_len);
+
 static void h_chat(const http_req_t *req, http_res_t *res) {
   char q[4096];
   http_query(req, "q", q, sizeof(q), "");
@@ -1851,10 +1961,60 @@ static void h_chat(const http_req_t *req, http_res_t *res) {
     return;
   }
 
+  /* 会话 id 先读出来:附件是按会话存的,拼输入时要用 */
+  char sid[64];
+  http_query(req, "sid", sid, sizeof(sid), "");
+
+  /* 附件:文本内容拼进这一轮输入(模型能读),图片只存档并如实注明(模型读不了)。
+     把"贴日志"变成一句话的事 —— 让人自己转述是给使用者添麻烦。 */
+  buf_t input;
+  buf_init(&input);
+  buf_puts(&input, q);
+  json_t *att_list = j_arr();
+  {
+    char att_ids[1024];
+    http_query(req, "att", att_ids, sizeof(att_ids), "");
+    if (att_ids[0]) {
+      char **ids = NULL;
+      int n = str_split(att_ids, ',', &ids, 0);
+      int budget = 24000;                     /* 总量上限:别把提示词撑爆 */
+      for (int i = 0; i < n; i++) {
+        char *id = str_trim(ids[i]);
+        if (!id[0]) continue;
+        json_t *a = j_obj();
+        j_set_str(a, "id", id);
+        j_set_str(a, "kind", str_startswith(id, "img-") ? "image" : "text");
+        if (str_startswith(id, "img-")) {
+          j_add(att_list, a);
+          buf_printf(&input,
+                     "\n\n[附件] %s(图片已存档;当前模型不支持读图,不要据此推断图片内容)", id);
+          continue;
+        }
+        size_t len = 0;
+        char *text = attach_read(sid, id, 8000, &len);
+        if (!text) { json_free(a); continue; }
+        j_add(att_list, a);
+        buf_printf(&input, "\n\n【用户附上的材料:%s】\n", id);
+        int take = (int)len;
+        if (take > budget) take = budget;
+        buf_putn(&input, text, (size_t)take);
+        budget -= take;
+        free(text);
+        if (budget <= 0) {
+          buf_puts(&input, "\n(附件总量已达上限,后续附件内容从略)");
+          break;
+        }
+      }
+      str_free_list(ids, n);
+    }
+  }
+
   /* 这一轮看哪个站由请求带(不是全局设定),但必须落在授权池里。
-     越池的目标在这里就挡掉,连 SSE 都不开 —— 省得模型白跑一轮。 */
+     越池的目标在这里就挡掉,连 SSE 都不开 —— 省得模型白跑一轮。
+     没带目标就沿用上一次的焦点,这样"接着刚才那个站继续"不用重复输入。 */
   char target[256];
   http_query(req, "target", target, sizeof(target), "");
+  if (!target[0]) snprintf(target, sizeof(target), "%s", g_domain_disp);
   if (target[0]) {
     if (!pool_contains(target)) {
       buf_t msg;
@@ -1874,24 +2034,65 @@ static void h_chat(const http_req_t *req, http_res_t *res) {
     apply_scope(target);
     LeaveCriticalSection(&g_lock);
   }
-  net_scope_violation_clear();       /* 每轮从零开始记越界 */
+
+  /* 会话 id:界面每个标签页带一个。不同会话各有各的上下文与授权范围,
+     两个页面可以同时干活;同一会话内则串行,免得互相改历史。 */
+  agent_slot_t *slot = agent_slot_of(sid);
+  if (!slot) {
+    http_res_json(res, 503,
+                  "{\"ok\":false,\"error\":\"同时打开的会话太多了,先关掉一个再试\"}");
+    return;
+  }
 
   if (!http_sse_begin(res)) return;
 
   sse_ctx_t ctx;
   memset(&ctx, 0, sizeof(ctx));
   ctx.res = res;
+  buf_init(&ctx.answer);
   EnterCriticalSection(&g_lock);
   snprintf(ctx.message_id, sizeof(ctx.message_id), "msg-%04d", ++g_turn_seq);
+  LeaveCriticalSection(&g_lock);
   ev_message_start(&ctx);
 
-  /* 循环是同步跑的,hooks 从 g_sse 里拿直播口 */
-  g_sse = &ctx;
-  agent_add_history(g_agent, "user", q);
+  /* 会话转录:先记"用户说了什么"。这样即使这一轮中途崩掉,
+     历史里也不会只剩半句话 —— 用户回看时能看出是从哪儿断的。 */
+  {
+    json_t *ev = j_obj();
+    char ts[40];
+    now_iso(ts, sizeof(ts));
+    j_set_str(ev, "role", "user");
+    j_set_str(ev, "text", q);
+    j_set_str(ev, "time", ts);
+    if (target[0]) j_set_str(ev, "target", target);
+    if (j_len(att_list) > 0) j_set(ev, "attachments", att_list);
+    else json_free(att_list);
+    store_transcript(g_store, sid, ev);
+    json_free(ev);
+  }
+  store_set_chat(sid);
+
+  /* —— 从这里开始不再持有全局锁:一轮几十秒,别人(尤其是界面自己的状态轮询)
+        不能在门外干等。共享数据一律走各自的锁(store 自带锁,状态缓存自带锁)。 —— */
+  EnterCriticalSection(&slot->lock);
+
+  /* 这一轮的授权范围落在线程本地,并由智能体自己持有 —— 别的会话同时在跑,
+     边界也不会被串改。 */
+  if (g_domain[0]) {
+    const char *domvs[1];
+    domvs[0] = g_domain;              /* 带路径:这一轮就只看这棵子树 */
+    agent_set_scope(slot->a, g_task, domvs, 1);
+  } else {
+    agent_set_scope(slot->a, g_task, NULL, 0);
+  }
+
+  net_scope_violation_clear();       /* 每轮从零开始记越界 */
+  g_sse = &ctx;                      /* 线程本地:只影响本连接 */
   loop_state_t st;
   memset(&st, 0, sizeof(st));
-  agent_run_turn(g_agent, q, &st);
+  agent_run_turn(slot->a, input.data ? input.data : q, &st);
   g_sse = NULL;
+  buf_free(&input);
 
   const char *reason = st.stop_reason[0] ? st.stop_reason : "已完成";
   const char *stop = (st.stop_code == STOP_NEED_USER) ? "refusal" : "end_turn";
@@ -1912,8 +2113,160 @@ static void h_chat(const http_req_t *req, http_res_t *res) {
 
   buf_free(&st.transcript);
   if (st.steps) json_free(st.steps);
+
+  /* 会话转录:再记"智能体说了什么",以及这一轮为什么停 ——
+     点开历史对话时,能原样看到当时的结论,而不是只有一条运行记录。 */
+  {
+    json_t *ev = j_obj();
+    char ts[40];
+    now_iso(ts, sizeof(ts));
+    j_set_str(ev, "role", "assistant");
+    j_set_str(ev, "text", ctx.answer.data ? ctx.answer.data : "");
+    j_set_str(ev, "time", ts);
+    j_set_str(ev, "stop", reason);
+    j_set_num(ev, "steps", st.step_count);
+    if (target[0]) j_set_str(ev, "target", target);
+    store_transcript(g_store, sid, ev);
+    json_free(ev);
+  }
+  store_set_chat("");
+  buf_free(&ctx.answer);
+  LeaveCriticalSection(&slot->lock);
   refresh_status_cache();
-  LeaveCriticalSection(&g_lock);
+}
+
+/* ================= 附件(贴日志 / 传截图) =================
+   为什么要有:巡检里最常见的求助是"这段报错什么意思""这张后台截图哪里不对"。
+   让人把内容转成文字再贴进来,是把工具的麻烦转嫁给使用者。
+   这里只做两件事:把文件**存进本条会话**、把文本内容**拼进这一轮的输入**。
+   图片当前模型读不了 —— 那就如实存档并展示,不假装"我看懂了这张图"。 */
+static void h_attach(const http_req_t *req, http_res_t *res) {
+  if (strcmp(req->method, "POST") != 0) {
+    http_res_json(res, 405, "{\"ok\":false,\"error\":\"只接受 POST\"}");
+    return;
+  }
+  json_t *body = req->body ? json_parse(req->body) : NULL;
+  if (!body) {
+    http_res_json(res, 400, "{\"ok\":false,\"error\":\"请求体不是合法 JSON\"}");
+    return;
+  }
+  const char *sid = j_s(body, "sid", "");
+  const char *name = j_s(body, "name", "attachment");
+  const char *kind = j_s(body, "kind", "text");
+  const char *text = j_s(body, "text", "");
+  if (!text[0]) {
+    json_free(body);
+    http_res_json(res, 400, "{\"ok\":false,\"error\":\"附件是空的\"}");
+    return;
+  }
+  char safe_sid[64], safe_name[96];
+  snprintf(safe_sid, sizeof(safe_sid), "%s", (sid && *sid) ? sid : "default");
+  for (char *p = safe_sid; *p; p++) {
+    if (!isalnum((unsigned char)*p) && *p != '-' && *p != '_') *p = '_';
+  }
+  snprintf(safe_name, sizeof(safe_name), "%s", (name && *name) ? name : "attachment");
+  for (char *p = safe_name; *p; p++) {
+    if (!isalnum((unsigned char)*p) && *p != '-' && *p != '_' && *p != '.') *p = '_';
+  }
+
+  char dir[MAX_PATH * 2], path[MAX_PATH * 4];
+  path_join(dir, sizeof(dir), g_data_dir, "attachments");
+  path_join(dir, sizeof(dir), dir, safe_sid);
+  ensure_dir(dir);
+
+  /* id 就是文件名:kind + 毫秒时间戳 + 原名。不引入额外索引,
+     回看会话时按 id 就能取到内容。 */
+  char id[MAX_PATH];
+  snprintf(id, sizeof(id), "%s-%lld-%s", str_ieq(kind, "image") ? "img" : "txt",
+           (long long)now_ms(), safe_name);
+  path_join(path, sizeof(path), dir, id);
+  size_t len = strlen(text);
+  file_write_all(path, text, len);
+
+  json_t *out = j_obj();
+  j_set_bool(out, "ok", 1);
+  j_set_str(out, "id", id);
+  j_set_str(out, "name", name ? name : "");
+  j_set_str(out, "kind", str_ieq(kind, "image") ? "image" : "text");
+  j_set_num(out, "size", (double)len);
+  char *dump = json_dump(out);
+  http_res_json(res, 200, dump);
+  free(dump);
+  json_free(out);
+  json_free(body);
+}
+
+/* 取附件内容:只认 attachments/<sid>/ 下的文件,id 里不许有路径分隔符 */
+static char *attach_read(const char *sid, const char *id, size_t cap, size_t *out_len) {
+  if (out_len) *out_len = 0;
+  if (!sid || !id || !*id) return NULL;
+  if (strchr(id, '\\') || strchr(id, '/') || strstr(id, "..")) return NULL;
+  char safe_sid[64];
+  snprintf(safe_sid, sizeof(safe_sid), "%s", sid);
+  for (char *p = safe_sid; *p; p++) {
+    if (!isalnum((unsigned char)*p) && *p != '-' && *p != '_') *p = '_';
+  }
+  char dir[MAX_PATH * 2], path[MAX_PATH * 4];
+  path_join(dir, sizeof(dir), g_data_dir, "attachments");
+  path_join(dir, sizeof(dir), dir, safe_sid);
+  path_join(path, sizeof(path), dir, id);
+  size_t len = 0;
+  char *text = file_read_all(path, &len);
+  if (!text) return NULL;
+  if (len > cap) {
+    text[cap] = 0;
+    len = cap;
+  }
+  if (out_len) *out_len = len;
+  return text;
+}
+
+/* 会话列表与回看:界面左栏点一条,就能回到那次对话 */
+static void h_chats(const http_req_t *req, http_res_t *res) {
+  char sid[64];
+  http_query(req, "sid", sid, sizeof(sid), "");
+  if (sid[0]) {
+    json_t *msgs = store_transcript_read(g_store, sid);
+    json_t *root = j_obj();
+    j_set_bool(root, "ok", 1);
+    j_set_str(root, "id", sid);
+    j_set(root, "messages", msgs);
+    char *text = json_dump(root);
+    http_res_json(res, 200, text);
+    free(text);
+    json_free(root);
+    return;
+  }
+  json_t *list = store_transcript_list(g_store);
+  json_t *root = j_obj();
+  j_set_bool(root, "ok", 1);
+  j_set(root, "items", list);
+  char *text = json_dump(root);
+  http_res_json(res, 200, text);
+  free(text);
+  json_free(root);
+}
+
+/* 用户点"停止":把信号打给正在跑的那一轮。
+   循环在每一步、每一次请求发出之前都会看这个标志,所以能立刻撒手。 */
+static void h_cancel(const http_req_t *req, http_res_t *res) {
+  char sid[64];
+  http_query(req, "sid", sid, sizeof(sid), "");
+  if (!sid[0] && req->body) {
+    json_t *body = json_parse(req->body);
+    if (body) {
+      snprintf(sid, sizeof(sid), "%s", j_s(body, "sid", ""));
+      json_free(body);
+    }
+  }
+  agent_slot_t *slot = agent_slot_find(sid);
+  if (!slot) {
+    http_res_json(res, 404, "{\"ok\":false,\"error\":\"没有这个会话\"}");
+    return;
+  }
+  int was = agent_cancelled(slot->a);
+  agent_cancel(slot->a);
+  http_res_json(res, 200, was ? "{\"ok\":true,\"already\":true}" : "{\"ok\":true}");
 }
 
 static void router(const http_req_t *req, http_res_t *res, void *ud) {
@@ -1942,8 +2295,10 @@ static void router(const http_req_t *req, http_res_t *res, void *ud) {
     if (!strcmp(p, "/api/data")) { h_collection(req, res); return; }
     if (!strcmp(p, "/api/scope")) { h_scope(req, res); return; }
     if (!strcmp(p, "/api/pool")) { h_pool(req, res); return; }
-    if (!strcmp(p, "/api/chat")) { h_chat(req, res); return; }
-    if (!strcmp(p, "/api/config/list")) { h_config_list(req, res); return; }
+    if (!strcmp(p, "/api/cancel")) { h_cancel(req, res); return; }
+    if (!strcmp(p, "/api/chats")) { h_chats(req, res); return; }
+    if (!strcmp(p, "/api/attach")) { h_attach(req, res); return; }
+    if (!strcmp(p, "/api/chat")) { h_chat(req, res); return; }    if (!strcmp(p, "/api/config/list")) { h_config_list(req, res); return; }
     if (!strcmp(p, "/api/config")) {
       if (strcmp(req->method, "POST") == 0) h_config_save(req, res);
       else h_config_get(req, res);
@@ -2024,9 +2379,11 @@ int serve_run(const char *domain, int port, int open_ui) {
   /* 本次运行的接口令牌与端口:界面页面里会带上它,跨站请求拿不到 */
   g_port = port;
   make_token(g_token, sizeof(g_token));
-  g_agent = agent_create(g_session);
-  agent_set_store(g_agent, g_store, "");
-  agent_set_hooks(g_agent, &g_hooks);
+  agents_init();
+  approval_init();
+  g_sched_agent = agent_create("scheduler");
+  agent_set_store(g_sched_agent, g_store, "");
+  agent_set_hooks(g_sched_agent, &g_hooks);
   apply_scope(domain);
   refresh_status_cache();
 
@@ -2066,7 +2423,13 @@ int serve_run(const char *domain, int port, int open_ui) {
   printf("服务已停止。\n");
   ui_close();
   int port_busy = (serve_rc != 0) && str_icontains(http_last_error(), "占用");
-  agent_free(g_agent);
+  for (int i = 0; i < g_agent_count; i++) {
+    agent_free(g_agents[i].a);
+    DeleteCriticalSection(&g_agents[i].lock);
+  }
+  g_agent_count = 0;
+  agent_free(g_sched_agent);
+  g_sched_agent = NULL;
   store_close(g_store);
   free(g_status_cache);
   DeleteCriticalSection(&g_status_lock);

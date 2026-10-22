@@ -90,6 +90,7 @@ enum {
   STOP_OUT_OF_SCOPE,    /* 目标不在授权范围内 */
   STOP_ERROR,           /* 出错且不可恢复 */
   STOP_ANSWERING_ONLY,  /* 本轮是纯问答,不需要动手 */
+  STOP_CANCELLED,       /* 用户中途叫停 */
 };
 
 /* 循环的执行环境:工具表、技能表、上下文、界面回推通道 */
@@ -113,11 +114,19 @@ typedef struct {
   /* 动手之前的权限审批:返回 1 放行、0 拒绝(拒绝理由写进 reason,调用方 free)。
      不实现(为 NULL)等价于"全部允许" —— 命令行与自检走这条路。 */
   int (*on_approval)(void *ud, const char *tool, json_t *args, char **reason);
+  /* 模型边收边到的正文增量(流式)。决策 JSON 不会被送到这里 —— 那不是给人看的。 */
+  void (*on_delta)(void *ud, const char *text);
 } agent_hooks_t;
 
 /* ---------- 生命周期 ---------- */
 agent_t *agent_create(const char *session_id);
 void     agent_free(agent_t *a);
+/* 叫停本轮:任何线程都可以调,循环在下一步之前读到并收束 */
+void     agent_cancel(agent_t *a);
+void     agent_cancel_clear(agent_t *a);
+int      agent_cancelled(agent_t *a);
+/* 把模型边收边到的正文推给界面(流式) */
+void     agent_emit_delta(agent_t *a, const char *text);
 void     agent_set_hooks(agent_t *a, const agent_hooks_t *hooks);
 /* 当前任务的授权域名(合规边界,循环里每次动手前都要过) */
 void     agent_set_scope(agent_t *a, const char *task_id, const char **domains, int n);
@@ -125,6 +134,9 @@ void     agent_set_scope(agent_t *a, const char *task_id, const char **domains, 
 void     agent_set_store(agent_t *a, void *store, const char *run_id);
 /* 对话历史(多轮上下文,决定"这轮说的是哪个站"时要用) */
 void     agent_add_history(agent_t *a, const char *role, const char *text);
+/* 读历史:决策提示词要把最近几轮带上,否则"继续""换到那个站"没法消解 */
+int        agent_history_count(agent_t *a);
+const char *agent_history_at(agent_t *a, int i, const char **role_out);
 
 /* ---------- 核心:一轮对话 = 一次完整循环 ---------- */
 /* 返回 0 表示循环正常收束;结果通过 hooks 推出去,同时写进 loop_state */
