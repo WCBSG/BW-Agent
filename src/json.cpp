@@ -1,4 +1,4 @@
-/* json.c —— 极简 JSON 实现。
+/* json.cpp —— 极简 JSON 实现。
    递归下降解析,不依赖任何第三方库。字符串按 UTF-8 原样保留,
    \uXXXX 转义会还原成 UTF-8(中文常以这种形式出现)。 */
 #include "json.h"

@@ -1,9 +1,11 @@
-/* store.c —— 落盘层实现。
+/* store.cpp —— 落盘层实现。
    形态严格照抄 domain.md §11:结果类 JSONL 追加,配置/记录类一对象一文件。
    "只追加"的代价是同一 id 会留下多行,所以读的时候要取最后一行(store_all 已处理)。 */
 #include "store.h"
 
-#include <ctype.h>
+#include <cctype>
+#include <string>
+#include <unordered_set>
 
 struct store {
   char dir[MAX_PATH * 2];
@@ -172,7 +174,11 @@ json_t *store_all(store_t *s, const char *collection) {
     if (!text) return arr;
 
     /* 文件是"只追加"的,同一个 id 会留下多个版本 —— 从后往前挑,
-       每个 id 只保留最后一次出现的那份(那才是最新状态)。 */
+       每个 id 只保留最后一次出现的那份(那才是最新状态)。
+       原来这里对每个 id 线性扫一遍已收集的列表(O(n²));换成 unordered_set
+       边挑边记,1 万条发现也只是毫秒级。
+       顺便去掉一次深拷贝:命中的节点直接从 raw 里"摘下来"交给 arr,
+       所以 raw->items[i] 置空,之后 json_free(raw) 不会重复释放。 */
     json_t *raw = j_arr();
     char **lines = NULL;
     int n = str_split(text, '\n', &lines, 0);
@@ -185,18 +191,15 @@ json_t *store_all(store_t *s, const char *collection) {
     str_free_list(lines, n);
     free(text);
 
+    std::unordered_set<std::string> seen;
+    seen.reserve((size_t)j_len(raw));
     for (int i = j_len(raw) - 1; i >= 0; i--) {
       json_t *o = j_at(raw, i);
+      if (!o) continue;
       const char *id = j_s(o, "id", "");
-      int dup = 0;
-      for (int k = 0; k < j_len(arr); k++) {
-        if (strcmp(j_s(j_at(arr, k), "id", ""), id) == 0) { dup = 1; break; }
-      }
-      if (!dup) {
-        char *tmp = json_dump(o);
-        j_add(arr, json_parse(tmp));
-        free(tmp);
-      }
+      if (!seen.insert(id).second) continue;      /* 已经有更新的版本了 */
+      raw->items[i] = NULL;                       /* 所有权转移给 arr */
+      j_add(arr, o);
     }
     json_free(raw);
 

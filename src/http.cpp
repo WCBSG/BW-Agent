@@ -1,4 +1,4 @@
-/* http.c —— 内置本地 HTTP + SSE 服务的实现。
+/* http.cpp —— 内置本地 HTTP + SSE 服务的实现。
  * 只用 winsock2,不引第三方库。连接按需起线程:SSE 是长连接,
  * 不能让它把其它请求(界面要取 html/css/js)堵在门外。
  */

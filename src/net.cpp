@@ -1,4 +1,4 @@
-/* net.c —— WinHTTP 取数 + 合规三件事(授权/限速/审计)。
+/* net.cpp —— WinHTTP 取数 + 合规三件事(授权/限速/审计)。
    为什么用 WinHTTP 而不是 WinINet:WinHTTP 不依赖 IE 设置、可指定 TLS、
    更适合服务型程序(这正是智能体后端的形态)。 */
 #include "net.h"

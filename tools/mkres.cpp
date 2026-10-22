@@ -1,15 +1,15 @@
 /* mkres.c —— 构建期小工具:把界面与默认规则打包成一份 C 数组。
  *
  * 用法:  mkres <输出.c> <名字=文件> [<名字=文件> ...]
- * 例:    mkres src\resources.c ui/index.html=ui\index.html data/rules.json=data\rules.json
+ * 例:    mkres build\resources.cpp ui/index.html=ui\index.html data/rules.json=data\rules.json
  *
  * 为什么要有这个:交付目标是"一个 exe 双击就能用",所以界面和默认规则必须在
  * 可执行文件里,而不是依赖旁边的目录。用 C 数组而不是资源段,是为了不依赖
  * objcopy/rc 之类的外部工具 —— 只要 gcc 就能编出来。
  */
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
 
 /* 把"名字"变成合法的 C 标识符后缀(里面可能有 / 或 . ) */
 static void ident_of(const char *name, char *out, size_t cap) {
@@ -53,7 +53,7 @@ static int write_one(FILE *out, const char *name, const char *path) {
 
 int main(int argc, char **argv) {
   if (argc < 3) {
-    fprintf(stderr, "用法: mkres <输出.c> <名字=文件> [<名字=文件> ...]\n");
+    fprintf(stderr, "用法: mkres <输出.cpp> <名字=文件> [<名字=文件> ...]\n");
     return 2;
   }
   char **names = (char **)calloc((size_t)(argc - 2), sizeof(char *));
@@ -88,9 +88,9 @@ int main(int argc, char **argv) {
     return 1;
   }
   fprintf(out,
-          "/* resources.c —— 由 tools/mkres.c 自动生成,请勿手改。\n"
+          "/* resources.cpp —— 由 tools/mkres.cpp 自动生成,请勿手改。\n"
           "   内容:界面三件套 + 默认规则。改了 ui/ 或 data/rules.json 后重新构建即可。 */\n"
-          "#include \"embed.h\"\n#include <string.h>\n\n");
+          "#include \"embed.h\"\n#include <cstring>\n\n");
   rewind(body);
   int c;
   while ((c = fgetc(body)) != EOF) fputc(c, out);

@@ -1,4 +1,4 @@
-/* llm.c —— 恒脑接入 + 决策解析 + 本地规则降级。
+/* llm.cpp —— 恒脑接入 + 决策解析 + 本地规则降级。
    平台鉴权照抄文档:sign = 毫秒时间戳 + Base64(HMAC-SHA256(appSecret,
    "{时间戳}\n{appSecret}\n{appKey}")),有效期 60 分钟 → 每次请求现签。 */
 #include "llm.h"

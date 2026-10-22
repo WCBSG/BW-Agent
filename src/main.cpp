@@ -1,4 +1,4 @@
-/* main.c —— 命令行入口。
+/* main.cpp —— 命令行入口。
    先把它当成"装配台":每个子系统都暴露一个 selftest,合起来就是整体自检。 */
 #include "agent.h"
 #include "common.h"
@@ -191,7 +191,7 @@ static void selftest_llm(void) {
 /* ---------- 技能与循环自检(不联网:用假取数通道) ---------- */
 static int fake_fetch(void *ud, const char *url, const char *method,
                       int *status, char **body, size_t *body_len, char **err) {
-  const char *host_page = (void *)ud;
+  const char *host_page = static_cast<const char *>(ud);
   (void)host_page;
   /* 模拟:/.env 返回凭据内容;xxxx-unreachable 主机连不上;其余返回普通页面 */
   if (strstr(url, "xxxx-unreachable")) {

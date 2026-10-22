@@ -1,10 +1,10 @@
-# 网站安全巡检智能体（C 版）
+# 网站安全巡检智能体（C++ 版）
 
 **一个 exe，双击就能用。** 它自己决定下一步查什么、什么时候该停，
 并且**不知道答案时会说"没结论"**，而不是硬报一个"未发现问题"。
 
 - 交付物：`build\网站安全巡检智能体.exe`（单文件，界面与默认规则都在里面）
-- 后端：纯 C（`src/` 约 1.1 万行），**零第三方依赖** —— 不要 Python、不要 Node、不要运行库
+- 后端：C++20（`src/` 约 1.3 万行），**零第三方依赖** —— 不要 Python、不要 Node、不要额外运行库；libstdc++/libgcc 已静态链入，目标机器只要有系统 DLL 即可
 - 界面：自建网页界面（侧边栏工作台 + 亮/暗双主题 + 8 个页面），由程序内置
 - 数据：默认放 `C:\Users\<用户名>\.bw_agent`
 
@@ -57,7 +57,7 @@ build\agent.exe run skill_full_inspection 127.0.0.1:8899    单跑一个技能�
 build\agent.exe tool dir_probe 127.0.0.1:8899               单跑一个工具
 build\agent.exe chat 127.0.0.1:8899     在终端里对话
 build\agent.exe rules                   导出当前生效规则
-build\build.bat                          重新编译（需要 gcc）
+build\build.bat                          重新编译（需要 g++ / MinGW-w64）
 ```
 
 > `UI_MODE=off` 只起服务不开窗口（定时任务/自动化用）。
@@ -239,9 +239,9 @@ build\agent.exe run skill_我的技能
 ## 四、三层结构(为什么它是「智能体」)
 
 ```
-循环(loop)  ─ 大脑：感知 → 决策 → 行动 → 观察 → 反思 → 收敛      src/agent.c
-技能(skill) ─ 能力：一件事的完整做法与判定                        src/skills.c  src/skills_closure.c
-工具(tool)  ─ 手：一次原子动作，只做只读取数与客观判断             src/tools.c
+循环(loop)  ─ 大脑：感知 → 决策 → 行动 → 观察 → 反思 → 收敛      src/agent.cpp
+技能(skill) ─ 能力：一件事的完整做法与判定                        src/skills.cpp  src/skills_closure.cpp
+工具(tool)  ─ 手：一次原子动作，只做只读取数与客观判断             src/tools.cpp
 ```
 
 **工具（8 个）**：`site_crawl` 资产发现 / `sensitive_file_probe` 落点探测 / `dir_probe` 目录探测 /
@@ -363,22 +363,22 @@ build\agent.exe run skill_我的技能
 │   └─ agent.exe                  同源产物,命令行工具形态
 ├─ build.bat                      一键编译:生成内置资源 → 编译 → 输出单文件 exe
 ├─ 启动.bat / start.bat            启动入口(可选;exe 本身也能直接双击)
-├─ tools/mkres.c                  构建期小工具:把界面与规则转成 C 数组编进 exe
+├─ tools/mkres.cpp                构建期小工具:把界面与规则转成 C++ 数组编进 exe
 ├─ .env.example                   大模型凭证样例(复制成 .env 填自己的密钥)
-├─ src/                           后端源码(约 1.1 万行,零第三方依赖)│   ├─ main.c                     入口:零参数启动 / selftest / run / tool / chat / serve / rules
-│   ├─ agent.c                    循环:决策、执行、观察、反思、收敛
-│   ├─ ext.c ext.h                扩展层:外部工具、技能包、MCP 客户端(都在数据目录里读)
-│   ├─ skills.c skills_closure.c   技能:检查类 + 收尾类(复测/报告/评测)
-│   ├─ tools.c                    工具:8 个原子动作 + 通用探测手法
-│   ├─ rules.c                    规则层:数据目录/磁盘/内置三级查找
-│   ├─ res.c embed.h              资源层:磁盘优先、exe 内置兜底
-│   ├─ webutil.c                  通用网页处理:指纹、归一、响应头、链接、URL 参数
-│   ├─ net.c                      取数通道:WinHTTP + 授权/限速/审计
-│   ├─ llm.c                      大模型接入(恒脑)与本地规则降级
-│   ├─ store.c                    落盘层:业务对象、去重、状态机、快照
-│   ├─ http.c serve.c             自写 HTTP/1.1 + SSE + 路由与只读数据接口
-│   ├─ json.c common.c            自写 JSON、缓冲、编码、时间、路径、数据目录解析
-│   ├─ app.rc ui.c                图标/版本信息、界面宿主(三级降级)
+├─ src/                           后端源码(约 1.3 万行, C++20, 零第三方依赖)│   ├─ main.cpp                   入口:零参数启动 / selftest / run / tool / chat / serve / rules
+│   ├─ agent.cpp                  循环:决策、执行、观察、反思、收敛
+│   ├─ ext.cpp ext.h                扩展层:外部工具、技能包、MCP 客户端(都在数据目录里读)
+│   ├─ skills.cpp skills_closure.c   技能:检查类 + 收尾类(复测/报告/评测)
+│   ├─ tools.cpp                  工具:8 个原子动作 + 通用探测手法
+│   ├─ rules.cpp                  规则层:数据目录/磁盘/内置三级查找
+│   ├─ res.cpp embed.h              资源层:磁盘优先、exe 内置兜底
+│   ├─ webutil.cpp                通用网页处理:指纹、归一、响应头、链接、URL 参数
+│   ├─ net.cpp                    取数通道:WinHTTP + 授权/限速/审计
+│   ├─ llm.cpp                    大模型接入(恒脑)与本地规则降级
+│   ├─ store.cpp                  落盘层:业务对象、去重、状态机、快照
+│   ├─ http.cpp serve.c             自写 HTTP/1.1 + SSE + 路由与只读数据接口
+│   ├─ json.cpp common.c            自写 JSON、缓冲、编码、时间、路径、数据目录解析
+│   ├─ app.rc ui.cpp              图标/版本信息、界面宿主(三级降级)
 │   └─ ui/                        界面源码(编译时被打进 exe)
 ├─ ui/                            界面源码(index.html / app.css / app.js / logo.ico)
 ├─ data/                          开发目录里的规则与测试集(rules.json / testcases.jsonl)
@@ -420,8 +420,8 @@ build\agent.exe run skill_我的技能
 
 ### 单文件是怎么做到的
 
-`tools/mkres.c` 在构建期把 `ui/` 三件套 + 图标 + 出厂规则转成一个 C 数组
-（`build/resources.c`），与源码一起编译链接，所以 exe 自己就能提供界面与规则。
+`tools/mkres.cpp` 在构建期把 `ui/` 三件套 + 图标 + 出厂规则转成一个 C++ 数组
+（`build/resources.cpp`），与源码一起编译链接，所以 exe 自己就能提供界面与规则。
 运行时**磁盘优先、内置兜底**：放一份 `ui\index.html` 或 `rules.json` 在旁边就能覆盖内置版本，
 方便换界面、换检测范围，而不需要改代码。
 

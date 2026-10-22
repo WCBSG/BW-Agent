@@ -1,4 +1,4 @@
-/* rules.c —— 规则层实现:data/rules.json 优先,读不到就用内置通用默认规则。
+/* rules.cpp —— 规则层实现:data/rules.json 优先,读不到就用内置通用默认规则。
  *
  * 关键设计:内置默认规则本身就是一段 JSON 文本,和外部文件**同一套 schema**,
  * 所以只有一条代码路径 —— 不会出现"内置一套逻辑、外部一套逻辑"的分叉。
@@ -7,7 +7,11 @@
 
 #include "res.h"
 
-#include <ctype.h>
+#include <cctype>
+#include <string>
+#include <unordered_map>
+#include <utility>
+#include <vector>
 
 static json_t *g_root = NULL;
 static char g_source[512] = {0};
@@ -104,10 +108,19 @@ void rules_init(const char *base_dir) {
   }
 }
 
-/* ---------- 字符串数组(借出,懒加载缓存) ---------- */
-typedef struct { char *key; char **items; int count; } list_cache_t;
-static list_cache_t g_lists[8];
-static int g_list_n = 0;
+/* ---------- 字符串数组(借出,懒加载缓存) ----------
+   原来这里是"定长 8 槽"的 C 数组,超过就静默 return NULL —— 实际有 9 个键在用,
+   第 9 个(通常是 weak_passwords)会被当成"没有条目",弱口令检测悄悄失效。
+   换成 unordered_map 后上限不存在;每个条目自己持有两份数据:
+     · owned : std::vector<std::string>,拥有字符串本体
+     · view  : std::vector<const char*>,借给调用方(缓冲区稳定,不随扩容失效)
+   对外签名仍是 const char **,调用方的代码一行都不用改。 */
+struct rules_list_t {
+  std::vector<std::string> owned;
+  std::vector<const char *> view;
+  int count = 0;
+};
+static std::unordered_map<std::string, rules_list_t> g_lists;
 
 void rules_shutdown(void) {
   json_free(g_root);
@@ -117,14 +130,7 @@ void rules_shutdown(void) {
   free(g_factory_text);
   g_factory_text = NULL;
   /* 数组缓存也要清:否则热加载后会继续用"旧规则"的缓存 */
-  for (int i = 0; i < g_list_n; i++) {
-    free(g_lists[i].key);
-    g_lists[i].key = NULL;
-    str_free_list(g_lists[i].items, g_lists[i].count);
-    g_lists[i].items = NULL;
-    g_lists[i].count = 0;
-  }
-  g_list_n = 0;
+  g_lists.clear();
   g_source[0] = 0;
   g_from_file = 0;
 }
@@ -148,25 +154,29 @@ static json_t *rules_lookup(const char *path) {
 const char **rules_str_list(const char *key, int *count) {
   if (count) *count = 0;
   if (!key) return NULL;
-  for (int i = 0; i < g_list_n; i++) {
-    if (strcmp(g_lists[i].key, key) == 0) {
-      if (count) *count = g_lists[i].count;
-      return (const char **)g_lists[i].items;
-    }
+
+  auto it = g_lists.find(key);
+  if (it != g_lists.end()) {
+    if (count) *count = it->second.count;
+    return it->second.view.data();
   }
+
   json_t *arr = rules_lookup(key);
   if (!arr || arr->type != J_ARR) return NULL;
-  if (g_list_n >= (int)(sizeof(g_lists) / sizeof(g_lists[0]))) return NULL;
-  list_cache_t *c = &g_lists[g_list_n++];
-  c->key = xstrdup(key);
-  c->count = j_len(arr);
-  c->items = (char **)xcalloc((size_t)(c->count > 0 ? c->count : 1), sizeof(char *));
-  for (int i = 0; i < c->count; i++) {
-    json_t *it = j_at(arr, i);
-    c->items[i] = xstrdup(it && it->type == J_STR ? it->str : "");
+
+  rules_list_t entry;
+  entry.count = j_len(arr);
+  entry.owned.reserve((size_t)entry.count);
+  for (int i = 0; i < entry.count; i++) {
+    json_t *node = j_at(arr, i);
+    entry.owned.emplace_back(node && node->type == J_STR ? node->str : "");
   }
-  if (count) *count = c->count;
-  return (const char **)c->items;
+  entry.view.reserve(entry.owned.size());
+  for (const std::string &s : entry.owned) entry.view.push_back(s.c_str());
+
+  auto res = g_lists.emplace(key, std::move(entry));
+  if (count) *count = res.first->second.count;
+  return res.first->second.view.data();
 }
 
 /* ---------- 通用数组读法(结构化的那几段配置) ----------

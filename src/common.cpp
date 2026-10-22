@@ -1,9 +1,11 @@
-/* common.c —— 基础件实现:动态缓冲、内存、UTF-8、时间、日志、文本、路径。
-   全部零依赖,只用 Windows 自带的 kernel32 / msvcrt。 */
+/* common.cpp —— 基础件实现:动态缓冲、内存、UTF-8、时间、日志、文本、路径。
+   只用 Windows 自带的 kernel32 / UCRT。 */
 #include "common.h"
 
 #include <shellapi.h>   /* CommandLineToArgvW —— 从原始命令行取参数用 */
-#include <time.h>
+#include <cstdlib>
+#include <ctime>
+#include <exception>
 
 /* ================= 动态缓冲区 ================= */
 void buf_init(buf_t *b) {
@@ -237,6 +239,12 @@ void console_init(void) {
   /* 控制台切到 UTF-8,否则中文日志会变问号 */
   SetConsoleOutputCP(CP_UTF8);
   SetConsoleCP(CP_UTF8);
+  /* 换成 C++ 之后,STL 容器/字符串在内存不足时会抛异常。我们用不到异常处理,
+     所以显式兜住:把原因写进日志(双击运行时没有控制台,这是唯一线索),再退出。 */
+  std::set_terminate([]() {
+    log_error("程序因未捕获的 C++ 异常终止(通常是内存不足)。日志见数据目录 agent.log");
+    std::abort();
+  });
 }
 
 /* 把标准流重新指向控制台(GUI 子系统程序默认没有标准流指向,printf 会丢) */

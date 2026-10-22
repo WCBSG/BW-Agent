@@ -8,20 +8,20 @@ rem ============================================================
 setlocal enabledelayedexpansion
 cd /d "%~dp0"
 
-set "GCC="
-where gcc >nul 2>nul && set "GCC=gcc"
-if not defined GCC if exist "C:\@Tool\mingw64\bin\gcc.exe" set "GCC=C:\@Tool\mingw64\bin\gcc.exe"
-if not defined GCC (
-    echo [错误] 找不到 gcc。
+set "GXX="
+where g++ >nul 2>nul && set "GXX=g++"
+if not defined GXX if exist "C:\@Tool\mingw64\bin\g++.exe" set "GXX=C:\@Tool\mingw64\bin\g++.exe"
+if not defined GXX (
+    echo [错误] 找不到 g++。
     exit /b 2
 )
 
 if not exist build mkdir build
 
 rem 内置资源(与 build.bat 同一套:界面 + 出厂规则)
-"%GCC%" -std=c11 -O2 -o build\mkres.exe tools\mkres.c
+"%GXX%" -std=c++20 -O2 -o build\mkres.exe tools\mkres.cpp
 if errorlevel 1 ( echo [失败] mkres 编译失败 & exit /b 1 )
-build\mkres.exe build\resources.c ^
+build\mkres.exe build\resources.cpp ^
     "ui/index.html=ui\index.html" ^
     "ui/app.css=ui\app.css" ^
     "ui/app.js=ui\app.js" ^
@@ -31,17 +31,17 @@ build\mkres.exe build\resources.c ^
 if errorlevel 1 ( echo [失败] 内置资源生成失败 & exit /b 1 )
 
 if exist "third_party\windres.exe" set "WINDRES=third_party\windres.exe"
-if not defined WINDRES for %%d in ("%GCC%") do if exist "%%~dpdwindres.exe" set "WINDRES=%%~dpdwindres.exe"
+if not defined WINDRES for %%d in ("%GXX%") do if exist "%%~dpdwindres.exe" set "WINDRES=%%~dpdwindres.exe"
 if not defined WINDRES where windres >nul 2>nul && set "WINDRES=windres"
 if defined WINDRES "%WINDRES%" -I . -I src -i src\app.rc -o build\app_res.o
 
 set "SRC="
-for %%f in (src\*.c) do set "SRC=!SRC! %%f"
+for %%f in (src\*.cpp) do set "SRC=!SRC! %%f"
 
 echo [构建] 调试版: -O0 -g
-"%GCC%" -std=c11 -O0 -g -w -DAGENT_GUI_BUILD -mwindows ^
+"%GXX%" -std=c++20 -O0 -g -w -DAGENT_GUI_BUILD -mwindows -static ^
     -I src -I third_party\webview2 ^
-    -o build\agent_dbg.exe !SRC! build\resources.c build\app_res.o ^
+    -o build\agent_dbg.exe !SRC! build\resources.cpp build\app_res.o ^
     -lws2_32 -lwinhttp -lbcrypt -lcrypt32 -lole32 -loleaut32 -luuid -luser32 -lgdi32 -lshell32 -ladvapi32
 if errorlevel 1 ( echo [失败] 编译出错 & exit /b 1 )
 

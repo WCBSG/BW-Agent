@@ -1,4 +1,4 @@
-﻿/* webutil.c —— 通用网页处理件实现。 */
+/* webutil.cpp —— 通用网页处理件实现。 */
 #include "webutil.h"
 
 #include <bcrypt.h>
@@ -126,7 +126,7 @@ static void headers_walk(const char *raw, hdr_cb_t cb, void *ud) {
     size_t len = eol ? (size_t)(eol - p) : strlen(p);
     if (len && p[len - 1] == '\r') len--;
     if (len > 0 && !(len >= 5 && str_icase_find(p, "HTTP/"))) {   /* 跳过状态行 */
-      const char *colon = memchr(p, ':', len);
+      const char *colon = static_cast<const char *>(memchr(p, ':', len));
       if (colon) {
         const char *name = p;
         size_t nlen = (size_t)(colon - p);
@@ -236,11 +236,11 @@ static void mask_header_value(const char *name, size_t nlen, const char *val,
   }
   /* Set-Cookie: 保留 cookie 名与属性(HttpOnly/Secure/SameSite 要看得见),
      值一律打星;其它鉴权类头整段打星。 */
-  const char *eq = memchr(val, '=', vlen);
+  const char *eq = static_cast<const char *>(memchr(val, '=', vlen));
   if (hdr_name_eq(name, nlen, "set-cookie") && eq) {
     buf_putn(out, val, (size_t)(eq - val));
     buf_puts(out, "=***");
-    const char *semi = memchr(val, ';', vlen);
+    const char *semi = static_cast<const char *>(memchr(val, ';', vlen));
     if (semi) buf_putn(out, semi, vlen - (size_t)(semi - val));
     return;
   }
@@ -393,7 +393,7 @@ void web_url_encode(const char *s, buf_t *out) {
 static void split_query(const char *url, buf_t *base, buf_t *query, buf_t *frag) {
   const char *hash = strchr(url ? url : "", '#');
   size_t end = hash ? (size_t)(hash - url) : strlen(url ? url : "");
-  const char *q = memchr(url ? url : "", '?', end);
+  const char *q = static_cast<const char *>(memchr(url ? url : "", '?', end));
   if (q) {
     buf_putn(base, url, (size_t)(q - url));
     buf_putn(query, q + 1, end - (size_t)(q + 1 - url));
@@ -418,7 +418,7 @@ void web_url_set_param(const char *url, const char *key, const char *value, buf_
     const char *amp = strchr(p, '&');
     size_t len = amp ? (size_t)(amp - p) : strlen(p);
     if (len > 0) {
-      const char *eq = memchr(p, '=', len);
+      const char *eq = static_cast<const char *>(memchr(p, '=', len));
       size_t klen = eq ? (size_t)(eq - p) : len;
       char *k = xstrndup(p, klen);
       if (str_ieq(k, key)) {
@@ -457,7 +457,7 @@ void web_url_params(const char *url, json_t *out) {
   while (*p) {
     const char *amp = strchr(p, '&');
     size_t len = amp ? (size_t)(amp - p) : strlen(p);
-    const char *eq = memchr(p, '=', len);
+    const char *eq = static_cast<const char *>(memchr(p, '=', len));
     size_t klen = eq ? (size_t)(eq - p) : len;
     if (klen > 0 && klen < 64) {
       char *k = xstrndup(p, klen);
@@ -480,7 +480,7 @@ int web_url_get_param(const char *url, const char *key, buf_t *out) {
   while (*p) {
     const char *amp = strchr(p, '&');
     size_t len = amp ? (size_t)(amp - p) : strlen(p);
-    const char *eq = memchr(p, '=', len);
+    const char *eq = static_cast<const char *>(memchr(p, '=', len));
     size_t klen = eq ? (size_t)(eq - p) : len;
     char *k = xstrndup(p, klen);
     int hit = str_ieq(k, key);

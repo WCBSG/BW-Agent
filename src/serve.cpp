@@ -1,4 +1,4 @@
-/* serve.c —— 本地 HTTP 服务 + 智能体循环的流式直播。
+/* serve.cpp —— 本地 HTTP 服务 + 智能体循环的流式直播。
  *
  * 事件协议照抄 Python 版第三册合同(stream.py)的六个事件:
  *   message_start / block_start / block_delta / block_stop / tool_status / message_stop
