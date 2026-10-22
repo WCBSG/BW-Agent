@@ -223,8 +223,8 @@ static void selftest_agent(void) {
   check(skills_find("skill_full_inspection") != NULL, "核心技能:全流程巡检存在");
   check(skills_find("skill_recon") && skills_find("skill_leak_check") &&
         skills_find("skill_integrity_check") && skills_find("skill_retest") &&
-        skills_find("skill_report") && skills_find("skill_evaluate"),
-        "六项能力齐备(发现/泄露/完整性/复测/报告/评测)");
+        skills_find("skill_report") && skills_find("skill_evidence"),
+        "六项能力齐备(发现/泄露/完整性/复测/报告/证据核对)");
 
   /* 工具清单与技能清单都能序列化成 JSON(界面与文档要用) */
   json_t *td = tools_decl_json();
@@ -657,9 +657,9 @@ static int fake_closure_fetch(void *ud, const char *url, const char *method,
   return 0;
 }
 
-/* 收尾闭环:发现 → 复测(未修好→已修好)→ 报告与告警 → 评测数字 */
+/* 收尾闭环:发现 → 复测(未修好→已修好)→ 报告与告警 → 证据核对 */
 static void selftest_closure(void) {
-  printf("\n=== 闭环(复测 / 报告 / 评测)===\n");
+  printf("\n=== 闭环(复测 / 报告 / 证据核对)===\n");
 
   char datadir[128];
   snprintf(datadir, sizeof(datadir), "data\\_selftest_closure_%lld", now_ms() % 1000000);
@@ -791,70 +791,23 @@ static void selftest_closure(void) {
     json_free(reports);
   }
 
-  /* 评测:命中 1、漏检 1、干净靶误报 1 → 口径写死的三个数 */
+  /* 证据与覆盖核对:只核对"结论有没有证据",不给任何效果指标。
+     这里刻意不出现召回率/准确率/误报率 —— 那取决于评测集与口径,应由评测方给出。 */
   {
-    json_t *tc1 = j_obj();
-    j_set_str(tc1, "id", "TC-0001");
-    j_set_str(tc1, "target", "https://closure.example.org/.env");
-    json_t *exp = j_arr();
-    json_t *e1 = j_obj();
-    j_set_str(e1, "kind", "敏感信息");
-    j_set_str(e1, "severity", "严重");
-    j_set_str(e1, "match_key", ".env|config-secrets");
-    j_add(exp, e1);
-    j_set(tc1, "expected", exp);
-    store_append(st, "testcases", tc1);
-    json_free(tc1);
-
-    json_t *tc2 = j_obj();
-    j_set_str(tc2, "id", "TC-0002");
-    j_set_str(tc2, "target", "https://closure.example.org/news.php?id=1");
-    json_t *exp2 = j_arr();
-    json_t *e2 = j_obj();
-    j_set_str(e2, "kind", "漏洞");
-    j_set_str(e2, "severity", "严重");
-    j_set_str(e2, "match_key", "news.php?id=|sqli");
-    j_add(exp2, e2);
-    j_set(tc2, "expected", exp2);
-    store_append(st, "testcases", tc2);
-    json_free(tc2);
-
-    json_t *tc3 = j_obj();
-    j_set_str(tc3, "id", "TC-0003");
-    j_set_str(tc3, "target", "https://closure-clean.example.org/");
-    j_set_bool(tc3, "benign", 1);
-    j_set(tc3, "expected", j_arr());
-    store_append(st, "testcases", tc3);
-    json_free(tc3);
-
-    /* 干净靶上故意留一条发现 → 用来验证误报率真的会被算出来 */
-    json_t *fake = j_obj();
-    j_set_str(fake, "id", "F-9001");
-    j_set_str(fake, "task_id", "T-CLOSURE");
-    j_set_str(fake, "kind", "弱配置");
-    j_set_str(fake, "severity", "低");
-    j_set_str(fake, "title", "干净靶上的误报");
-    j_set_str(fake, "target", "https://closure-clean.example.org/");
-    j_set_str(fake, "dedup_key", "nuclei_scan|closure-clean.example.org/|config-baseline");
-    j_set_str(fake, "status", "new");
-    store_append(st, "findings", fake);
-    json_free(fake);
-
     skill_result_t sr;
     memset(&sr, 0, sizeof(sr));
     json_t *a = j_obj();
-    skills_run(&ctx, "skill_evaluate", a, &sr);
+    skills_run(&ctx, "skill_evidence", a, &sr);
     json_free(a);
-    json_t *stats = j_get(sr.data, "stats");
-    check((int)j_n(stats, "expected_total", 0) == 2, "评测:期望总数 = 2");
-    check((int)j_n(stats, "matched", 0) == 1, "评测:命中 = 1", sr.summary ? sr.summary : "");
-    check((int)j_n(stats, "missed", 0) == 1, "评测:漏检 = 1");
-    check((int)j_n(stats, "benign_total", 0) == 1 && (int)j_n(stats, "benign_hit", 0) == 1,
-          "评测:干净靶误报数量被算出来");
-    check(j_n(stats, "recall", -1) > 0.49 && j_n(stats, "recall", -1) < 0.51,
-          "召回率 = 命中/期望总数 = 0.5", sr.summary ? sr.summary : "");
-    check(j_n(stats, "false_positive_rate", -1) > 0.99,
-          "误报率 = 干净靶误报/干净靶总数 = 1.0");
+    check(!sr.is_error, "证据核对:能跑(需要存储)", sr.summary ? sr.summary : "");
+    int total = (int)j_n(sr.data, "total", -1);
+    int with_ev = (int)j_n(sr.data, "with_evidence", -1);
+    int missing_ev = (int)j_n(sr.data, "without_evidence", -1);
+    check(total >= 1, "证据核对:统计出结论条数", sr.summary ? sr.summary : "");
+    check(with_ev >= 0 && missing_ev >= 0 && with_ev + missing_ev == total,
+          "证据核对:带证据 + 缺证据 = 总数");
+    check(j_get(sr.data, "by_status") != NULL, "证据核对:给出状态分布");
+    check(j_get(sr.data, "note") != NULL, "证据核对:明确说明不自行计算各项指标");
     skill_result_free(&sr);
   }
 
@@ -1125,7 +1078,7 @@ int app_main(int argc, char **argv) {
       if (tid) snprintf(task_id, sizeof(task_id), "%s", tid);
       free(tid);
     } else {
-      /* 没给目标(复测/报告/评测这类收尾动作常这样调):按全部历史发现处理 */
+      /* 没给目标(复测/报告/证据核对这类收尾动作常这样调):按全部历史发现处理 */
       task_id[0] = 0;
     }
     free(pid);
@@ -1149,7 +1102,7 @@ int app_main(int argc, char **argv) {
     printf("技能:%s   目标:%s   授权:%s\n\n", skill, target,
            nd ? "已按命令行域名授权" : "(未授权,不会对外发请求)");
     if (!nd && target[0] == 0) {
-      printf("提示:未指定目标,复测/报告/评测按全部历史发现处理。\n\n");
+      printf("提示:未指定目标,复测/报告/证据核对按全部历史发现处理。\n\n");
     }
     int rc = skills_run(&ctx, skill, args, &sr);
     printf("[%s] %s\n\n", rc == 0 && !sr.is_error ? "OK" : "ERROR",
@@ -1452,7 +1405,7 @@ int app_main(int argc, char **argv) {
     printf("  正在启动,界面窗口会自动打开 ……\n");
     printf("\n");
     printf("  · 第一次使用:在弹出的窗口里填「目标域名」并勾选授权,然后直接说话,\n");
-    printf("    例如「把这个站完整巡检一遍」\"复测一下\"\"出报告\"\"跑评测\"。\n");
+    printf("    例如「把这个站完整巡检一遍」\"复测一下\"\"出报告\"\"核对证据\"。\n");
     printf("  · 界面对话与结果都保存在 %s\\ 下(数据目录,可用 BW_AGENT_HOME 改)。\n",
            app_data_dir());
     printf("  · 想停止:关掉这个黑色窗口即可(界面窗口也可以关了)。\n");

@@ -21,7 +21,7 @@
       <button class="link" data-goto="report">报告</button>
       <button class="link" data-goto="history">历史</button>
       <button class="link" data-goto="assets">资产</button>
-      <button class="link" data-goto="eval">评测</button>
+      <button class="link" data-goto="eval">证据</button>
       <button class="link" data-goto="rules">规则</button>
       <button class="link" data-goto="caps">能力</button>
       <button class="link" data-goto="config">配置</button>
@@ -270,20 +270,25 @@
       </section>
     </section>
 
-    <!-- 效果评测 -->
+    <!-- 证据与闭环 -->
     <section class="view" id="view-eval">
       <section class="panel">
-        <div class="panel-head"><div><h2>检测效果评测</h2></div><span class="hint" id="eval-hint"></span></div>
+        <div class="panel-head"><div><h2>证据与闭环</h2></div><span class="hint" id="eval-hint"></span></div>
+        <p class="note">
+          这里只回答两件可核查的事：每条结论有没有<strong>证据 / 影响 / 修复建议</strong>，以及闭环走到了哪一步。
+          <strong>不在这里给出效果指标</strong> —— 那取决于评测集怎么造、口径怎么定，
+          同一个系统换一套数据集就能得出完全不同的结论，应由评测方按统一评测集给出；
+          本工具能保证的是：每条结论都能回到原始响应。
+        </p>
         <div class="tiles" id="eval-tiles"></div>
-        <div class="formula" id="eval-formula"></div>
       </section>
       <section class="panel">
-        <div class="panel-head"><div><h2>用例对账</h2></div><span class="hint">命中 / 漏检 / 多检</span></div>
-        <div class="cards" id="eval-outcomes"></div>
+        <div class="panel-head"><div><h2>状态分布</h2></div><span class="hint">新发现 / 已确认 / 已修复 / 复测结论</span></div>
+        <div class="bars" id="eval-status"></div>
       </section>
       <section class="panel">
-        <div class="panel-head"><div><h2>测试集</h2></div><span class="hint">结果类 JSONL，一行一个用例</span></div>
-        <div class="cards" id="testcases-list"></div>
+        <div class="panel-head"><div><h2>需要补证据的结论</h2></div><span class="hint">没有证据就不该下结论</span></div>
+        <div class="cards" id="eval-missing"></div>
       </section>
     </section>
 
@@ -578,7 +583,7 @@
     <h3 id="warn-title">切换到「全部允许」？</h3>
     <p class="muted">开启后，智能体调用任何工具都不会再问你一句。它仍然只能访问<strong>授权池内</strong>的主机、
       只用只读方法、全程留痕 —— 但「要不要动手」这道确认就没有了。</p>
-    <p class="field-help">演示与评测时可以开；对着真实生产站点跑的巡检，建议保留「询问」或收紧自定义策略。</p>
+    <p class="field-help">演示时可以开；对着真实生产站点跑的巡检，建议保留「询问」或收紧自定义策略。</p>
     <div class="modal-actions">
       <button class="ghost" id="warn-cancel">保持当前策略</button>
       <button id="warn-ok">我已了解，开启</button>

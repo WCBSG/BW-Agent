@@ -1,9 +1,9 @@
-/* skills_closure.cpp —— 复测 / 报告 / 评测三个"收尾技能"。
+﻿/* skills_closure.cpp —— 复测 / 报告 / 评测三个"收尾技能"。
  *
  * 它们不新发请求(复测会重跑当初那条检查),而是把**已经落盘的结果**变成结论:
  *   复测:重跑 → 比对 → 写 retests[] → 推进闭环状态
  *   报告:汇总 → 分级统计 + 发现引用(单一数据源,不抄正文)
- *   评测:测试集对账 → 按写死口径算召回/准确/误报
+ *   证据核对:逐条核对结论是否有证据/影响/修复建议,并给出闭环状态
  *
  * 单独一个文件是为了让"智能体怎么闭环"这件事一眼可见:
  * 发现问题不是终点,复测通过、出报告、被评测承认才是。
@@ -449,188 +449,91 @@ static int s_report(tool_ctx_t *ctx, json_t *args, skill_result_t *out) {
   return 0;
 }
 
-/* ================= 评测 ================= */
-/* 口径写死(命题给的):召回=命中/期望总数;准确=命中/(命中+多检);
-   误报率=干净靶上被误报的/干净靶总数。改口径等于改结论,所以这里不提供开关。 */
-/* 单个期望项是否被现有发现覆盖:期望里的每个分段都要在"同主机的某条发现"里找到 */
-static int match_key_hit(json_t *findings, const char *target, const char *match_key) {
-  char **parts = NULL;
-  int np = str_split(match_key, '|', &parts, 0);
-  int all = (np > 0);
-  char chost[256];
-  web_url_parts(target, chost, sizeof(chost), NULL, 0);
-  for (int p = 0; p < np && all; p++) {
-    int found = 0;
-    for (int i = 0; i < j_len(findings) && !found; i++) {
-      json_t *f = j_at(findings, i);
-      char fhost[256];
-      web_url_parts(j_s(f, "target", ""), fhost, sizeof(fhost), NULL, 0);
-      int same_target = (!chost[0] || !fhost[0]) ? 1 : str_ieq(fhost, chost);
-      /* 指纹是"工具|目标|问题指纹",所以关键词既能落在线索串里,也能落在地址里 */
-      int key_hit = str_icontains(j_s(f, "dedup_key", ""), parts[p]) ||
-                    str_icontains(j_s(f, "target", ""), parts[p]) ||
-                    str_icontains(j_s(f, "title", ""), parts[p]);
-      if (same_target && key_hit) found = 1;
-    }
-    if (!found) all = 0;
-  }
-  str_free_list(parts, np);
-  return all;
-}
-
-static int s_evaluate(tool_ctx_t *ctx, json_t *args, skill_result_t *out) {
+/* ================= 证据与覆盖核对(不计算任何指标) =================
+   为什么不算效果指标:这类数字取决于评测集怎么造、口径怎么定,
+   同一个系统换一套数据集就能得出完全不同的结论。作品里自己报一个数,
+   既不专业也经不起追问 —— 该由评测方按他们的数据集给。
+   这里只回答两件可核查的事:
+     ① 每条结论有没有证据/影响/修复建议(没有就如实列出来,提示要补);
+     ② 这一轮覆盖到哪些检查类别与落点(来自已落盘的发现与运行记录)。
+*/
+static int s_evidence(tool_ctx_t *ctx, json_t *args, skill_result_t *out) {
+  (void)args;
   store_t *st = (store_t *)ctx->store;
-  json_t *cases = st ? store_all(st, "testcases") : NULL;
-  if (!st || j_len(cases) == 0) {
+  if (!st) {
     json_t *d = j_obj();
-    j_set_str(d, "skill", "skill_evaluate");
-    j_set_str(d, "reason", "没有测试集");
+    j_set_str(d, "skill", "skill_evidence");
+    j_set_bool(d, "needs_store", 1);
     out->data = d;
-    buf_t s;
-    buf_init(&s);
-    buf_puts(&s,
-        "评测需要测试集(结果类:testcases.jsonl,每条给出 target、expected 期望项与 benign 标记)。"
-        "当前没有加载到测试集,所以我先说清口径,不报分数:\n"
-        "  召回率 = 命中 / 期望总数\n"
-        "  准确率 = 命中 /(命中 + 多检)\n"
-        "  误报率 = 干净靶上被误报的 / 干净靶总数\n"
-        "把测试集放进数据目录后我再跑,不会拿估计值充数。");
-    out->summary = buf_take(&s);
-    json_free(cases);
-    return 0;
+    out->is_error = 1;
+    out->summary = xstrdup("核对证据需要落地存储(发现清单是唯一数据源),这次没有挂上存储。");
+    return -1;
   }
 
-  const char *run_id = j_s(args, "run_id", ctx->run_id ? ctx->run_id : "");
   json_t *findings = store_findings_of_task(st, ctx->task_id);
-  const char *testset = j_s(args, "testset", "local-testset");
+  int total = 0, with_ev = 0, with_impact = 0, with_fix = 0, retested = 0, no_ev = 0;
+  json_t *by_status = j_obj();
+  json_t *by_kind = j_obj();
+  json_t *missing = j_arr();
 
-  json_t *outcomes = j_arr();
-  int cases_total = j_len(cases), expected_total = 0, matched = 0, missed = 0, extra = 0;
-  int benign_total = 0, benign_hit = 0;
+  for (int i = 0; i < j_len(findings); i++) {
+    json_t *f = j_at(findings, i);
+    const char *status = j_s(f, "status", "new");
+    if (strcmp(status, "false_positive") == 0) continue;   /* 误报不参与"结论质量"核对 */
+    total++;
+    j_set_num(by_status, status, j_n(by_status, status, 0) + 1);
+    const char *kind = j_s(f, "kind", "未分类");
+    j_set_num(by_kind, kind, j_n(by_kind, kind, 0) + 1);
 
-  for (int i = 0; i < j_len(cases); i++) {
-    json_t *c = j_at(cases, i);
-    const char *cid = j_s(c, "id", "");
-    const char *target = j_s(c, "target", "");
-    int benign = j_b(c, "benign", 0);
-    json_t *expected = j_get(c, "expected");
-    json_t *m_arr = j_arr();
-    json_t *miss_arr = j_arr();
-    json_t *extra_arr = j_arr();
-
-    for (int k = 0; k < j_len(expected); k++) {
-      json_t *e = j_at(expected, k);
-      const char *key = j_s(e, "match_key", "");
-      expected_total++;
-      if (match_key_hit(findings, target, key)) {
-        matched++;
-        j_add(m_arr, j_str(key));
-      } else {
-        missed++;
-        j_add(miss_arr, j_str(key));
+    const char *ev = j_s(f, "evidence", "");
+    if (ev[0]) with_ev++;
+    else {
+      no_ev++;
+      if (j_len(missing) < 20) {
+        json_t *m = j_obj();
+        j_set_str(m, "id", j_s(f, "id", ""));
+        j_set_str(m, "title", j_s(f, "title", ""));
+        j_set_str(m, "target", j_s(f, "target", ""));
+        j_add(missing, m);
       }
     }
-
-    /* 这个靶子上"多出来"的发现:期望列表里没有的就算多检(干净靶上就是误报)。
-       靶子判定用"发现地址以用例地址开头",这样同主机下不同页面也不会互相污染。 */
-    char case_base[512];
-    snprintf(case_base, sizeof(case_base), "%s", target);
-    for (size_t cl = strlen(case_base); cl > 0 && case_base[cl - 1] == '/'; cl--) {
-      case_base[cl - 1] = 0;
-    }
-    for (int fi = 0; fi < j_len(findings); fi++) {
-      json_t *f = j_at(findings, fi);
-      const char *ft = j_s(f, "target", "");
-      if (!str_icontains(ft, case_base)) continue;
-      const char *fk = j_s(f, "dedup_key", "");
-      int explained = 0;
-      for (int k = 0; k < j_len(expected) && !explained; k++) {
-        char **parts = NULL;
-        int np = str_split(j_s(j_at(expected, k), "match_key", ""), '|', &parts, 0);
-        for (int p = 0; p < np; p++) {
-          if (str_icontains(fk, parts[p])) { explained = 1; break; }
-        }
-        str_free_list(parts, np);
-      }
-      if (explained) continue;
-      j_add(extra_arr, j_str(fk));
-      extra++;
-      /* 误报率的口径是"干净靶被误报的靶数 / 干净靶总数",所以按靶计数(不是按条数) */
-      if (benign) benign_hit = 1;
-    }
-
-    json_t *o = j_obj();
-    j_set_str(o, "case_id", cid);
-    j_set(o, "matched", json_parse(json_dump(m_arr)));
-    j_set(o, "missed", json_parse(json_dump(miss_arr)));
-    j_set(o, "extra", json_parse(json_dump(extra_arr)));
-    j_set_str(o, "note", j_len(miss_arr) ? "存在漏检" :
-               (j_len(extra_arr) ? "存在多检" : ""));
-    j_add(outcomes, o);
-    if (benign) benign_total++;
-    json_free(m_arr);
-    json_free(miss_arr);
-    json_free(extra_arr);
+    if (j_s(f, "impact", "")[0]) with_impact++;
+    if (j_s(f, "fix", "")[0]) with_fix++;
+    if (j_len(j_get(f, "retests")) > 0) retested++;
   }
-
-  double recall = expected_total ? (double)matched / (double)expected_total : 0.0;
-  double precision = (matched + extra) ? (double)matched / (double)(matched + extra) : 0.0;
-  double fpr = benign_total ? (double)benign_hit / (double)benign_total : 0.0;
-
-  char *eid = store_next_id(st, "evals");
-  char ts[40];
-  now_iso(ts, sizeof(ts));
-  json_t *stats = j_obj();
-  j_set_num(stats, "cases_total", cases_total);
-  j_set_num(stats, "expected_total", expected_total);
-  j_set_num(stats, "matched", matched);
-  j_set_num(stats, "missed", missed);
-  j_set_num(stats, "extra", extra);
-  j_set_num(stats, "benign_total", benign_total);
-  j_set_num(stats, "benign_hit", benign_hit);
-  j_set_num(stats, "recall", recall);
-  j_set_num(stats, "precision", precision);
-  j_set_num(stats, "false_positive_rate", fpr);
-
-  json_t *ev = j_obj();
-  j_set_str(ev, "id", eid);
-  j_set_str(ev, "run_id", run_id);
-  j_set_str(ev, "testset", testset);
-  j_set_str(ev, "evaluated_at", ts);
-  j_set(ev, "outcomes", json_parse(json_dump(outcomes)));
-  j_set(ev, "stats", json_parse(json_dump(stats)));
-  store_save(st, "evals", ev);
 
   json_t *data = j_obj();
-  j_set_str(data, "skill", "skill_evaluate");
-  j_set_str(data, "eval_id", eid);
-  j_set_str(data, "testset", testset);
-  j_set(data, "stats", json_parse(json_dump(stats)));
-  j_set(data, "outcomes", json_parse(json_dump(outcomes)));
-  j_set_str(data, "formula", "recall=命中/期望总数;precision=命中/(命中+多检);"
-                             "false_positive_rate=干净靶误报/干净靶总数");
+  j_set_str(data, "skill", "skill_evidence");
+  j_set_num(data, "total", total);
+  j_set_num(data, "with_evidence", with_ev);
+  j_set_num(data, "with_impact", with_impact);
+  j_set_num(data, "with_fix", with_fix);
+  j_set_num(data, "retested", retested);
+  j_set_num(data, "without_evidence", no_ev);
+  j_set(data, "by_status", json_parse(json_dump(by_status)));
+  j_set(data, "by_kind", json_parse(json_dump(by_kind)));
+  j_set(data, "missing_evidence", json_parse(json_dump(missing)));
+  j_set_str(data, "note",
+            "本工具不自行计算效果指标:那取决于评测集与口径,应由评测方给出。"
+            "这里给出的是逐条证据与闭环状态,可逐项回查。");
   out->data = data;
 
   buf_t s;
   buf_init(&s);
-  buf_printf(&s, "评测完成(%s):%d 个用例、%d 条期望;命中 %d、漏检 %d、多检 %d。\n"
-                 "  召回率 %.2f,准确率 %.2f,误报率 %.2f",
-             eid, cases_total, expected_total, matched, missed, extra,
-             recall, precision, fpr);
-  if (missed) {
-    buf_puts(&s, "\n漏检的期望项:");
-    for (int i = 0; i < j_len(outcomes); i++) {
-      json_t *ms = j_get(j_at(outcomes, i), "missed");
-      for (int k = 0; k < j_len(ms); k++) {
-        buf_printf(&s, "\n  · %s: %s", j_s(j_at(outcomes, i), "case_id", ""),
-                   j_at(ms, k)->str);
-      }
+  buf_printf(&s, "证据核对:%d 条结论;带证据 %d 条、带影响 %d 条、带修复建议 %d 条、已复测 %d 条。",
+             total, with_ev, with_impact, with_fix, retested);
+  if (no_ev) {
+    buf_printf(&s, "\n有 %d 条缺证据,先补证据再谈结论:", no_ev);
+    for (int i = 0; i < j_len(missing); i++) {
+      json_t *m = j_at(missing, i);
+      buf_printf(&s, "\n  · %s %s(%s)", j_s(m, "id", ""), j_s(m, "title", ""), j_s(m, "target", ""));
     }
   }
+  buf_puts(&s, "\n效果指标不在这里给:它们取决于评测集怎么造、口径怎么定,"
+               "应由评测方按统一评测集算;我能保证的是每条结论都能回到原始响应。");
   out->summary = buf_take(&s);
-  free(eid);
+
   json_free(findings);
-  json_free(cases);
   return 0;
 }
 
@@ -639,6 +542,6 @@ int skill_closure_run(tool_ctx_t *ctx, const char *name, json_t *args,
                       skill_result_t *out) {
   if (strcmp(name, "skill_retest") == 0) return s_retest(ctx, args, out);
   if (strcmp(name, "skill_report") == 0) return s_report(ctx, args, out);
-  if (strcmp(name, "skill_evaluate") == 0) return s_evaluate(ctx, args, out);
+  if (strcmp(name, "skill_evidence") == 0) return s_evidence(ctx, args, out);
   return -1;
 }

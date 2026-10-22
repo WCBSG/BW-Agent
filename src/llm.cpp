@@ -479,11 +479,13 @@ void rule_decide(const char *user_text, const char *scope_note, decision_t *out)
     out->kind = ACT_ACT;
     out->tool = xstrdup("skill_report");
     out->reason = xstrdup("规则降级:命中出报告意图");
-  } else if (str_icontains(t, "评测") || str_icontains(t, "召回") ||
-             str_icontains(t, "误报率") || str_icontains(t, "跑分")) {
+  } else if (str_icontains(t, "核对证据") || str_icontains(t, "证据") ||
+             str_icontains(t, "召回") || str_icontains(t, "误报率") ||
+             str_icontains(t, "准确率") || str_icontains(t, "评测") ||
+             str_icontains(t, "跑分")) {
     out->kind = ACT_ACT;
-    out->tool = xstrdup("skill_evaluate");
-    out->reason = xstrdup("规则降级:命中评测意图");
+    out->tool = xstrdup("skill_evidence");
+    out->reason = xstrdup("规则降级:命中证据核对意图(指标由评测方给,本工具只给逐条证据)");
   } else if (str_icontains(t, "篡改") || str_icontains(t, "有没有被改") ||
              str_icontains(t, "基线")) {
     out->kind = ACT_ACT;
@@ -515,7 +517,8 @@ void rule_decide(const char *user_text, const char *scope_note, decision_t *out)
     out->text = xstrdup(
         "我是网站安全巡检智能体。可以让我:① 对授权域名做一次完整巡检"
         "(资产发现 → 内容完整性 → 敏感文件 → 配置/漏洞);② 复测未闭环的问题;"
-        "③ 生成报告;④ 跑评测看召回率与误报率。\n"
+        "③ 生成报告;④ 核对每条结论的证据与闭环状态。\n"
+        "效果指标不在这里给 —— 那取决于评测集与口径,应由评测方按自己的数据集算。\n"
         "另外我还能单独做:敏感信息扫描、口令强度评估、页面篡改比对、目录/入口探测。\n"
         "请告诉我目标和想做的事。");
   }

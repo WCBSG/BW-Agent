@@ -1,10 +1,10 @@
-﻿/* app.js —— 界面层：把智能体的决策循环直播成"看得见的过程"，并把闭环数据摊开展示。
+/* app.js —— 界面层：把智能体的决策循环直播成"看得见的过程"，并把闭环数据摊开展示。
  *
  * 与后端只通过 HTTP + SSE 说话，事件协议就是三册合同里的六个事件
  * (message_start / block_start / block_delta / block_stop / tool_status / message_stop)，
  * 前端不认识任何"巡检业务细节" —— 后端换实现，这里一行都不用改。
  *
- * 数据视图（报告/历史/资产/评测/规则）全部走只读接口：
+ * 数据视图（报告/历史/资产/证据/规则）全部走只读接口：
  *   /api/status · /api/manifest · /api/rules · /api/data?name=集合&limit=N
  * 只画后端真正落过盘的东西，没有的就说"还没有"，不编占位数字。
  */
@@ -788,85 +788,61 @@ async function renderAssetsView() {
   draw();
 }
 
+/* 证据与闭环：只报可核查的事实，不给"效果指标"。
+   效果指标取决于评测集与口径，应由评测方给出 —— 界面上不出现这类数字。 */
 async function renderEvalView() {
-  const [evals, tcs] = await Promise.all([
-    fetchCollection('evals', 5).catch(() => ({ items: [] })),
-    fetchCollection('testcases', 100).catch(() => ({ items: [] })),
-  ]);
-  const ev = (evals.items || [])[0];
+  const findings = (state.cache['findings:200'] || (state.cache['findings:200'] = await fetchCollection('findings', 200))).items || [];
+  const real = findings.filter((f) => f.status !== 'false_positive');
+  const withEv = real.filter((f) => (f.evidence || '').trim()).length;
+  const withImpact = real.filter((f) => (f.impact || '').trim()).length;
+  const withFix = real.filter((f) => (f.fix || '').trim()).length;
+  const retested = real.filter((f) => (f.retests || []).length).length;
+  const missing = real.filter((f) => !(f.evidence || '').trim());
+
+  $('eval-hint').textContent = `${real.length} 条结论（不含误报）`;
   $('eval-tiles').innerHTML = '';
-  const box = $('eval-outcomes');
+  const tiles = [
+    { l: '结论条数', v: real.length },
+    { l: '带证据', v: withEv, cls: withEv === real.length ? 'ok' : 'warn' },
+    { l: '带影响说明', v: withImpact },
+    { l: '带修复建议', v: withFix },
+    { l: '已复测', v: retested },
+    { l: '缺证据', v: missing.length, cls: missing.length ? 'bad' : 'ok' },
+  ];
+  for (const t of tiles) {
+    const d = el('div', 'tile ' + (t.cls || ''));
+    d.appendChild(el('div', 'v', String(t.v)));
+    d.appendChild(el('div', 'l', t.l));
+    $('eval-tiles').appendChild(d);
+  }
+
+  const byStatus = {};
+  for (const f of real) byStatus[f.status || 'new'] = (byStatus[f.status || 'new'] || 0) + 1;
+  const labelled = {};
+  for (const [k, v] of Object.entries(byStatus)) labelled[STATUS_LABEL[k] || k] = v;
+  bars($('eval-status'), labelled);
+
+  const box = $('eval-missing');
   box.innerHTML = '';
-  $('eval-formula').innerHTML = '';
-
-  if (!ev) {
-    $('eval-hint').textContent = '还没跑过评测';
-    box.appendChild(emptyCard('还没有评测结果：需要先准备测试集（testcases.jsonl），再对智能体说「跑评测」。'));
+  if (!missing.length) {
+    box.appendChild(emptyCard('每条结论都带证据 —— 这是能交付的前提。'));
   } else {
-    const s = ev.stats || {};
-    $('eval-hint').textContent = `${ev.id} · 测试集 ${ev.testset || '—'} · ${fmtTime(ev.evaluated_at)}`;
-    const pct = (x) => (x === undefined ? '—' : (Number(x) * 100).toFixed(1) + '%');
-    const tiles = [
-      { l: '召回率 recall', v: pct(s.recall), cls: Number(s.recall) >= 0.8 ? 'ok' : (Number(s.recall) >= 0.5 ? 'warn' : 'bad') },
-      { l: '准确率 precision', v: pct(s.precision), cls: Number(s.precision) >= 0.8 ? 'ok' : 'warn' },
-      { l: '误报率 false positive', v: pct(s.false_positive_rate), cls: Number(s.false_positive_rate) > 0 ? 'warn' : 'ok' },
-      { l: '期望项 / 命中', v: `${s.expected_total || 0} / ${s.matched || 0}` },
-      { l: '漏检 missed', v: s.missed || 0, cls: (s.missed || 0) ? 'bad' : 'ok' },
-      { l: '多检 extra', v: s.extra || 0, cls: (s.extra || 0) ? 'warn' : 'ok' },
-      { l: '干净靶误报', v: `${s.benign_hit || 0} / ${s.benign_total || 0}` },
-      { l: '用例数', v: s.cases_total || 0 },
-    ];
-    for (const t of tiles) {
-      const d = el('div', 'tile ' + (t.cls || ''));
-      d.appendChild(el('div', 'v', String(t.v)));
-      d.appendChild(el('div', 'l', t.l));
-      $('eval-tiles').appendChild(d);
-    }
-    $('eval-formula').innerHTML =
-      '统计口径（固定）：<code>recall = 命中 / 期望总数</code>　' +
-      '<code>precision = 命中 / (命中 + 多检)</code>　' +
-      '<code>false_positive_rate = 干净靶上被误报的 / 干净靶总数</code>';
-
-    for (const o of ev.outcomes || []) {
+    for (const f of missing) {
       const c = el('div', 'card');
       const head = el('div', 'ch');
-      head.appendChild(el('span', 'ct', o.case_id || ''));
+      head.appendChild(sevBadge(f.severity));
+      head.appendChild(el('span', 'ct', f.title || f.id));
       const meta = el('div', 'side-meta');
-      if ((o.missed || []).length) meta.appendChild(el('span', 'chip st-retest_failed', '漏检 ' + o.missed.length));
-      if ((o.extra || []).length) meta.appendChild(el('span', 'chip st-confirmed', '多检 ' + o.extra.length));
-      if (!(o.missed || []).length && !(o.extra || []).length) meta.appendChild(el('span', 'chip st-fixed', '对账一致'));
+      meta.appendChild(el('span', 'chip', f.kind || '未分类'));
       head.appendChild(meta);
       c.appendChild(head);
-      for (const m of o.matched || []) c.appendChild(kv('命中', m, 'cm'));
-      for (const m of o.missed || []) c.appendChild(kv('漏检', m, 'cm'));
-      for (const m of o.extra || []) c.appendChild(kv('多检', m, 'cm'));
+      c.appendChild(kv('目标', f.target, 'cm'));
+      c.appendChild(kv('状态', STATUS_LABEL[f.status] || f.status || '—', 'cm'));
+      c.appendChild(el('div', 'cd', '这条没有证据。没有原始响应摘录的结论不该进报告 —— 补一次复现，或者把它标成误报。'));
       box.appendChild(c);
     }
   }
-
-  const tl = $('testcases-list');
-  tl.innerHTML = '';
-  const list = tcs.items || [];
-  if (!list.length) tl.appendChild(emptyCard('还没有测试集。测试集是结果类对象（一行一个用例，含 target / expected / benign）。'));
-  for (const t of list) {
-    const c = el('div', 'card');
-    const head = el('div', 'ch');
-    head.appendChild(el('span', 'ct', `${t.id} · ${t.title || ''}`));
-    const meta = el('div', 'side-meta');
-    meta.appendChild(el('span', 'chip', t.benign ? '干净靶' : '问题靶'));
-    head.appendChild(meta);
-    c.appendChild(head);
-    c.appendChild(kv('目标', t.target, 'cm'));
-    const exp = t.expected || [];
-    if (exp.length) {
-      for (const e of exp) c.appendChild(kv('期望', `${e.kind || ''} · ${e.severity || ''} · ${e.match_key || ''}`, 'cm'));
-    } else {
-      c.appendChild(kv('期望', '（无 —— 干净靶不应有任何发现）', 'cm'));
-    }
-    tl.appendChild(c);
-  }
 }
-
 async function renderRulesView() {
   const r = state.cache['rules'] || (state.cache['rules'] = await api('/api/rules'));
   $('rules-source').textContent = `${r.source} · ${r.from_file ? '来自文件（可改）' : '内置默认'} · ${r.signature_count} 条内容特征`;
@@ -1102,7 +1078,7 @@ function switchView(name) {
     report: ['巡检 / 报告与告警', '报告与告警'],
     history: ['巡检 / 历史记录', '巡检历史'],
     assets: ['数据 / 资产底账', '资产底账'],
-    eval: ['数据 / 效果评测', '效果评测'],
+    eval: ['数据 / 证据与闭环', '证据与闭环'],
     rules: ['数据 / 生效规则', '生效规则'],
     caps: ['系统 / 能力清单', '能力清单'],
     automation: ['系统 / 周期巡检', '周期巡检'],
@@ -1923,7 +1899,7 @@ const PAL = { open: false, rows: [], sel: 0 };
 
 const PAL_VIEWS = [
   ['report', '视图 · 报告与告警'], ['history', '视图 · 巡检历史'], ['assets', '视图 · 资产底账'],
-  ['eval', '视图 · 效果评测'], ['rules', '视图 · 生效规则'], ['caps', '视图 · 能力清单'],
+  ['eval', '视图 · 证据与闭环'], ['rules', '视图 · 生效规则'], ['caps', '视图 · 能力清单'],
   ['automation', '视图 · 周期巡检'],
   ['config', '视图 · 配置编辑'],
 ];

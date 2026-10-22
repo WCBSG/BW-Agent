@@ -82,11 +82,11 @@ static skill_t g_skills[] = {
      "用户说「出报告」「导出报告」「把结果整理一下」时用。",
      "(汇总已有结果,不新发请求)", 0, NULL},
 
-    {"skill_evaluate", "检测效果评测",
-     "用测试集检验检测效果:算出召回率、准确率与误报率。",
-     "用户说「跑评测」「召回率多少」「误报率怎么样」时用。"
-     "评测只对账已有结果,不会新发请求。",
-     "(对账已有发现与测试集,不新发请求)", 0, NULL},
+    {"skill_evidence", "证据与覆盖核对",
+     "核对每条发现是否带证据、影响与修复建议,并说明本轮覆盖到哪些检查项与落点。",
+     "用户说「核对证据」「这些结论靠得住吗」「看看哪条没证据」时用。"
+     "本技能不给效果指标 —— 那取决于评测集与口径,应由评测方给出;这里只核对证据与闭环。",
+     "(对账已有发现,不新发请求)", 0, NULL},
 };
 
 void skills_init(void) { /* 静态表,不需要额外初始化 */ }
@@ -218,7 +218,7 @@ int skills_run(tool_ctx_t *ctx, const char *name, json_t *args, skill_result_t *
   int rc;
   /* 三个收尾技能的实现不在本文件(它们要读落盘结果,单独一层更清楚) */
   if (strcmp(name, "skill_retest") == 0 || strcmp(name, "skill_report") == 0 ||
-      strcmp(name, "skill_evaluate") == 0) {
+      strcmp(name, "skill_evidence") == 0) {
     rc = skill_closure_run(ctx, name, args, out);
   } else if (s->run) {
     rc = s->run(ctx, args, out);

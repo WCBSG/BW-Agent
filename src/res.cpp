@@ -1,4 +1,4 @@
-/* res.cpp —— 资源加载:磁盘优先,内置兜底。
+﻿/* res.cpp —— 资源加载:磁盘优先,内置兜底。
  *
  * 交付给用户的是一个 exe,里面已经带了界面与默认规则;但如果旁边存在同名文件
  * (比如用户想换一套界面、或改规则调检测范围),就优先用磁盘上的那份。
@@ -60,7 +60,7 @@ static const char README_TXT[] =
     "        把这个站完整巡检一遍\r\n"
     "        复测一下\r\n"
     "        出报告\r\n"
-    "        跑评测\r\n"
+    "        核对证据\r\n"
     "  5. 关掉界面窗口就是退出程序(服务随之停止,端口自动释放,不会留在后台)。\r\n"
     "  出问题要看日志时的两种办法:\r\n"
     "    · 加 --debug 启动(「网站安全巡检智能体.exe」发送快捷方式里加,或命令行里加),\r\n"
@@ -69,7 +69,7 @@ static const char README_TXT[] =
     "    · 或者直接看本目录里的 agent.log(UTF-8 文本,记事本能打开)。\r\n"
     "二、数据放在哪\r\n"
     "  全部在本目录(C:\\Users\\<你的用户名>\\.bw_agent)下:\r\n"
-    "    findings.jsonl  发现清单     reports\\ 报告     evals\\ 评测结果\r\n"
+    "    findings.jsonl  发现清单     reports\\ 报告\r\n"
     "    runs\\ 运行记录   assets.jsonl 资产底账        audit.jsonl 请求审计\r\n"
     "    snapshots\\ 页面快照(用于比对内容是否被改)\r\n"
     "    skills\\ 各技能说明(可改)   tools\\ 自己加的外部工具\r\n"
@@ -110,9 +110,10 @@ static const char README_TXT[] =
     "                               连上后它的工具会以 mcp__x__工具名 出现在能力清单里\r\n"
     "  ★ 为了安全,新加的外部工具/技能命令/MCP 都必须在文件里写 allow: true 才会执行。\r\n"
     "  改完重启程序生效;界面「能力清单」页会看到新加的条目(标注外部/MCP)。\r\n"
-    "五、跑评测要准备测试集\r\n"
-    "  想用「跑评测」看检出效果,把测试集放到本目录的 testcases.jsonl(一行一个用例,\r\n"
-    "  每条给出 target / expected / benign)。没有测试集时程序不会编分数,只会说明口径。\r\n"
+    "五、为什么不报效果指标\r\n"
+    "  这类数字取决于评测集怎么造、口径怎么定 —— 同一套系统换一套数据集结论就不同。\r\n"
+    "  作品里自报一个数既不专业也经不起追问,所以这里只给逐条证据与闭环状态,\r\n"
+    "  指标由评测方按统一评测集给出(testcases.jsonl 可作自建回归用例,不当效果指标)。\r\n"
     "六、接大模型(可选)\r\n"
     "  在本目录放一个 .env 文件,内容照 exe 说明书里的样例填:\r\n"
     "    DAS_BASE_URL=https://www.das-ai.com\r\n"
@@ -145,9 +146,8 @@ int res_bootstrap_data_dir(void) {
     if (file_write_all(path, README_TXT, strlen(README_TXT)) == 0) written++;
   }
 
-  /* 如果程序旁边(或开发目录里)放着一份测试集,顺手带一份到数据目录 —— 这样"跑评测"
-     开箱就有数据;没有就什么也不做(测试集本来就是使用方按自己的环境准备的,
-     程序不会凭空编一个,否则等于编分数)。 */
+  /* 如果程序旁边(或开发目录里)放着一份测试集,顺手带一份到数据目录 ——
+     作为自建回归用例;它不用于对外报效果指标(那该由评测方按统一评测集算)。 */
   app_data_path(path, sizeof(path), "testcases.jsonl");
   if (file_size(path) < 0) {
     size_t len = 0;
