@@ -202,23 +202,8 @@ void api_config_list(const http_req_t *req, http_res_t *res) {
   (void)req;
   json_t *arr = j_arr();
 
-  /* 规则按域各一个文件:列在最上面(改检测口径是最常见的动作) */
-  char rules_dir[MAX_PATH * 2];
-  rules_domain_dir(rules_dir, sizeof(rules_dir));
-  for (int i = 0; i < rules_domain_count(); i++) {
-    const rules_domain_t *d = rules_domain_at(i);
-    char rel[96], full[MAX_PATH * 4];
-    snprintf(rel, sizeof(rel), "rules\\%s", d->file);
-    path_join(full, sizeof(full), rules_dir, d->file);
-    long sz = file_size(full);
-    json_t *o = j_obj();
-    j_set_str(o, "name", rel);
-    j_set_bool(o, "exists", sz >= 0 ? 1 : 0);
-    j_set_num(o, "size", sz > 0 ? (double)sz : 0);
-    j_set_str(o, "group", "检测规则(按域)");
-    j_add(arr, o);
-  }
-
+  /* 规则不在这里列:它有自己的页面(按域编辑),放在"可编辑文件"里只会让人重复改。
+     这里只留真正需要手工编辑的东西:mcp.json、技能说明、外部工具。 */
   const char *fixed[] = {"mcp.json", NULL};
   for (int i = 0; fixed[i]; i++) {
     char path[MAX_PATH * 2];

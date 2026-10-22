@@ -2110,6 +2110,7 @@ const SET_SCHEMA = [
   { id: 'skills', title: '技能', desc: '智能体的专业能力' },
   { id: 'tools', title: '工具', desc: '智能体能做的动作' },
   { id: 'models', title: '模型', desc: '接哪家的模型（可配多家，选一家用）' },
+  { id: 'mcp', title: 'MCP', desc: '外部 MCP 服务器（mcp.json）' },
   { id: 'advanced', title: '高级 · 文件', desc: '直接编辑原始文件' },
 ];
 
@@ -2318,11 +2319,12 @@ function setRenderPage() {
   const isSkills = page.id === 'skills';
   const isTools = page.id === 'tools';
   const isModels = page.id === 'models';
+  const isMcp = page.id === 'mcp';
   if ($('set-title')) $('set-title').textContent = page.title;
   if ($('set-desc')) $('set-desc').textContent = page.desc || '';
   if (head) head.style.display = '';
-  if (foot) foot.style.display = (isAdv || isUi || isSkills || isTools || isModels) ? 'none' : '';
-  if (form) form.style.display = (isAdv || isUi || isSkills || isTools || isModels) ? 'none' : '';
+  if (foot) foot.style.display = (isAdv || isUi || isSkills || isTools || isModels || isMcp) ? 'none' : '';
+  if (form) form.style.display = (isAdv || isUi || isSkills || isTools || isModels || isMcp) ? 'none' : '';
   if (adv) adv.style.display = isAdv ? 'block' : 'none';
   const uiPanel = $('ui-panel');
   if (uiPanel) uiPanel.style.display = isUi ? 'block' : 'none';
@@ -2330,9 +2332,12 @@ function setRenderPage() {
   if (capPanel) capPanel.style.display = (isSkills || isTools) ? 'block' : 'none';
   const modelPanel = $('model-panel');
   if (modelPanel) modelPanel.style.display = isModels ? 'block' : 'none';
+  const mcpPanel = $('mcp-panel');
+  if (mcpPanel) mcpPanel.style.display = isMcp ? 'block' : 'none';
   if (isUi) return;
   if (isSkills || isTools) { capsOpen(isSkills ? 'skill' : 'tool'); return; }
   if (isModels) { modelsOpen(); return; }
+  if (isMcp) { mcpOpen(); return; }
   if (isAdv) {
     renderConfigFiles().catch(() => {});
     return;
@@ -2549,8 +2554,183 @@ async function capsOpen(kind) {
       ? `共 ${st.skills || 0} 个（技能包 ${st.extSkills || 0}）`
       : `共 ${st.tools || 0} 个（外部 ${st.extTools || 0} · MCP ${st.mcpTools || 0}）`;
   }
+  if (kind === 'skill') renderCapNav().catch(() => {});
+  capsShowList();
   capsRenderList();
   capsRenderForm(CAP.editing);
+  refreshHBars();
+}
+
+/* ---------- 技能页的导航 ----------
+   技能页除了"有哪些技能",还要能改那些说明文件(skills\*.md)。
+   用一个横排导航把两件事并在一起:第一格是技能清单,后面每格是一个说明文件。
+   这样"看清单"和"改说明"不会挤在同一屏,也不用再去「高级 · 文件」里翻。 */
+const CAP_NAV = { files: [], current: '' };
+
+async function renderCapNav() {
+  const box = $('cap-nav');
+  if (!box) return;
+  if (!CAP_NAV.files.length) {
+    try {
+      const r = await api('/api/config/list');
+      CAP_NAV.files = (r.files || []).filter((f) => (f.group || '').indexOf('技能') >= 0);
+    } catch (e) { CAP_NAV.files = []; }
+  }
+  box.innerHTML = '';
+  const add = (key, label, title) => {
+    const b = el('button', 'cap-nav-tab' + (CAP_NAV.current === key ? ' active' : ''), label);
+    b.type = 'button';
+    if (title) b.title = title;
+    b.addEventListener('click', () => {
+      CAP_NAV.current = key;
+      renderCapNav();
+      if (!key) capsShowList();
+      else showCapFile(key);
+    });
+    box.appendChild(b);
+  };
+  add('', '技能清单', '有哪些技能、能做什么');
+  for (const f of CAP_NAV.files) {
+    const base = String(f.name || '').split('\\').pop();
+    add(f.name, base.replace(/^skill_/, '').replace(/\.md$/, ''), f.name);
+  }
+}
+
+/* 显示"技能清单"(隐藏文件编辑器) */
+function capsShowList() {
+  for (const id of ['cap-bar', 'cap-aux', 'cap-list', 'cap-edit']) {
+    const n = $(id);
+    if (n) n.style.display = '';
+  }
+  const files = $('cap-files');
+  if (files) { files.style.display = 'none'; files.innerHTML = ''; }
+}
+
+/* 显示某个说明文件的编辑器 */
+function showCapFile(name) {
+  for (const id of ['cap-bar', 'cap-aux', 'cap-list', 'cap-edit']) {
+    const n = $(id);
+    if (n) n.style.display = 'none';
+  }
+  const host = $('cap-files');
+  if (!host) return;
+  host.style.display = 'block';
+  mountFileEditor(host, [name]);
+}
+
+/* ---------- 通用"单文件编辑器" ----------
+   给 MCP 页和技能说明用:左边是文件(通常只有一个),右边是文本域 + 保存。
+   安全边界不在前端 —— 能改哪些文件由后端白名单决定,这里只负责把内容摆出来。 */
+function mountFileEditor(host, names) {
+  host.innerHTML = '';
+  const grid = el('div', 'cfg-mini');
+  const side = el('div', 'cfg-mini-side');
+  const main = el('div', 'cfg-mini-main');
+  const head = el('div', 'config-main-head');
+  const fileEl = el('code', null, '');
+  const meta = el('span', 'muted', '');
+  const grow = el('span', 'grow');
+  const btnReload = el('button', 'ghost', '重新载入');
+  const btnSave = el('button', null, '保存');
+  btnReload.type = 'button';
+  btnSave.type = 'button';
+  head.appendChild(fileEl); head.appendChild(meta); head.appendChild(grow);
+  head.appendChild(btnReload); head.appendChild(btnSave);
+  const ta = el('textarea', 'cfg-mini-text');
+  ta.spellcheck = false;
+  ta.placeholder = '在这里编辑这个文件…';
+  const foot = el('div', 'config-foot');
+  const msg = el('span', 'note', '');
+  foot.appendChild(msg);
+
+  grid.appendChild(side);
+  if (names.length <= 1) {
+    /* 只有一个文件时不需要列表:名字已经写在上面那行,左边再列一遍是浪费 */
+    grid.classList.add('single');
+    side.style.display = 'none';
+  } else {
+    grid.appendChild(side);
+  }
+  main.appendChild(head); main.appendChild(ta); main.appendChild(foot);
+  grid.appendChild(main);
+  host.appendChild(grid);
+
+  let current = '';
+  let dirty = false;
+
+  const open = async (name) => {
+    current = name;
+    fileEl.textContent = name;
+    msg.textContent = '';
+    msg.className = 'note';
+    for (const b of Array.from(side.querySelectorAll('.fileitem'))) {
+      b.classList.toggle('active', b.dataset.name === name);
+    }
+    try {
+      const r = await api('/api/config?name=' + encodeURIComponent(name));
+      ta.value = r.content || '';
+      meta.textContent = r.exists ? ('已存在 · ' + (r.size || 0) + ' B') : '还没有这个文件（保存即创建）';
+      dirty = false;
+    } catch (e) {
+      ta.value = '';
+      meta.textContent = '';
+      msg.textContent = '读不到：' + ((e && e.message) || e);
+    }
+    refreshHBars();
+  };
+
+  for (const n of names) {
+    const b = el('button', 'fileitem');
+    b.type = 'button';
+    b.dataset.name = n;
+    b.appendChild(el('span', 'fname', String(n).replace(/\\/g, ' / ')));
+    b.addEventListener('click', () => open(n));
+    side.appendChild(b);
+  }
+
+  ta.addEventListener('input', () => {
+    dirty = true;
+    msg.textContent = '有未保存的改动';
+    msg.className = 'note';
+  });
+  btnReload.addEventListener('click', () => { if (current) open(current); });
+  btnSave.addEventListener('click', async () => {
+    if (!current) return;
+    btnSave.disabled = true;
+    msg.textContent = '正在保存…';
+    try {
+      const r = await api('/api/config', {
+        method: 'POST',
+        body: JSON.stringify({ name: current, content: ta.value }),
+      });
+      dirty = false;
+      msg.className = 'note';
+      msg.textContent = '已保存 · ' + (r.backup || '') + (r.size ? (' · ' + r.size + ' B') : '');
+      meta.textContent = '已存在 · ' + (r.size || 0) + ' B';
+    } catch (e) {
+      msg.className = 'note err';
+      msg.textContent = '保存失败：' + ((e && e.message) || e);
+    } finally {
+      btnSave.disabled = false;
+    }
+  });
+
+  if (names.length) open(names[0]);
+}
+
+async function mcpOpen() {
+  const host = $('mcp-panel');
+  if (!host) return;
+  if (!host.dataset.built) {
+    host.dataset.built = '1';
+    const intro = el('p', 'note',
+      '外部 MCP 服务器写在这个文件里（stdio / JSON-RPC 2.0）。保存后重启程序生效。');
+    host.appendChild(intro);
+    const box = el('div');
+    host.appendChild(box);
+    mountFileEditor(box, ['mcp.json']);
+  }
+  refreshHBars();
 }
 
 function capsSrcTag(x) {
@@ -3244,7 +3424,10 @@ async function renderConfigView() {
 }
 async function renderConfigFiles() {
   const r = await api('/api/config/list');
-  CFG.files = r.files || [];
+  /* skill 说明文件在「技能」页有导航,MCP 有单独一页 —— 这里只留真正"原始文件"那一类,
+     免得同一个文件在两个地方都能改(改完谁生效会说不清)。 */
+  CFG.files = (r.files || []).filter((f) =>
+    (f.group || '').indexOf('技能') < 0 && f.name !== 'mcp.json');
   const box = $('cfg-list');
   box.innerHTML = '';
   const groups = {};
@@ -3262,8 +3445,16 @@ async function renderConfigFiles() {
       box.appendChild(row);
     }
   }
-  if (!CFG.current && CFG.files.length) await loadConfigFile('rules.json');
-  else if (CFG.current) markActiveFile();
+
+  if (!CFG.files.length) {
+    /* 外部工具是"你放一个文件才有一个",空是正常的 —— 但要说清往哪儿放 */
+    box.appendChild(el('div', 'muted',
+      '还没有外部工具。把 <名字>.json 放进数据目录的 tools\\ 下，重启后在「工具」页就能看到它。'));
+    return;
+  }
+  const stillThere = CFG.files.some((f) => f.name === CFG.current);
+  if (!stillThere) await loadConfigFile(CFG.files[0].name);
+  else markActiveFile();
 }
 
 function markActiveFile() {
