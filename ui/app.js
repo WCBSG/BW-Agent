@@ -1310,6 +1310,7 @@ async function loadView(name) {
     eval: renderEvalView,
     automation: renderAutomationView,
     config: renderConfigView,
+    rules: renderRulesView,
   };
   const fn = map[name];
   if (!fn) return;
@@ -1530,7 +1531,7 @@ function switchView(name) {
     history: ['巡检 / 历史记录', '巡检历史'],
     assets: ['数据 / 资产底账', '资产底账'],
     eval: ['数据 / 证据与闭环', '证据与闭环'],
-    rules: ['数据 / 生效规则', '生效规则'],
+    rules: ['系统 / 检测规则', '检测规则'],
     caps: ['系统 / 能力清单', '能力清单'],
     automation: ['系统 / 周期巡检', '周期巡检'],
     config: ['系统 / 配置编辑', '配置编辑'],
@@ -2098,74 +2099,78 @@ const CFG = { files: [], current: null, dirty: false };
 
 /* ============ 规则设置：把 rules.json 按类型拆成子页 ============ */
 
+/* 设置里只剩"程序本身"的东西:界面、能力(技能/工具)、模型、原始文件。
+   检测口径那 6 类挪去了侧栏「规则」——它们不是"设置一次就不动"的偏好,
+   而是每次巡检都要对照的判断依据,值得单独一个入口。 */
 const SET_SCHEMA = [
-  { id: 'basic', title: '基础', desc: '规则版本',
-    fields: [{ k: 'version', label: '规则版本', type: 'text' }] },
   { id: 'ui', title: '界面', desc: '布局与观感（记在本机）' },
-  { id: 'severity', title: '严重等级', desc: '等级名称与排序权重',
-    fields: [{ k: 'severity_levels', label: '等级（权重越大越严重）', type: 'table',
-      cols: [{ k: 'name', label: '名称', w: 220 }, { k: 'rank', label: '权重', type: 'number', w: 120 }] }] },
-  { id: 'alerts', title: '告警', desc: '什么等级走什么渠道',
-    fields: [
-      { k: 'alerts.min_rank', label: '告警最低权重', type: 'number', hint: '低于它的只进报告，不进告警' },
-      { k: 'alerts.immediate_rank', label: '立即通知权重', type: 'number' },
-      { k: 'alerts.channel_immediate', label: '立即通知渠道', type: 'text' },
-      { k: 'alerts.channel_normal', label: '普通通知渠道', type: 'text' }] },
-  { id: 'patterns', title: '敏感信息', desc: '正文里出现即命中',
-    fields: [{ k: 'patterns.sensitive', label: '识别规则', type: 'table',
-      cols: [{ k: 'kind', label: '类型', w: 140 }, { k: 'pattern', label: '正则（内置方言）', mono: true },
-             { k: 'severity', label: '等级', w: 100 }] }] },
-  { id: 'markers', title: '页面标记', desc: '目录索引与口令字段',
-    fields: [
-      { k: 'markers.dir_listing', label: '目录索引标记（一行一个）', type: 'lines' },
-      { k: 'markers.login_password_field', label: '口令字段名', type: 'text' }] },
-  { id: 'payloads', title: '注入载荷', desc: '布尔差分成对使用',
-    fields: [{ k: 'payloads.boolean_diff', label: '载荷族', type: 'table',
-      cols: [{ k: 'context', label: '场景', w: 110 }, { k: 'true', label: '恒真', mono: true },
-             { k: 'false', label: '恒假', mono: true }] }] },
-  { id: 'passwords', title: '弱口令', desc: '口令强度评估用的字典',
-    fields: [{ k: 'weak_passwords', label: '字典（一行一个）', type: 'lines' }] },
-  { id: 'probing', title: '探测参数', desc: '每轮探多少、等多久',
-    fields: [
-      { k: 'probing.max_paths', label: '最多落点', type: 'number' },
-      { k: 'probing.max_dirs', label: '最多目录', type: 'number' },
-      { k: 'probing.max_params', label: '最多参数', type: 'number' },
-      { k: 'probing.timeout_ms', label: '单请求超时（毫秒）', type: 'number' },
-      { k: 'probing.similar_bytes', label: '软 404 比对字节', type: 'number' },
-      { k: 'probing.similar_ratio', label: '相似度阈值', type: 'number', step: '0.01' }] },
-  { id: 'paths', title: '落点与目录', desc: '可能误发布的文件与目录',
-    fields: [
-      { k: 'sensitive_paths', label: '落点（一行一个）', type: 'lines' },
-      { k: 'dir_candidates', label: '目录（一行一个）', type: 'lines' }] },
-  { id: 'signatures', title: '内容特征', desc: '按正文特征判定文件性质',
-    fields: [{ k: 'signatures', label: '特征', type: 'table',
-      cols: [{ k: 'name', label: '名称' }, { k: 'kind', label: '类别' }, { k: 'severity', label: '等级' },
-             { k: 'tag', label: '指纹' }, { k: 'body_any', label: '命中任一（一行一个）', type: 'lines' },
-             { k: 'body_not_any', label: '排除（一行一个）', type: 'lines' },
-             { k: 'min_bytes', label: '最小字节', type: 'number' }] }] },
-  { id: 'headers', title: '安全响应头', desc: '缺哪一条算弱配置',
-    fields: [{ k: 'weak_headers', label: '期望头', type: 'table',
-      cols: [{ k: 'name', label: '头名', w: 170 }, { k: 'title', label: '说明', w: 190 }, { k: 'severity', label: '等级', w: 90 },
-             { k: 'only_https', label: '仅 HTTPS', type: 'bool', w: 90 },
-             { k: 'impact', label: '影响' }, { k: 'fix', label: '修复建议' }] }] },
-  { id: 'org', title: '单位口径', desc: '本单位的关键词与特征',
-    fields: [
-      { k: 'profile_keywords', label: '敏感信息关键词', type: 'lines' },
-      { k: 'profile_file_types', label: '敏感文件类型', type: 'lines' },
-      { k: 'server_header_keys', label: '版本泄露头', type: 'lines' },
-      { k: 'error_signatures', label: '错误回显特征', type: 'lines' },
-      { k: 'dangerous_methods', label: '危险方法', type: 'lines' },
-      { k: 'suspicious_tlds', label: '可疑域名后缀', type: 'lines' }] },
-  { id: 'tamper', title: '篡改判定', desc: '外链数量阈值',
-    fields: [{ k: 'tamper.report_external_hosts', label: '外链超过多少算异常', type: 'number' }] },
   { id: 'skills', title: '技能', desc: '智能体的专业能力' },
   { id: 'tools', title: '工具', desc: '智能体能做的动作' },
   { id: 'models', title: '模型', desc: '接哪家的模型（可配多家，选一家用）' },
   { id: 'advanced', title: '高级 · 文件', desc: '直接编辑原始文件' },
 ];
 
+/* ---------- 「规则」页的字段表 ----------
+   分域与后端 rules_domains.h 一一对应(id 相同);这里只写"怎么显示、怎么收集",
+   至于"哪个键属于哪个域"由后端说了算 —— 前端不再维护一份会走偏的清单。 */
+const RULE_FIELDS = [
+  { id: 'detect', fields: [
+    { k: 'version', label: '规则版本', type: 'text' },
+    { k: 'severity_levels', label: '严重等级（权重越大越严重）', type: 'table',
+      cols: [{ k: 'name', label: '名称', w: 220 }, { k: 'rank', label: '权重', type: 'number', w: 120 }] },
+    { k: 'signatures', label: '内容特征（按正文判定文件性质）', type: 'table',
+      cols: [{ k: 'name', label: '名称' }, { k: 'kind', label: '类别' }, { k: 'severity', label: '等级' },
+             { k: 'tag', label: '指纹' }, { k: 'body_any', label: '命中任一（一行一个）', type: 'lines' },
+             { k: 'body_not_any', label: '排除（一行一个）', type: 'lines' },
+             { k: 'min_bytes', label: '最小字节', type: 'number' }] },
+    { k: 'weak_headers', label: '安全响应头（缺哪一条算弱配置）', type: 'table',
+      cols: [{ k: 'name', label: '头名', w: 170 }, { k: 'title', label: '说明', w: 190 },
+             { k: 'severity', label: '等级', w: 90 },
+             { k: 'only_https', label: '仅 HTTPS', type: 'bool', w: 90 },
+             { k: 'impact', label: '影响' }, { k: 'fix', label: '修复建议' }] },
+    { k: 'payloads.boolean_diff', label: '注入载荷（布尔差分成对使用）', type: 'table',
+      cols: [{ k: 'context', label: '场景', w: 110 }, { k: 'true', label: '恒真', mono: true },
+             { k: 'false', label: '恒假', mono: true }] },
+    { k: 'weak_passwords', label: '弱口令字典（一行一个）', type: 'lines' },
+  ] },
+  { id: 'sensitive', fields: [
+    { k: 'patterns.sensitive', label: '识别规则（正文里出现即命中）', type: 'table',
+      cols: [{ k: 'kind', label: '类型', w: 140 }, { k: 'pattern', label: '正则（内置方言）', mono: true },
+             { k: 'severity', label: '等级', w: 100 }] },
+  ] },
+  { id: 'probe', fields: [
+    { k: 'probing.max_paths', label: '最多落点', type: 'number' },
+    { k: 'probing.max_dirs', label: '最多目录', type: 'number' },
+    { k: 'probing.max_params', label: '最多参数', type: 'number' },
+    { k: 'probing.timeout_ms', label: '单请求超时（毫秒）', type: 'number' },
+    { k: 'probing.similar_bytes', label: '软 404 比对字节', type: 'number' },
+    { k: 'probing.similar_ratio', label: '相似度阈值', type: 'number', step: '0.01' },
+    { k: 'sensitive_paths', label: '落点（一行一个）', type: 'lines' },
+    { k: 'dir_candidates', label: '目录（一行一个）', type: 'lines' },
+  ] },
+  { id: 'alert', fields: [
+    { k: 'alerts.min_rank', label: '告警最低权重', type: 'number', hint: '低于它的只进报告，不进告警' },
+    { k: 'alerts.immediate_rank', label: '立即通知权重', type: 'number' },
+    { k: 'alerts.channel_immediate', label: '立即通知渠道', type: 'text' },
+    { k: 'alerts.channel_normal', label: '普通通知渠道', type: 'text' },
+  ] },
+  { id: 'org', fields: [
+    { k: 'profile_keywords', label: '敏感信息关键词', type: 'lines' },
+    { k: 'profile_file_types', label: '敏感文件类型', type: 'lines' },
+    { k: 'server_header_keys', label: '版本泄露头', type: 'lines' },
+    { k: 'error_signatures', label: '错误回显特征', type: 'lines' },
+    { k: 'dangerous_methods', label: '危险方法', type: 'lines' },
+    { k: 'suspicious_tlds', label: '可疑域名后缀', type: 'lines' },
+  ] },
+  { id: 'page', fields: [
+    { k: 'markers.dir_listing', label: '目录索引标记（一行一个）', type: 'lines' },
+    { k: 'markers.login_password_field', label: '口令字段名', type: 'text' },
+    { k: 'tamper.report_external_hosts', label: '外链超过多少算异常', type: 'number' },
+  ] },
+];
+
 let RULES = null;
-let SET_CURRENT = 'basic';
+let SET_CURRENT = 'ui';
 
 function getPath(obj, path) {
   return path.split('.').reduce((o, k) => (o && typeof o === 'object' ? o[k] : undefined), obj);
@@ -2334,20 +2339,22 @@ function setRenderPage() {
   if ($('set-msg')) $('set-msg').textContent = '';
 }
 
-function setCollect() {
-  const out = JSON.parse(JSON.stringify(RULES || {}));
-  const page = SET_SCHEMA.find((g) => g.id === SET_CURRENT);
-  for (const f of (page && page.fields) || []) {
+/* 从一组字段里读出值,写进 base 的副本并按 f.k 的路径落位。
+   container 决定"去哪儿找控件":设置页与规则页都在 DOM 里(只是隐藏),
+   用 document 查会抓到另一个页面里同名的 data-path —— 所以按容器限定。 */
+function collectFields(base, container, fields) {
+  const out = JSON.parse(JSON.stringify(base || {}));
+  const scope = container || document;
+  for (const f of fields || []) {
     if (f.type === 'table') {
-      const tb = document.querySelector(`tbody[data-path="${f.k}"]`);
+      const tb = scope.querySelector(`tbody[data-path="${f.k}"]`);
       if (!tb) continue;
-      const orig = getPath(RULES || {}, f.k);
+      const orig = getPath(base || {}, f.k);
       const rows = [];
       for (const tr of Array.from(tb.querySelectorAll('tr'))) {
         /* 以原始那一行为底：schema 没覆盖到的字段原样保留，不因为"界面没画"就被删掉 */
         const idx = tr.dataset.idx === undefined ? -1 : Number(tr.dataset.idx);
-        const base = Array.isArray(orig) && idx >= 0 && orig[idx] ? JSON.parse(JSON.stringify(orig[idx])) : {};
-        const row = base;
+        const row = (Array.isArray(orig) && idx >= 0 && orig[idx]) ? JSON.parse(JSON.stringify(orig[idx])) : {};
         for (const c of f.cols) {
           const ctl = tr.querySelector(`[data-col="${c.k}"]`);
           if (!ctl) continue;
@@ -2363,7 +2370,7 @@ function setCollect() {
       setPath(out, f.k, rows);
       continue;
     }
-    const node = document.querySelector(`[data-path="${f.k}"]`);
+    const node = scope.querySelector(`[data-path="${f.k}"]`);
     if (!node) continue;
     if (f.type === 'lines') {
       setPath(out, f.k, node.value.split('\n').map((s) => s.trim()).filter(Boolean));
@@ -2376,6 +2383,11 @@ function setCollect() {
     }
   }
   return out;
+}
+
+function setCollect() {
+  const page = SET_SCHEMA.find((g) => g.id === SET_CURRENT);
+  return collectFields(RULES, document, (page && page.fields) || []);
 }
 
 async function setSave() {
@@ -2412,6 +2424,108 @@ const setSaveBtn = $('set-save');
 if (setSaveBtn) setSaveBtn.addEventListener('click', setSave);
 const setResetBtn = $('set-reset');
 if (setResetBtn) setResetBtn.addEventListener('click', () => setLoad(true).catch(() => {}));
+
+/* ============ 规则（按域编辑） ============
+   6 个域各存一个文件：改弱口令不会顺手动到告警阈值，版本库里也只出现一个文件的差异。
+   域的清单与"哪个键属于哪个域"都以服务端为准，这里只提供字段的显示方式。 */
+const RULE = { domains: [], current: 'detect', loaded: false };
+
+function ruleFieldsOf(id) {
+  const d = RULE_FIELDS.find((x) => x.id === id);
+  return (d && d.fields) || [];
+}
+
+function renderRuleDomains() {
+  const box = $('rules-domains');
+  if (!box) return;
+  box.innerHTML = '';
+  for (const d of RULE.domains) {
+    const b = el('button', 'fileitem' + (RULE.current === d.id ? ' active' : ''));
+    b.type = 'button';
+    b.appendChild(el('span', 'fname', d.title || d.id));
+    b.appendChild(el('span', 'fmeta', d.exists ? (d.size + ' B') : '未生成'));
+    b.addEventListener('click', () => {
+      RULE.current = d.id;
+      if ($('rules-msg')) $('rules-msg').textContent = '';
+      renderRuleDomains();
+      renderRulePage();
+    });
+    box.appendChild(b);
+  }
+}
+
+function renderRulePage() {
+  const form = $('rules-form');
+  if (!form) return;
+  const d = RULE.domains.find((x) => x.id === RULE.current) || { id: 'detect' };
+  if ($('rules-domain-file')) $('rules-domain-file').textContent = d.file || (d.id + '.json');
+  if ($('rules-domain-note')) $('rules-domain-note').textContent = d.note || '';
+  form.innerHTML = '';
+  for (const f of ruleFieldsOf(RULE.current)) form.appendChild(setFieldEl(f));
+}
+
+async function renderRulesView(force) {
+  if (RULE.loaded && !force) { renderRuleDomains(); renderRulePage(); return; }
+  const hint = $('rules-hint');
+  try {
+    const r = await api('/api/settings');
+    RULES = r.rules || {};
+    RULE.domains = r.domains || [];
+    RULE.loaded = true;
+    if ($('rules-source')) {
+      $('rules-source').textContent =
+        `每个域一个文件，存在 ${r.dir || '数据目录\\rules'}；保存只写当前这一域，立即生效。`;
+    }
+    if (hint) hint.textContent = `${RULE.domains.length} 个域 · 改哪一类就只动那一个文件`;
+    if (!RULE.domains.find((x) => x.id === RULE.current) && RULE.domains.length) {
+      RULE.current = RULE.domains[0].id;
+    }
+    renderRuleDomains();
+    renderRulePage();
+    const pre = $('rules-preview');
+    if (pre) {
+      const text = JSON.stringify(r.rules || {}, null, 2);
+      pre.textContent = text.length > 24000 ? text.slice(0, 24000) + '\n… （只显示前 24000 字）' : text;
+    }
+  } catch (e) {
+    if (hint) hint.textContent = '读不到规则：' + ((e && e.message) || e);
+  }
+}
+
+async function rulesSave() {
+  const btn = $('rules-save');
+  const msg = $('rules-msg');
+  if (btn) btn.disabled = true;
+  if (msg) msg.textContent = '正在保存…';
+  try {
+    const fields = ruleFieldsOf(RULE.current);
+    const full = collectFields(RULES, $('rules-form'), fields);
+    /* 只把当前域的顶层键发过去:后端就只写那一个文件 */
+    const patch = {};
+    for (const f of fields) {
+      const top = String(f.k).split('.')[0];
+      if (full[top] !== undefined) patch[top] = full[top];
+    }
+    const r = await api('/api/settings', {
+      method: 'POST',
+      body: JSON.stringify({ domain: RULE.current, patch }),
+    });
+    RULES = full;
+    state.cache = {};
+    await renderRulesView(true);
+    /* 提示写在重渲染之后:否则刚说完"已保存"就被下一次渲染清掉 */
+    if (msg) msg.textContent = '已保存并生效 · ' + (r.source || '');
+  } catch (e) {
+    if (msg) msg.textContent = '保存失败：' + ((e && e.message) || e);
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+const rulesSaveBtn = $('rules-save');
+if (rulesSaveBtn) rulesSaveBtn.addEventListener('click', rulesSave);
+const rulesReloadBtn = $('rules-reload');
+if (rulesReloadBtn) rulesReloadBtn.addEventListener('click', () => renderRulesView(true).catch(() => {}));
 
 /* ============ 技能 / 工具：图形化管理 ============
    加一个能力不该要求会写 front-matter、会拼 JSON。这里把同一份落盘文件用表单生成，

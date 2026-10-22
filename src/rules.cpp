@@ -6,6 +6,7 @@
 #include "rules.h"
 
 #include "res.h"
+#include "rules_domains.h"
 
 #include <cctype>
 #include <string>
@@ -76,16 +77,28 @@ void rules_init(const char *base_dir) {
     }
   }
 
-  /* ① 数据目录 */
-  char user_rules[MAX_PATH * 2];
-  app_data_path(user_rules, sizeof(user_rules), "rules.json");
-  g_root = try_parse_rules(user_rules, &g_from_file);
-  if (g_root) {
-    snprintf(g_source, sizeof(g_source), "%s", user_rules);
-    log_info("[规则] 已载入 %s", user_rules);
-    return;
-  }
+  /* ① 数据目录的 rules\ 分域文件(detect/sensitive/probe/alert/org/page)。
+     首次运行时按出厂规则生成,之后以这 6 个文件为准 —— 不再读旧的大文件 rules.json:
+     同一个键在两处各有一份值时,"到底哪份生效"是解释不清的。 */
+  {
+    char err[256] = {0};
+    int made = rules_domains_generate(err, sizeof(err));
+    if (made < 0) log_warn("[规则] 分域规则生成失败:%s", err[0] ? err : "未知原因");
+    else if (made > 0) log_info("[规则] 已在数据目录生成 %d 个分域规则文件(rules\\)", made);
 
+    char *merr = NULL;
+    json_t *merged = rules_domains_load_merged(NULL, 0);
+    if (merged) {
+      g_root = merged;
+      char dir[MAX_PATH * 2];
+      rules_domain_dir(dir, sizeof(dir));
+      snprintf(g_source, sizeof(g_source), "%s\\*.json", dir);
+      g_from_file = 1;
+      log_info("[规则] 已载入分域规则 %s\\(%d 个域)", dir, rules_domain_count());
+      return;
+    }
+    (void)merr;
+  }
   /* ② exe 目录附近 */
   for (size_t i = 0; i < sizeof(CANDIDATES_REL) / sizeof(CANDIDATES_REL[0]) && !g_root; i++) {
     char path[MAX_PATH * 2];
@@ -103,7 +116,7 @@ void rules_init(const char *base_dir) {
     g_root = json_parse(g_factory_text);     /* 生效的那份要是独立副本,免得被改动 */
     g_from_file = 0;
     snprintf(g_source, sizeof(g_source),
-             "exe 内置规则(自带;在数据目录放 rules.json 即可覆盖)");
+             "exe 内置规则(自带;数据目录的 rules\\ 分域文件会覆盖它)");
     log_info("[规则] 使用 exe 内置规则(%d 字节)", (int)strlen(g_factory_text));
   }
 }

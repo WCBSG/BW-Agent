@@ -16,40 +16,80 @@
 #include "ext.h"
 #include "json.h"
 #include "rules.h"
+#include "rules_domains.h"
 
 #define CFG_MAX_BYTES (256 * 1024)
 
 /* ================= 规则设置(图形化) =================
-   规则本来是 rules.json 里的一堆键。让人直接改 JSON,是把工具的麻烦转嫁给使用者,
-   所以这里按"类型"拆组:GET 给出当前生效的整份规则,POST 整份写回并立即重载。 */
+   规则按 6 个域分文件存放(见 rules_domains.h)。这里提供三种用法:
+     GET  /api/settings                 → 域清单 + 当前生效的整份规则(界面首屏一次取全)
+     GET  /api/settings?domain=detect   → 只看一个域
+     POST /api/settings {domain, patch} → 保存一个域(只落这一个文件)
+     POST /api/settings {rules}         → 整份写回(兼容旧调用,按域拆开落盘)
+   按域保存的意义不只是"文件小":改弱口令不会顺手动到告警阈值,
+   版本库里也只出现一个文件的差异。 */
 void api_rules(const http_req_t *req, http_res_t *res) {
-  char path[MAX_PATH * 2];
-  app_data_path(path, sizeof(path), "rules.json");
+  char dir[MAX_PATH * 2];
+  rules_domain_dir(dir, sizeof(dir));
 
   if (strcmp(req->method, "POST") == 0) {
     json_t *body = req->body ? json_parse(req->body) : NULL;
-    json_t *rules = body ? j_get(body, "rules") : NULL;
-    if (!rules || rules->type != J_OBJ) {
-      if (body) json_free(body);
-      http_res_json(res, 400, "{\"ok\":false,\"error\":\"需要 rules 对象\"}");
+    if (!body) {
+      http_res_json(res, 400, "{\"ok\":false,\"error\":\"请求体不是合法 JSON\"}");
       return;
     }
-    char *text = json_dump_pretty(rules);
-    int rc = text ? file_write_all(path, text, strlen(text)) : -1;
-    free(text);
-    if (body) json_free(body);
+    /* domain 指向 body 内部,body 释放后就是野指针 —— 先拷一份 */
+    char domain[32];
+    snprintf(domain, sizeof(domain), "%s", j_s(body, "domain", ""));
+    json_t *patch = j_get(body, "patch");
+    json_t *rules = j_get(body, "rules");
+    char err[512] = {0};
+    int rc;
+    const char *what = "";
+
+    if (domain[0]) {
+      if (!patch || patch->type != J_OBJ) {
+        json_free(body);
+        http_res_json(res, 400, "{\"ok\":false,\"error\":\"需要 patch 对象(这一域要保存的字段)\"}");
+        return;
+      }
+      const rules_domain_t *d = rules_domain_find(domain);
+      char *dump = json_dump(patch);
+      rc = rules_domains_save(domain, patch, err, sizeof(err));
+      what = d ? d->title : domain;
+      free(dump);
+    } else if (rules && rules->type == J_OBJ) {
+      rc = rules_domains_save_all(rules, err, sizeof(err));
+      what = "全部规则";
+    } else {
+      json_free(body);
+      http_res_json(res, 400,
+                    "{\"ok\":false,\"error\":\"需要 domain+patch,或者整份 rules\"}");
+      return;
+    }
+    json_free(body);
+
     if (rc != 0) {
-      http_res_json(res, 500, "{\"ok\":false,\"error\":\"规则文件写入失败\"}");
+      buf_t e;
+      buf_init(&e);
+      buf_puts(&e, "{\"ok\":false,\"error\":");
+      buf_json_str(&e, err[0] ? err : "规则保存失败");
+      buf_puts(&e, "}");
+      http_res_json(res, 500, e.data);
+      buf_free(&e);
       return;
     }
+
+    /* 写完立刻重载:规则是"改了马上生效"而不是"改完记得重启" */
     rules_shutdown();
     rules_init(app_dir());
     serve_refresh_status();
-    serve_audit_line("修改规则设置", "rules.json", "界面保存并重载");
+    serve_audit_line(domain[0] ? "修改规则(按域)" : "修改规则设置", what, "界面保存并重载");
+
     buf_t b;
     buf_init(&b);
-    buf_puts(&b, "{\"ok\":true,\"path\":");
-    buf_json_str(&b, path);
+    buf_puts(&b, "{\"ok\":true,\"domain\":");
+    buf_json_str(&b, domain);
     buf_puts(&b, ",\"source\":");
     buf_json_str(&b, rules_source());
     buf_puts(&b, "}");
@@ -58,15 +98,65 @@ void api_rules(const http_req_t *req, http_res_t *res) {
     return;
   }
 
-  /* GET:返回当前真正生效的那一份(数据目录有就用它,没有就用内置默认) */
-  json_t *root = rules_root();
-  json_t *copy = root ? json_parse(json_dump(root)) : j_obj();
+  /* GET */
+  char want[32];
+  http_query(req, "domain", want, sizeof(want), "");
+
   json_t *out = j_obj();
   j_set_bool(out, "ok", 1);
-  j_set_str(out, "path", path);
+  j_set_str(out, "dir", dir);
   j_set_str(out, "source", rules_source());
   j_set_bool(out, "fromFile", rules_from_file());
+
+  if (want[0]) {
+    char err[512] = {0};
+    json_t *dom = rules_domains_read(want, err, sizeof(err));
+    if (!dom) {
+      json_free(out);
+      buf_t e;
+      buf_init(&e);
+      buf_puts(&e, "{\"ok\":false,\"error\":");
+      buf_json_str(&e, err[0] ? err : "读不到这一域");
+      buf_puts(&e, "}");
+      http_res_json(res, 400, e.data);
+      buf_free(&e);
+      return;
+    }
+    const rules_domain_t *d = rules_domain_find(want);
+    j_set_str(out, "domain", want);
+    j_set_str(out, "title", d ? d->title : want);
+    j_set_str(out, "note", d ? d->note : "");
+    j_set(out, "rules", dom);
+    char *text = json_dump(out);
+    http_res_json(res, 200, text);
+    free(text);
+    json_free(out);
+    return;
+  }
+
+  /* 域清单:界面左侧那一列就是它(顺序也来自这里,不是前端自己写死) */
+  json_t *list = j_arr();
+  for (int i = 0; i < rules_domain_count(); i++) {
+    const rules_domain_t *d = rules_domain_at(i);
+    char path[MAX_PATH * 4];
+    path_join(path, sizeof(path), dir, d->file);
+    long sz = file_size(path);
+    json_t *o = j_obj();
+    j_set_str(o, "id", d->id);
+    j_set_str(o, "title", d->title);
+    j_set_str(o, "note", d->note);
+    j_set_str(o, "file", d->file);
+    j_set_num(o, "size", sz > 0 ? (double)sz : 0);
+    j_set_bool(o, "exists", sz >= 0 ? 1 : 0);
+    j_add(list, o);
+  }
+  j_set(out, "domains", list);
+
+  /* 整份规则:起手式/状态卡这些地方还要看"生效的到底是什么",不必再发一次请求 */
+  json_t *root = rules_root();
+  json_t *copy = root ? json_parse(json_dump(root)) : j_obj();
   j_set(out, "rules", copy ? copy : j_obj());
+
   char *text = json_dump(out);
   http_res_json(res, 200, text);
   free(text);
@@ -93,6 +183,8 @@ static int cfg_allowed(const char *name) {
   if (slash != 1) return 0;
   if (str_startswith(name, "skills\\") || str_startswith(name, "skills/")) return md;
   if (str_startswith(name, "tools\\") || str_startswith(name, "tools/")) return js;
+  /* 规则的 6 个分域文件也要能手改(界面改不动的东西,记事本还留一条路) */
+  if (str_startswith(name, "rules\\") || str_startswith(name, "rules/")) return js;
   return 0;
 }
 
@@ -162,7 +254,7 @@ void api_config_get(const http_req_t *req, http_res_t *res) {
   char path[MAX_PATH * 2];
   if (!cfg_path(name, path, sizeof(path))) {
     http_res_text(res, 400, "application/json; charset=utf-8",
-                  "{\"ok\":false,\"error\":\"只允许编辑数据目录下的 rules.json / mcp.json / skills\\\\*.md / tools\\\\*.json\"}");
+                  "{\"ok\":false,\"error\":\"只允许编辑数据目录下的 rules\\\\*.json / mcp.json / skills\\\\*.md / tools\\\\*.json\"}");
     return;
   }
   size_t len = 0;

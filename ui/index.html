@@ -81,6 +81,10 @@
           <span>搜索</span>
           <kbd>Ctrl K</kbd>
         </button>
+        <button class="act" data-goto="rules" type="button" title="检测口径：判什么、按什么等级算、探多少">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 4.5h14v15H5z"/><path d="M8 8.5h8M8 12h8M8 15.5h5"/></svg>
+          <span>规则</span>
+        </button>
         <button class="act" data-goto="automation" type="button" title="定时巡检">
           <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12.8" r="7.2"/><path d="M12 9.6v3.6l2.4 1.6"/><path d="M7 4.4 5 6.4M17 4.4l2 2"/></svg>
           <span>自动化</span>
@@ -294,6 +298,42 @@
         <div class="cards" id="eval-missing"></div>
       </section>
     </section><!-- 配置编辑 -->
+    <!-- 规则（可编辑，按 6 个域分开存） -->
+    <section class="view" id="view-rules">
+      <section class="panel">
+        <div class="panel-head">
+          <div><h2>检测规则</h2></div>
+          <span class="hint" id="rules-hint"></span>
+        </div>
+        <p class="note" id="rules-source"></p>
+        <div class="config-grid">
+          <div class="config-side">
+            <div class="config-side-head"><span>按域编辑</span></div>
+            <div class="filelist" id="rules-domains"></div>
+          </div>
+          <div class="config-main">
+            <div class="config-main-head">
+              <code id="rules-domain-file">detect.json</code>
+              <span class="muted" id="rules-domain-note"></span>
+              <span class="grow"></span>
+              <button class="ghost" id="rules-reload">重新载入</button>
+              <button id="rules-save">保存这一域</button>
+            </div>
+            <div class="set-form" id="rules-form"></div>
+            <div class="config-foot">
+              <span class="note" id="rules-msg"></span>
+              <span class="muted">保存后立即生效，不用重启</span>
+            </div>
+          </div>
+        </div>
+      </section>
+      <section class="panel">
+        <div class="panel-head"><div><h2>当前生效（合并后）</h2></div>
+          <span class="hint">只读：6 个域合并起来到底是什么，一眼核对</span></div>
+        <div class="table-wrap"><pre class="rules-preview" id="rules-preview"></pre></div>
+      </section>
+    </section>
+
     <!-- 自动化（周期巡检） -->
     <section class="view" id="view-automation">
       <section class="panel">
