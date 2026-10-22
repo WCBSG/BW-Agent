@@ -257,6 +257,7 @@ code,pre,.mono{font-family:var(--mono)}
 .pill b{color:var(--ink);font-weight:600;font-family:var(--mono);font-size:12.5px}
 .pill.on{color:#26603a;border-color:#cfe2d4;background:#f2f8f3}
 .pill.off{color:#8a3b34;border-color:#ecd4d1;background:#fcf3f2}
+.pill.warn{color:#8a5a1a;border-color:#ecdcbe;background:#fdf7ec}
 .pill.has-findings{color:#8a3b34;border-color:#ecd4d1;background:#fcf3f2}
 .status-icon{width:12px;height:12px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
 

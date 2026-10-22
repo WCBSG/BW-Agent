@@ -78,7 +78,7 @@ build\build.bat                          重新编译（需要 g++ / MinGW-w64�
 
 - 三类协议：**OpenAI 兼容**（DeepSeek / Kimi / 通义 / 智谱 / 硅基流动 / OneAPI / vLLM / Ollama …）、
   **Anthropic**（Messages 接口）、**恒脑开放服务**（appKey + appSecret + 智能体 ID，地址填平台首页即可）；
-- 可以接入多条，**设一条"当前"**，它调不通时按顺序自动顺延下一条（日志里会写「模型已切到备用通道」）；
+- 可以接入多条，**自己选一条"当前"**在用；不会自动换 —— 用哪家由人定，日志里写清是谁在回话；
 - 每条都能**单独测试**：真发一句话，把"地址对不对 / key 对不对 / 模型名对不对"当场说清楚；
 - 配置存在数据目录的 `models.json` 里，密钥**读出来是掩码**（`••••xxxx`），界面保存时留空或保持掩码就表示不改。
 
@@ -516,7 +516,7 @@ build\agent.exe run skill_我的技能
 │   ├─ res.cpp embed.h              资源层:磁盘优先、exe 内置兜底
 │   ├─ webutil.cpp                通用网页处理:指纹、归一、响应头、链接、URL 参数
 │   ├─ net.cpp                    取数通道:WinHTTP + 授权/限速/审计
-│   ├─ llm_provider.cpp           模型接入层:三类协议(OpenAI 兼容 / Anthropic / 恒脑)、models.json、按顺序兜底
+│   ├─ llm_provider.cpp           模型接入层:三类协议(OpenAI 兼容 / Anthropic / 恒脑)、models.json、当前通道
 │   ├─ llm.cpp                    决策与提问:调 provider、解析动作、本地规则降级
 │   ├─ thread_store.cpp           对话存储:threads/<id>/{meta,messages,events} + 索引流水
 │   ├─ native_ui.cpp tray.cpp     原生窗口(Win32 + GDI+)与托盘

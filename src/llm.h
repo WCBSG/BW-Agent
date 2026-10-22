@@ -23,6 +23,11 @@ int  llm_enabled(void);
 void        llm_set_last_error(const char *msg);
 const char *llm_last_error(void);
 
+/* 换了一条模型通道之后调它:把"上一家失败"的冷却与原因一起清掉。
+   不这么做的话,人已经手动切到能用的那家,程序还在为上一家的失败
+   冷静两分钟 —— 表现就是"切了也没用,还在走本地规则"。 */
+void llm_reset_error(void);
+
 /* 决策:把"用户输入 + 可用工具/技能 + 已获得的观察"拼成提示词,问模型要决策。
    context 是循环里的观察记录(JSON 数组,可为 NULL)。
    返回 0 成功(decision 已填);非 0 表示失败,调用方应走降级。 */

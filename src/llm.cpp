@@ -23,13 +23,24 @@ void llm_set_last_error(const char *msg) {
 
 const char *llm_last_error(void) { return g_last_error ? g_last_error : ""; }
 
+void llm_reset_error(void) {
+  g_fail_until_ms = 0;
+  llm_set_last_error("");
+}
+
 /* 模型配置全交给 llm_provider:这里只保留"哪一条在生效"的问法 */
 void llm_init(const char *env_dir) {
   (void)env_dir;              /* 路径统一由 providers 决定(数据目录下的 models.json) */
   providers_init();
 }
 
-int llm_enabled(void) { return providers_ready_count() > 0; }
+/* "有模型可用"= 当前选中的那一条可用。配了三家但选中的那条不通,
+   就不该对界面说"在线" —— 否则顶栏亮着、每轮又都降级,自相矛盾。 */
+int llm_enabled(void) {
+  int idx = providers_active_index();
+  provider_t *p = idx >= 0 ? provider_at(idx) : NULL;
+  return provider_ready(p) ? 1 : 0;
+}
 /* ================= 决策解析(容错) ================= */
 /* 模型爱加解释、爱包代码块、爱把 JSON 写坏。这里从最可信到最宽泛逐级尝试。 */
 static const char *find_json_span(const char *s, size_t *out_len) {
@@ -338,39 +349,31 @@ static void emit_prose(void *ud, const char *text) {
 
 static int llm_call(agent_t *a, const char *prompt, buf_t *answer_out) {
   buf_clear(answer_out);
-  int total = providers_count();
-  if (total <= 0 || !prompt || !*prompt) return -1;
+  if (!prompt || !*prompt) return -1;
 
-  int start = providers_active_index();
-  if (start < 0) start = 0;
-
-  char last[512] = "";
-  int tried = 0;
-  for (int k = 0; k < total; k++) {
-    int idx = (start + k) % total;
-    provider_t *p = provider_at(idx);
-    if (!provider_ready(p)) continue;
-    tried++;
-
-    emit_ctx_t ec;
-    memset(&ec, 0, sizeof(ec));
-    ec.agent = a;
-    char err[512] = "";
-    int rc = provider_chat(p, prompt, emit_prose, &ec, answer_out, err, sizeof(err));
-    if (rc == 0 && answer_out->len > 0) {
-      if (k > 0) log_info("模型已切到备用通道:%s", p->name);
-      return 0;
-    }
-    snprintf(last, sizeof(last), "%s:%s", p->name, err[0] ? err : "没有返回内容");
-    log_warn("模型 %s 调用失败(%s),尝试下一条", p->name, err[0] ? err : "空回复");
-    /* 失败时可能已经有半截输出,清掉再换下一条,免得两家的回答接在一起 */
-    buf_clear(answer_out);
+  /* 只用「当前」那一条:和主流 agent 一样,配几家由人挑一家在用。
+     不再"这家不通就悄悄换下一条" —— 换了人也不知道刚才用的是谁,
+     而排查问题最需要的恰恰是"到底哪家在回话"。 */
+  int idx = providers_active_index();
+  provider_t *p = idx >= 0 ? provider_at(idx) : NULL;
+  if (!p || !provider_ready(p)) {
+    llm_set_last_error("当前没有可用的模型(在「设置 → 模型」里选一条可用的)");
+    return -1;
   }
-  if (tried == 0) {
-    llm_set_last_error("没有可用的模型配置");
-  } else {
-    llm_set_last_error(last);
-  }
+
+  emit_ctx_t ec;
+  memset(&ec, 0, sizeof(ec));
+  ec.agent = a;
+  char err[512] = "";
+  int rc = provider_chat(p, prompt, emit_prose, &ec, answer_out, err, sizeof(err));
+  if (rc == 0 && answer_out->len > 0) return 0;
+
+  /* 失败时可能已经有半截输出,清掉:别把"说到一半的话"当成回答 */
+  buf_clear(answer_out);
+  char last[512];
+  snprintf(last, sizeof(last), "%s:%s", p->name, err[0] ? err : "没有返回内容");
+  llm_set_last_error(last);
+  log_warn("模型 %s 调用失败:%s", p->name, err[0] ? err : "空回复");
   return -1;
 }
 

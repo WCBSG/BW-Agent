@@ -226,11 +226,17 @@ function renderStatus(s) {
   state.status = s;
 
   const pm = $('pill-model');
-  pm.innerHTML = s.model
-    ? '<svg class="status-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 12a8 8 0 0 1 16 0"/><path d="M7 12a5 5 0 0 1 10 0"/><circle cx="12" cy="16.5" r="1.5"/></svg><span>在线</span>'
-    : '<svg class="status-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m4 4 16 16"/><path d="M5 12a7 7 0 0 1 2.1-5"/><path d="M9 16a4 4 0 0 1 1.1-2.8"/><path d="M19 12a7 7 0 0 0-1.2-3.9"/><circle cx="12" cy="17" r="1.5"/></svg><span>离线</span>';
-  pm.className = 'pill status-pill ' + (s.model ? 'on' : 'off');
-  pm.title = s.model ? '模型在线' : '模型离线，当前使用本地规则';
+  /* 三态:没配 / 配了但最近一次失败 / 正常。
+     "配了"不等于"通了" —— 选中的那条刚失败过,就不该还亮着"在线"。 */
+  const modelState = !s.model ? 'off' : (s.modelFailed ? 'warn' : 'on');
+  pm.innerHTML = {
+    on: '<svg class="status-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 12a8 8 0 0 1 16 0"/><path d="M7 12a5 5 0 0 1 10 0"/><circle cx="12" cy="16.5" r="1.5"/></svg><span>在线</span>',
+    warn: '<svg class="status-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4.5 21 20H3z"/><path d="M12 10v4.5"/><circle cx="12" cy="17.6" r="1"/></svg><span>模型出错</span>',
+    off: '<svg class="status-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m4 4 16 16"/><path d="M5 12a7 7 0 0 1 2.1-5"/><path d="M9 16a4 4 0 0 1 1.1-2.8"/><path d="M19 12a7 7 0 0 0-1.2-3.9"/><circle cx="12" cy="17" r="1.5"/></svg><span>离线</span>',
+  }[modelState];
+  pm.className = 'pill status-pill ' + (modelState === 'on' ? 'on' : (modelState === 'warn' ? 'warn' : 'off'));
+  pm.title = modelState === 'on' ? '模型在线'
+    : (modelState === 'warn' ? '模型调用失败，本轮走本地规则' : '模型离线，当前使用本地规则');
   if (s.modelFailed && s.modelError) {
     /* 把平台给的原因挂在提示上:用户一眼知道是凭证问题还是网络问题 */
     pm.title += '；最近一次调用失败：' + s.modelError;
@@ -592,7 +598,9 @@ function setBusy(on) {
 function endTurn() {
   setBusy(false);
   state.cache = {};                    // 一轮结束：闭环数据可能变了,下次进视图重新取
-  api('/api/status').then(renderStatus).catch(() => {});
+  /* 状态缓存是后端在这一轮收尾时才重算的,message_stop 会先到一步:
+     晚 400ms 再取,顶栏那盏灯才不会仍是上一轮的样子。 */
+  setTimeout(() => { api('/api/status').then(renderStatus).catch(() => {}); }, 400);
   renderRail();
   renderRecent();
   renderChats();
@@ -2009,7 +2017,7 @@ const SET_SCHEMA = [
     fields: [{ k: 'tamper.report_external_hosts', label: '外链超过多少算异常', type: 'number' }] },
   { id: 'skills', title: '技能', desc: '智能体的专业能力' },
   { id: 'tools', title: '工具', desc: '智能体能做的动作' },
-  { id: 'models', title: '模型', desc: '接哪家的模型（可多家兜底）' },
+  { id: 'models', title: '模型', desc: '接哪家的模型（可配多家，选一家用）' },
   { id: 'advanced', title: '高级 · 文件', desc: '直接编辑原始文件' },
 ];
 
@@ -2721,7 +2729,7 @@ function modelsRenderList() {
   }
   if ($('model-note')) {
     $('model-note').textContent = list.length
-      ? `配置存在 ${d.path || 'models.json'}。当前优先用「${(list.find((x) => x.id === active) || {}).name || '未指定'}」，它调不通时自动顺延下一家。`
+      ? `配置存在 ${d.path || 'models.json'}。当前使用「${(list.find((x) => x.id === active) || {}).name || '未指定'}」；配了多家时用哪家由这里选，不会自动换。`
       : '接一家模型后，智能体就能自己判断下一步做什么；不接也不影响使用，会走本地规则。';
   }
   if (!list.length) {

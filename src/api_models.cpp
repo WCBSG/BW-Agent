@@ -16,6 +16,7 @@
 #include "serve_ctx.h"
 
 #include "json.h"
+#include "llm.h"
 #include "llm_provider.h"
 
 /* 把内存里的配置拍成 JSON(带密钥明文,只在本机内存里流转) */
@@ -123,7 +124,9 @@ void api_models(const http_req_t *req, http_res_t *res) {
     return;
   }
   /* 顶部那盏"在线/离线"灯是缓存出来的 —— 改完模型必须重算,
-     否则界面得等到下一次巡检才肯承认"模型已经接上了"。 */
+     否则界面得等到下一次巡检才肯承认"模型已经接上了"。
+     顺手清掉上一家的失败冷却:人已经手动换了通道,不该还被上一条拖着。 */
+  llm_reset_error();
   serve_refresh_status();
   models_ok(res, 200, str_ieq(action, "save") ? "已保存" : "已生效");
 }
