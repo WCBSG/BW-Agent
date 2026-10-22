@@ -277,6 +277,112 @@ void ui_open_url_async(int port) {
   if (th) CloseHandle(th);
 }
 
+/* ---------- 单实例:把已经在跑的界面叫到前台 ----------
+   第二次启动的进程不提供服务,只做这一件事。窗口属于别的进程
+   (Edge 的 --app 窗口就是一个独立进程),所以只能按标题/类名去认,
+   认到了用 Win32 的前台调用把它拎起来。 */
+
+static BOOL CALLBACK find_ours_proc(HWND h, LPARAM lp) {
+  if (!IsWindowVisible(h)) return TRUE;
+  RECT r;
+  if (!GetWindowRect(h, &r)) return TRUE;
+  if (r.right - r.left < 320 || r.bottom - r.top < 240) return TRUE;   /* 工具/隐藏窗口 */
+  wchar_t title[256];
+  if (GetWindowTextW(h, title, 256) <= 0) return TRUE;
+  /* 只认"整个标题就是产品名"的窗口,不做前缀匹配 ——
+     VS Code 打开本项目时标题是「网站安全巡检智能体 (127.0.0.1:18845) - 网络安全作品赛」,
+     前缀匹配会把编辑器当成界面窗口拎到前台(踩过这个坑)。
+     带端口的新标题由 find_app_window 精确匹配,这里只管老页面。 */
+  if (wcscmp(title, L"网站安全巡检智能体") != 0 &&
+      wcscmp(title, L"网站安全巡检") != 0) {
+    return TRUE;
+  }
+  *(HWND *)lp = h;
+  return FALSE;
+}
+
+static HWND find_app_window(int port) {
+  HWND h = FindWindowW(L"BwAgentNativeWnd", NULL);   /* 原生窗口(UI_MODE=native) */
+  if (h) return h;                                   /* 隐藏时也该叫出来,所以不看可见性 */
+
+  /* 页面加载后 app.js 会把标题改成「网站安全巡检智能体 · <端口>」。
+     先按端口精确找:多实例时各自的窗口标题不同,不会拎错。
+     注意必须看 IsWindowVisible:Edge 关掉窗口后进程可能还在,
+     同名的隐藏窗口会让"该新开一个"被误判成"已经唤到前台"。 */
+  wchar_t want[128];
+  swprintf(want, 128, L"网站安全巡检智能体 · %d", port);
+  h = FindWindowW(L"Chrome_WidgetWin_1", want);      /* Edge/Chrome 的顶层类 */
+  if (h && IsWindowVisible(h)) return h;
+  h = FindWindowW(NULL, want);
+  if (h && IsWindowVisible(h)) return h;
+
+  /* 老版本页面(标题里没有端口)只能按名字认 —— 至少比"重新开一个"强 */
+  h = FindWindowW(NULL, L"网站安全巡检智能体");
+  if (h && IsWindowVisible(h)) return h;
+  h = FindWindowW(NULL, L"网站安全巡检");
+  if (h && IsWindowVisible(h)) return h;
+  HWND hit = NULL;
+  EnumWindows(find_ours_proc, (LPARAM)&hit);
+  return hit;
+}
+
+static void bring_to_front(HWND h) {
+  if (IsIconic(h)) ShowWindow(h, SW_RESTORE);
+  else ShowWindow(h, SW_SHOW);
+
+  /* Windows 默认不让"后台进程"抢前台。挂到当前前台窗口的输入队列上再设,
+     就变成"同一个输入队列内部的前后切换",不会被拒绝。 */
+  HWND fg = GetForegroundWindow();
+  DWORD fg_tid = fg ? GetWindowThreadProcessId(fg, NULL) : 0;
+  DWORD my_tid = GetCurrentThreadId();
+  int attached = 0;
+  if (fg_tid && fg_tid != my_tid) attached = AttachThreadInput(my_tid, fg_tid, TRUE);
+
+  BringWindowToTop(h);
+  int ok = SetForegroundWindow(h);
+
+  if (attached) AttachThreadInput(my_tid, fg_tid, FALSE);
+  if (!ok) {
+    /* 还是不让抢:至少让任务栏闪一下,人能找到它 */
+    FLASHWINFO fi;
+    memset(&fi, 0, sizeof(fi));
+    fi.cbSize = sizeof(fi);
+    fi.hwnd = h;
+    fi.dwFlags = FLASHW_ALL | FLASHW_TIMERNOFG;
+    fi.uCount = 3;
+    FlashWindowEx(&fi);
+    log_warn("窗口已置顶,但系统没允许直接抢焦点(任务栏已闪烁提示)");
+  }
+}
+
+int ui_show_existing(int port) {
+  HWND h = find_app_window(port);
+  if (h) {
+    bring_to_front(h);
+    snprintf(g_mode, sizeof(g_mode), "focus");
+    log_info("已把运行中的界面唤到前台(端口 %d)", port);
+    return 1;
+  }
+
+  /* 窗口关掉了(托盘点过关闭、或 UI_MODE=off 启动的):重新开一个
+     指向同一端口的 —— 服务还在原来的进程里,这里只是开个窗口看它。 */
+  const char *force = getenv("UI_MODE");
+  int want_browser = force && str_ieq(force, "browser");
+  char exe[MAX_PATH];
+  if (!want_browser && find_chromium(exe, sizeof(exe))) {
+    if (launch_app_window(exe, port)) {
+      log_info("已重新打开界面窗口,指向运行中的服务(端口 %d)", port);
+      return 2;
+    }
+  }
+  if (launch_shell(port)) {
+    log_info("已在默认浏览器打开运行中的界面(端口 %d)", port);
+    return 2;
+  }
+  log_warn("没能打开界面窗口(端口 %d),请手动访问 http://127.0.0.1:%d/", port, port);
+  return 0;
+}
+
 void ui_close(void) {
   if (!g_have_proc) return;
   /* 只关我们自己拉起来的那棵树,用户原本开着的浏览器不受影响 */

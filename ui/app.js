@@ -10,6 +10,11 @@
  */
 'use strict';
 
+/* 窗口标题带上端口:同一个数据目录只允许一个服务(见 src/instance.cpp),
+   但调试时可能用 --multi 开着多个;单实例的第二次启动也靠标题里的端口
+   精确定位"哪个窗口连的是哪个后端",不至于把别的实例的窗口拎到前台。 */
+document.title = '网站安全巡检智能体 · ' + location.port;
+
 const $ = (id) => document.getElementById(id);
 const stream = $('stream');
 const trace = $('trace');

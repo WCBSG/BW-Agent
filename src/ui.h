@@ -17,6 +17,11 @@
    port = 后端监听端口 */
 void ui_open_url_async(int port);
 
+/* 已经有实例在跑时用它:先找运行中的界面窗口叫到前台;
+   窗口没了(托盘收起过、UI_MODE=off 等)就重新开一个指向同一端口的窗口。
+   返回 1=唤到前台, 2=重新打开, 0=没成功。 */
+int ui_show_existing(int port);
+
 /* 关掉我们自己打开的那个应用窗口(不动用户原本开着的浏览器) */
 void ui_close(void);
 

@@ -3,6 +3,7 @@
 #include "agent.h"
 #include "common.h"
 #include "ext.h"
+#include "instance.h"
 #include "json.h"
 #include "llm.h"
 #include "net.h"
@@ -166,6 +167,53 @@ int app_main(int argc, char **argv) {
     }
   }
   log_set_level((have_console || have_log_file) ? LOG_INFO : LOG_WARN);
+
+  /* ---------- 单实例 ----------
+     双击两次不该起两个服务:两个端口、两份托盘图标,还读写同一份 SQLite
+     与 audit.jsonl。第二份不初始化任何东西,只把已有界面叫到前台然后退出。
+     --multi 可以强制多开(同一份数据两条并行演示时要它,知道自己在干什么再用)。
+     按数据目录区分:BW_AGENT_HOME 指到别处就是另一份数据,可以同时开。 */
+  int allow_multi = 0;
+  {
+    int w = 1;
+    for (int i = 1; i < argc; i++) {
+      const char *a = argv[i] ? argv[i] : "";
+      if (str_ieq(a, "--multi") || str_ieq(a, "-multi")) {
+        allow_multi = 1;
+        continue;
+      }
+      argv[w++] = argv[i];
+    }
+    argv[w] = NULL;
+    argc = w;
+  }
+  {
+    const char *first = (argc > 1) ? argv[1] : "start";
+    int long_running = str_ieq(first, "start") || str_ieq(first, "serve");
+    if (long_running && !allow_multi && !instance_acquire()) {
+      int want_ui = 1;
+      const char *um = getenv("UI_MODE");
+      if (um && (str_ieq(um, "off") || str_ieq(um, "none"))) want_ui = 0;
+      for (int i = 2; i < argc; i++) {
+        if (str_ieq(argv[i], "--no-ui")) want_ui = 0;
+      }
+      int running = instance_running_port(2500);
+      if (running > 0) {
+        printf("\n  程序已经在运行(端口 %d),本次启动只把它的界面叫到前台。\n", running);
+        log_info("检测到已有实例(端口 %d):%s", running, instance_note());
+        if (want_ui && ui_show_existing(running) == 0) {
+          printf("  没能自动打开界面,请手动访问 http://127.0.0.1:%d/\n", running);
+        }
+        printf("  想强制再开一个:加 --multi。\n\n");
+        return 0;
+      }
+      printf("\n  程序已经在运行,但没找到它的服务端口(可能正在启动,或已经卡住)。\n"
+             "  稍等几秒再试;或在任务管理器里结束它;要强制多开请加 --multi。\n\n");
+      log_warn("检测到已有实例但探活失败:%s", instance_note());
+      return 1;
+    }
+  }
+
   tools_init();          /* 注册表必须先建好,后面所有分支都依赖它 */
   skills_init();
   /* 首次运行就把可改的规则/测试集落到数据目录(任何入口都一样:
@@ -662,10 +710,13 @@ int app_main(int argc, char **argv) {
       "  help                    显示本帮助\n"
       "\n"
       "  --debug                 显示命令行窗口与实时日志(排查问题用;双击运行时才有意义)\n"
+      "  --multi                 允许同一份数据同时开多个实例(默认单实例:再启动只把\n"
+      "                          已有界面叫到前台)\n"
       "\n"
       "模型:\n"
       "  界面的「设置 → 模型」里配,支持恒脑 / OpenAI 兼容 / Anthropic 三类接口,\n"
-      "  可同时配多家并按顺序兜底;配置存在数据目录的 models.json 里,不内置任何密钥。\n"
+      "  可以配多家,用哪个由你在界面上选(不会自动换另一家)。配置存在数据目录的\n"
+      "  models.json 里,不内置任何密钥。\n"
       "  下面这些环境变量(或 .env)只是给老配置兜底用的,界面上配了就不看它们:\n"
       "  DAS_APP_KEY / DAS_APP_SECRET / DAS_AGENT_ID   恒脑平台凭证与智能体\n"
       "\n"

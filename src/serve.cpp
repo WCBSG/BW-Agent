@@ -26,6 +26,7 @@
 #include "regex.h"
 #include "ext.h"
 #include "http.h"
+#include "instance.h"
 #include "llm.h"
 #include "native_ui.h"
 #include "net.h"
@@ -2032,6 +2033,9 @@ int serve_run(const char *domain, int port, int open_ui) {
   /* 运行数据统一放 <数据目录>(默认 C:\Users\<用户名>\.bw_agent),exe 放哪都行 */
   const char *ddir = app_data_dir();
   ensure_dir(ddir);
+  /* 单实例:把"我在这个端口"记到数据目录,第二次启动据此把界面叫到前台。
+     没拿到锁(--multi / 命令行工具)时不写,免得覆盖真正那个实例的记录。 */
+  instance_publish(port);
   res_bootstrap_data_dir();          /* 首次运行:把可改的规则与说明落一份到数据目录 */
   snprintf(g_data_dir, sizeof(g_data_dir), "%s", ddir);
   g_store = store_open(g_data_dir);
@@ -2122,6 +2126,7 @@ int serve_run(const char *domain, int port, int open_ui) {
   }
 
   int serve_rc = http_serve(NULL, port, router, NULL);
+  instance_unpublish();             /* 这个端口不再由我们监听,记录先撤掉 */
 
   sched_stop();
   printf("服务已停止。\n");

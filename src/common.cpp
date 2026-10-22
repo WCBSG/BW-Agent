@@ -537,17 +537,37 @@ const char *app_exe(void) { return g_app_exe; }
    也不会因为 exe 所在目录只读/被清理而丢数据。BW_AGENT_HOME 可以改到别处。 */
 static char g_data_dir[MAX_PATH * 2] = {0};
 
+/* 环境变量按 UTF-8 取:getenv 拿到的是 ANSI(中文系统是 GBK),
+   直接当 UTF-8 用会把中文路径写坏 —— BW_AGENT_HOME 和用户名都可能是中文,
+   而数据目录下面全是 u8_to_w 的宽字符调用,一旦源头编码错了就全跟着错。 */
+static int env_utf8(const wchar_t *name, char *out, size_t cap) {
+  if (out && cap) out[0] = 0;
+  DWORD need = GetEnvironmentVariableW(name, NULL, 0);
+  if (need == 0) return 0;
+  wchar_t *buf = (wchar_t *)xmalloc((size_t)need * sizeof(wchar_t));
+  DWORD got = GetEnvironmentVariableW(name, buf, need);
+  if (got > 0 && got < need) {
+    char *u = w_to_u8(buf);
+    if (u) {
+      if (out && cap) snprintf(out, cap, "%s", u);
+      free(u);
+    }
+  }
+  free(buf);
+  return out && out[0] != 0;
+}
+
 static void make_data_default(char *out, size_t cap) {
   char *home = NULL;
-  size_t hlen = 0;
-  char *env = getenv("USERPROFILE");
-  if (env && *env) {
+  char env[MAX_PATH * 2];
+  if (env_utf8(L"USERPROFILE", env, sizeof(env))) {
     home = xstrdup(env);
   } else {
-    const char *drive = getenv("HOMEDRIVE");
-    const char *path = getenv("HOMEPATH");
-    if (drive && path) {
-      hlen = strlen(drive) + strlen(path) + 1;
+    char drive[MAX_PATH] = {0};
+    char path[MAX_PATH] = {0};
+    if (env_utf8(L"HOMEDRIVE", drive, sizeof(drive)) &&
+        env_utf8(L"HOMEPATH", path, sizeof(path))) {
+      size_t hlen = strlen(drive) + strlen(path) + 1;
       home = (char *)xmalloc(hlen);
       snprintf(home, hlen, "%s%s", drive, path);
     } else {
@@ -557,13 +577,12 @@ static void make_data_default(char *out, size_t cap) {
   }
   snprintf(out, cap, "%s\\.bw_agent\\", home);
   free(home);
-  (void)hlen;
 }
 
 const char *app_data_dir(void) {
   if (g_data_dir[0]) return g_data_dir;
-  const char *override = getenv("BW_AGENT_HOME");
-  if (override && *override) {
+  char override[MAX_PATH * 2];
+  if (env_utf8(L"BW_AGENT_HOME", override, sizeof(override))) {
     snprintf(g_data_dir, sizeof(g_data_dir), "%s", override);
   } else {
     make_data_default(g_data_dir, sizeof(g_data_dir));
