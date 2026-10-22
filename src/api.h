@@ -27,4 +27,7 @@ void api_reload(const http_req_t *req, http_res_t *res);
 /* 模型配置 */
 void api_models(const http_req_t *req, http_res_t *res);
 
+/* 能力管理:技能 / 工具的列表、保存、删除、市场导入、模型生成 */
+void api_caps(const http_req_t *req, http_res_t *res);
+
 #endif /* AGENT_API_H */
