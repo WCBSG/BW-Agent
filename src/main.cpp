@@ -1227,6 +1227,34 @@ int app_main(int argc, char **argv) {
         }
       }
     }
+    /* 授权池:命令行走同一套边界。池子存在就以它为准(含 ! 不允许条目),
+       这样"界面上被拦的路径"在命令行里也能复现,不用非得起服务。 */
+    {
+      char pool_path[MAX_PATH * 2];
+      app_data_path(pool_path, sizeof(pool_path), "pool.json");
+      size_t plen = 0;
+      char *ptext = file_read_all(pool_path, &plen);
+      if (ptext) {
+        json_t *root = json_parse(ptext);
+        if (root) {
+          json_t *hosts = j_get(root, "hosts");
+          const char *list[512];
+          int pn = 0;
+          for (int i = 0; i < j_len(hosts) && pn < 512; i++) {
+            json_t *v = j_at(hosts, i);
+            if (!v) continue;
+            if (v->type == J_STR && v->str) list[pn++] = v->str;
+            else if (v->type == J_OBJ) list[pn++] = j_s(v, "host", "");
+          }
+          if (pn > 0) {
+            net_pool_set(list, pn);
+            printf("授权池:%d 条(含 ! 不允许条目)\n", pn);
+          }
+          json_free(root);
+        }
+        free(ptext);
+      }
+    }
 
     json_t *args = args_from_argv(argc, argv, args_start, target, tname);
     tool_result_t tr;
