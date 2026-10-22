@@ -651,7 +651,32 @@ static void h_config_save(const http_req_t *req, http_res_t *res) {
   snprintf(dir, sizeof(dir), "%s", path);
   char *slash = strrchr(dir, '\\');
   if (slash) { *slash = 0; ensure_dir(dir); }
-  int rc = file_write_all(path, content, len);
+  /* 保留原来的换行风格:浏览器 textarea 会把 CRLF 归一成 LF,
+     直接写回去会让"只改了一个词"的文件在 git 里整篇 diff。
+     策略:原文件用 CRLF 就按 CRLF 写;原文件不存在(新建)按 LF。 */
+  int want_crlf = 0;
+  if (file_size(path) >= 0) {
+    size_t chk_len = 0;
+    char *chk = file_read_all(path, &chk_len);
+    if (chk) {
+      want_crlf = (strstr(chk, "\r\n") != NULL);
+      free(chk);
+    }
+  }
+  int rc;
+  if (want_crlf && !strstr(content, "\r\n")) {
+    buf_t conv;
+    buf_init(&conv);
+    for (const char *p = content; *p; p++) {
+      if (*p == '\n') buf_putc_(&conv, '\r');
+      buf_putc_(&conv, *p);
+    }
+    len = conv.len;
+    rc = file_write_all(path, conv.data, conv.len);
+    buf_free(&conv);
+  } else {
+    rc = file_write_all(path, content, len);
+  }
   json_free(body);
   buf_t b;
   buf_init(&b);

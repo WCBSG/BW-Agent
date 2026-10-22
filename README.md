@@ -5,7 +5,7 @@
 
 - 交付物：`build\网站安全巡检智能体.exe`（单文件，界面与默认规则都在里面）
 - 后端：纯 C（`src/` 约 1.1 万行），**零第三方依赖** —— 不要 Python、不要 Node、不要运行库
-- 界面：自建网页界面（亮/暗双主题，7 个页面），由程序内置
+- 界面：自建网页界面（侧边栏工作台 + 亮/暗双主题 + 8 个页面），由程序内置
 - 数据：默认放 `C:\Users\<用户名>\.bw_agent`
 
 ---
@@ -324,6 +324,7 @@ build\agent.exe run skill_我的技能
 | 效果评测 | 召回率/准确率/误报率，以及逐用例的命中/漏检/多检 |
 | 生效规则 | 本次用的规则来源、内容特征表、落点与目录清单 |
 | 能力清单 | 7 个技能与 8 个工具的用途、何时用、用到哪些工具 |
+| 配置编辑 | 直接改 `rules.json` / `mcp.json` / `skills\*.md` / `tools\*.json`；JSON 先校验、自动留 `.bak`、规则可热加载；页内有 Skill 市场与官方 MCP 市场入口 |
 
 界面与后端只通过 HTTP + SSE 通信，事件协议是三册合同的六个事件
 （`message_start / block_start / block_delta / block_stop / tool_status / message_stop`），

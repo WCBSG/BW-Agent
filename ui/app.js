@@ -120,30 +120,43 @@ function bars(container, dict, colorFn) {
 
 function renderStatus(s) {
   state.status = s;
-  $('subtitle').textContent =
-    `会话 ${s.sessionId} · 任务 ${s.taskId} · 工具 ${s.tools} 个 / 技能 ${s.skills} 个 · 步数上限 ${s.maxSteps}`;
 
   const pm = $('pill-model');
-  pm.textContent = '模型 · ' + s.modelName + (s.modelFailed ? '(上次调用失败)' : '');
-  pm.className = 'pill ' + (s.model ? 'on' : 'off');
+  pm.innerHTML = s.model
+    ? '<svg class="status-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 12a8 8 0 0 1 16 0"/><path d="M7 12a5 5 0 0 1 10 0"/><circle cx="12" cy="16.5" r="1.5"/></svg><span>在线</span>'
+    : '<svg class="status-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m4 4 16 16"/><path d="M5 12a7 7 0 0 1 2.1-5"/><path d="M9 16a4 4 0 0 1 1.1-2.8"/><path d="M19 12a7 7 0 0 0-1.2-3.9"/><circle cx="12" cy="17" r="1.5"/></svg><span>离线</span>';
+  pm.className = 'pill status-pill ' + (s.model ? 'on' : 'off');
+  pm.title = s.model ? '模型在线' : '模型离线，当前使用本地规则';
   if (s.modelFailed && s.modelError) {
     /* 把平台给的原因挂在提示上:用户一眼知道是凭证问题还是网络问题 */
-    pm.title = '模型调用失败:' + s.modelError;
-  } else {
-    pm.removeAttribute('title');
+    pm.title += '；最近一次调用失败：' + s.modelError;
   }
 
   const ps = $('pill-scope');
-  ps.textContent = '授权 · ' + (s.authorized ? s.domain : '未设置');
-  ps.className = 'pill ' + (s.authorized ? 'on' : 'off');
+  ps.innerHTML = s.authorized
+    ? '<svg class="status-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3 19 6v5c0 4.5-2.7 7.8-7 10-4.3-2.2-7-5.5-7-10V6l7-3Z"/><path d="m8.5 12 2.2 2.2 4.8-4.8"/></svg>'
+    : '<svg class="status-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3 19 6v5c0 4.5-2.7 7.8-7 10-4.3-2.2-7-5.5-7-10V6l7-3Z"/><path d="m9 9 6 6M15 9l-6 6"/></svg>';
+  ps.className = 'pill status-pill ' + (s.authorized ? 'on' : 'off');
+  ps.title = s.authorized ? '已授权：' + s.domain : '尚未设置巡检授权';
 
   const pc = $('pill-count');
   const n = s.findingCount !== undefined ? s.findingCount : (s.findings || []).length;
-  pc.textContent = '发现 · ' + n;
-  pc.className = 'pill ' + (n > 0 ? 'on' : '');
+  pc.innerHTML = '<svg class="status-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5.5h16v13H4z"/><path d="M8 9h8M8 12h5M8 15h3"/></svg><b>' + n + '</b>';
+  pc.className = 'pill status-pill ' + (n > 0 ? 'has-findings' : '');
+  pc.title = n > 0 ? `发现 ${n} 个问题` : '暂无发现问题';
 
   $('scope-domain').value = s.authorized ? s.domain : '';
   $('scope-ok').checked = !!s.authorized;
+
+  const sideStatus = $('side-scope-status');
+  const sideName = $('side-scope-name');
+  if (sideStatus) {
+    sideStatus.textContent = s.authorized ? '目标已授权' : '未设置目标';
+    sideStatus.dataset.ready = s.authorized ? 'true' : 'false';
+  }
+  if (sideName) sideName.textContent = s.authorized ? s.domain : '确认授权后开始巡检';
+  const introModel = $('intro-model');
+  if (introModel) introModel.textContent = s.model ? '恒脑在线' : '离线规则';
 }
 
 function renderManifest(m) {
@@ -403,7 +416,6 @@ async function renderReportView() {
   const tiles = [
     { l: '发现总数', v: stats.total !== undefined ? stats.total : fl.length },
     { l: '待处理', v: stats.open !== undefined ? stats.open : open, cls: (stats.open || open) ? 'warn' : 'ok' },
-    { l: '误报', v: stats.false_positive !== undefined ? stats.false_positive : fp, cls: (stats.false_positive || fp) ? 'warn' : 'ok' },
     { l: '严重', v: (stats.by_severity || {})['严重'] || 0, cls: ((stats.by_severity || {})['严重'] || 0) ? 'bad' : 'ok' },
     { l: '高危', v: (stats.by_severity || {})['高'] || 0, cls: ((stats.by_severity || {})['高'] || 0) ? 'warn' : 'ok' },
     { l: '告警条数', v: (alerts.items || []).length || 0 },
@@ -755,6 +767,22 @@ function switchView(name) {
   state.view = name;
   document.querySelectorAll('.vtab').forEach((b) => b.classList.toggle('active', b.dataset.view === name));
   document.querySelectorAll('.view').forEach((v) => v.classList.toggle('active', v.id === 'view-' + name));
+  const meta = {
+    loop: ['工作台 / 决策循环', '决策循环'],
+    report: ['巡检 / 报告与告警', '报告与告警'],
+    history: ['巡检 / 历史记录', '巡检历史'],
+    assets: ['数据 / 资产底账', '资产底账'],
+    eval: ['数据 / 效果评测', '效果评测'],
+    rules: ['数据 / 生效规则', '生效规则'],
+    caps: ['系统 / 能力清单', '能力清单'],
+    config: ['系统 / 配置编辑', '配置编辑'],
+  }[name];
+  if (meta) {
+    const kicker = $('current-view-kicker');
+    const title = $('current-view-title');
+    if (kicker) kicker.textContent = meta[0];
+    if (title) title.textContent = meta[1];
+  }
 }
 
 /* ============ 配置编辑 ============ */
@@ -948,6 +976,16 @@ document.querySelectorAll('.vtab').forEach((b) => {
   });
 });
 
+const scrollTimer = new WeakMap();
+document.querySelectorAll('.main, .stream, .trace, .steps, .table-wrap, .tool-args, .tool-out, .config-side .filelist').forEach((node) => {
+  node.classList.add('scroll-surface');
+  node.addEventListener('wheel', () => {
+    node.classList.add('is-scrolling');
+    clearTimeout(scrollTimer.get(node));
+    scrollTimer.set(node, setTimeout(() => node.classList.remove('is-scrolling'), 700));
+  }, { passive: true });
+});
+
 document.querySelectorAll('.tab').forEach((t) => {
   t.addEventListener('click', () => {
     document.querySelectorAll('.tab').forEach((x) => x.classList.remove('active'));
@@ -980,6 +1018,9 @@ $('cfg-text').addEventListener('input', () => {
 /* 授权弹窗：这是合规的第一道闸，前端也必须拦一次 */
 $('btn-scope').addEventListener('click', () => $('modal').classList.remove('hidden'));
 $('scope-cancel').addEventListener('click', () => $('modal').classList.add('hidden'));
+$('modal').addEventListener('click', (e) => {
+  if (e.target.classList.contains('modal-backdrop')) $('modal').classList.add('hidden');
+});
 $('scope-save').addEventListener('click', async () => {
   const domain = $('scope-domain').value.trim();
   const ok = $('scope-ok').checked;
@@ -1006,7 +1047,12 @@ $('scope-save').addEventListener('click', async () => {
    默认跟随系统，用户手动切过就记在 localStorage 里。 */
 function applyTheme(dark) {
   document.documentElement.classList.toggle('dark', dark);
-  $('btn-theme').textContent = dark ? '亮色' : '暗色';
+  const button = $('btn-theme');
+  if (button) {
+    const label = dark ? '切换到亮色主题' : '切换到暗色主题';
+    button.setAttribute('aria-label', label);
+    button.setAttribute('title', label);
+  }
 }
 function initTheme() {
   let saved = null;
@@ -1029,7 +1075,7 @@ function initTheme() {
   try {
     renderStatus(await api('/api/status'));
   } catch (e) {
-    $('subtitle').textContent = '连不上后端服务：' + e.message;
+    console.warn('连不上后端服务：' + e.message);
   }
   if (!state.status || !state.status.authorized) {
     $('modal').classList.remove('hidden');
