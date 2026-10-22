@@ -3046,3 +3046,5 @@ int serve_run(const char *domain, int port, int open_ui) {
   if (port_busy) return 2;          /* 让调用方换个端口再试 */
   return serve_rc == 0 ? 0 : 1;
 }
+
+const char *serve_token(void) { return g_token; }

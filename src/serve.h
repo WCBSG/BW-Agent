@@ -15,4 +15,9 @@
    open_ui = 是否自动打开界面窗口 */
 int serve_run(const char *domain, int port, int open_ui);
 
+/* 本进程的接口令牌。
+   原生界面和网页界面是同一条边界:它也走 HTTP 接口,所以也得带令牌 ——
+   与其在进程里开一条"绕过门禁"的后门,不如把令牌借给它。 */
+const char *serve_token(void);
+
 #endif /* AGENT_SERVE_H */
