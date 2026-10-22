@@ -50,6 +50,7 @@ function atBottom() {
   return stream.scrollHeight - stream.scrollTop - stream.clientHeight < 80;
 }
 function scrollBottom(force) {
+  if (!PREFS.autoscroll) return;
   if (force || atBottom()) stream.scrollTop = stream.scrollHeight;
 }
 
@@ -73,6 +74,14 @@ let BW_SID = (() => {
   } catch (e) {
     return newChatId();
   }
+})();
+
+/* 界面偏好：定义在最前面，滚动这类早期函数会用到 */
+const PREFS_KEY = 'bw-prefs';
+const PREFS_DEFAULT = { trace: true, autoscroll: true, motion: true };
+let PREFS = (() => {
+  try { return Object.assign({}, PREFS_DEFAULT, JSON.parse(localStorage.getItem(PREFS_KEY) || '{}')); }
+  catch (e) { return Object.assign({}, PREFS_DEFAULT); }
 })();
 
 /* 本轮待发送的附件:先上传换一个 id,聊天时只带 id。
@@ -2064,6 +2073,126 @@ $('q').addEventListener('keydown', (e) => {
     send($('q').value);
   }
 });
+
+/* ============ 布局：左右栏宽度、输入框高度（可拖拽 / 可调） ============ */
+const LAYOUT_KEY = 'bw-layout';
+const LAYOUT_DEFAULT = { side: 252, rail: 320, compose: 56 };
+let LAYOUT = (() => {
+  try { return Object.assign({}, LAYOUT_DEFAULT, JSON.parse(localStorage.getItem(LAYOUT_KEY) || '{}')); }
+  catch (e) { return Object.assign({}, LAYOUT_DEFAULT); }
+})();
+
+function saveLayout() {
+  try { localStorage.setItem(LAYOUT_KEY, JSON.stringify(LAYOUT)); } catch (e) { /* 忽略 */ }
+}
+
+function applyLayout() {
+  const w = $('work');
+  if (w) {
+    w.style.setProperty('--side-w', LAYOUT.side + 'px');
+    w.style.setProperty('--rail-w', LAYOUT.rail + 'px');
+  }
+  const q = $('q');
+  if (q) q.style.minHeight = LAYOUT.compose + 'px';
+  const set = (id, v) => { const n = $(id); if (n) n.value = v; };
+  const txt = (id, v) => { const n = $(id); if (n) n.textContent = v + 'px'; };
+  set('ui-side', LAYOUT.side); txt('ui-side-v', LAYOUT.side);
+  set('ui-rail', LAYOUT.rail); txt('ui-rail-v', LAYOUT.rail);
+  set('ui-compose', LAYOUT.compose); txt('ui-compose-v', LAYOUT.compose);
+}
+
+/* 拖分隔线：按住左键横向拖动，松手落盘；双击回默认 */
+function bindSplitter(id, key, min, max, invert) {
+  const el = $(id);
+  if (!el) return;
+  el.addEventListener('pointerdown', (ev) => {
+    if (ev.button !== 0) return;
+    if (key === 'rail' && $('work').classList.contains('rail-collapsed')) {
+      railCollapsed = false;
+      try { localStorage.setItem(RAIL_KEY, '0'); } catch (e) { /* 忽略 */ }
+      applyRail();
+    }
+    const startX = ev.clientX;
+    const start = LAYOUT[key];
+    el.setPointerCapture(ev.pointerId);
+    el.classList.add('dragging');
+    document.body.classList.add('col-resizing');
+
+    const onMove = (e) => {
+      const delta = e.clientX - startX;
+      const next = invert ? start - delta : start + delta;
+      LAYOUT[key] = Math.max(min, Math.min(max, Math.round(next)));
+      applyLayout();
+    };
+    const onUp = () => {
+      el.classList.remove('dragging');
+      document.body.classList.remove('col-resizing');
+      el.removeEventListener('pointermove', onMove);
+      el.removeEventListener('pointerup', onUp);
+      el.removeEventListener('pointercancel', onUp);
+      saveLayout();
+    };
+    el.addEventListener('pointermove', onMove);
+    el.addEventListener('pointerup', onUp);
+    el.addEventListener('pointercancel', onUp);
+    ev.preventDefault();
+  });
+  el.addEventListener('dblclick', () => {
+    LAYOUT[key] = LAYOUT_DEFAULT[key];
+    applyLayout();
+    saveLayout();
+  });
+}
+
+bindSplitter('sp-left', 'side', 180, 420, false);
+bindSplitter('sp-right', 'rail', 240, 560, true);
+
+/* 设置页的三条滑杆：和拖拽共用同一份状态 */
+[['ui-side', 'side'], ['ui-rail', 'rail'], ['ui-compose', 'compose']].forEach(([id, key]) => {
+  const el = $(id);
+  if (!el) return;
+  el.addEventListener('input', () => {
+    LAYOUT[key] = Number(el.value) || LAYOUT_DEFAULT[key];
+    applyLayout();
+    saveLayout();
+  });
+});
+const uiReset = $('ui-reset');
+if (uiReset) {
+  uiReset.addEventListener('click', () => {
+    LAYOUT = Object.assign({}, LAYOUT_DEFAULT);
+    applyLayout();
+    saveLayout();
+  });
+}
+applyLayout();
+
+/* 偏好开关：不改后端，只改这一台机器上的观感 */
+function savePrefs() {
+  try { localStorage.setItem(PREFS_KEY, JSON.stringify(PREFS)); } catch (e) { /* 忽略 */ }
+}
+
+function applyPrefs() {
+  const traceNode = $('trace');
+  const traceCard = traceNode ? traceNode.closest('.rail-card') : null;
+  if (traceCard) traceCard.style.display = PREFS.trace ? '' : 'none';
+  document.body.classList.toggle('no-motion', !PREFS.motion);
+  [['ui-trace', 'trace'], ['ui-autoscroll', 'autoscroll'], ['ui-motion', 'motion']].forEach(([id, key]) => {
+    const node = $(id);
+    if (node) node.checked = !!PREFS[key];
+  });
+}
+
+[['ui-trace', 'trace'], ['ui-autoscroll', 'autoscroll'], ['ui-motion', 'motion']].forEach(([id, key]) => {
+  const node = $(id);
+  if (!node) return;
+  node.addEventListener('change', () => {
+    PREFS[key] = node.checked;
+    applyPrefs();
+    savePrefs();
+  });
+});
+applyPrefs();
 
 /* 右栏收起/展开:窄栏里也留一个能点回来的按钮 */
 const RAIL_KEY = 'bw-rail';
