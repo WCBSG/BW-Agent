@@ -30,4 +30,11 @@ void api_models(const http_req_t *req, http_res_t *res);
 /* 能力管理:技能 / 工具的列表、保存、删除、市场导入、模型生成 */
 void api_caps(const http_req_t *req, http_res_t *res);
 
+/* 周期巡检:列出 / 存一份 / 删一份 / 马上跑一次 */
+void api_automation_list(const http_req_t *req, http_res_t *res);
+void api_automation_post(const http_req_t *req, http_res_t *res);
+
+/* 本单位敏感信息定义 */
+void api_profiles(const http_req_t *req, http_res_t *res);
+
 #endif /* AGENT_API_H */
