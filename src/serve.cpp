@@ -2089,6 +2089,16 @@ static void h_chat(const http_req_t *req, http_res_t *res) {
 
   net_scope_violation_clear();       /* 每轮从零开始记越界 */
   g_sse = &ctx;                      /* 线程本地:只影响本连接 */
+
+  /* 这一轮到底算不算"一次运行"?
+     技能自己会建运行记录(全流程巡检就是),那就用它那份,别再记一条重复的;
+     纯对话、只查一项、复测这类没有自建记录的,由这里补一条 ——
+     否则"聊了几句"在运行记录里彻底看不见,用户会以为这些对话没留下痕迹。 */
+  int runs_before = store_count(g_store, "runs");
+  int assets_before = store_count(g_store, "assets");
+  int findings_before = store_count(g_store, "findings");
+  int calls_before_chat = net_http_calls();
+
   loop_state_t st;
   memset(&st, 0, sizeof(st));
   agent_run_turn(slot->a, input.data ? input.data : q, &st);
@@ -2099,6 +2109,44 @@ static void h_chat(const http_req_t *req, http_res_t *res) {
   const char *stop = (st.stop_code == STOP_NEED_USER) ? "refusal" : "end_turn";
   if (st.stop_code == STOP_ANSWERED || st.stop_code == STOP_ANSWERING_ONLY) {
     stop = "end_turn";
+  }
+
+  if (store_count(g_store, "runs") == runs_before) {
+    /* 这一轮用了哪个技能?记到运行记录上 ——
+       列表里写"证据与覆盖核对"显然比写"对话"更有用。 */
+    char scope[48] = "chat";
+    const char *label = "对话";
+    char labelBuf[96] = {0};
+    json_t *stepsArr = NULL;
+    if (st.steps) {
+      /* st.steps 收尾时被包成了一个对象({steps:[...], stop_reason...}),
+         不是数组 —— 这里两种形状都认,免得以后结构再变一次又读不到。 */
+      if (st.steps->type == J_ARR) stepsArr = st.steps;
+      else {
+        json_t *inner = j_get(st.steps, "steps");
+        if (inner && inner->type == J_ARR) stepsArr = inner;
+      }
+    }
+    for (int i = 0; stepsArr && i < j_len(stepsArr); i++) {
+      const char *act = j_s(j_at(stepsArr, i), "action", "");
+      if (str_startswith(act, "skill_") && act[6]) {
+        snprintf(scope, sizeof(scope), "%s", act + 6);
+        skill_t *sk = skills_find(act);
+        snprintf(labelBuf, sizeof(labelBuf), "%s", (sk && sk->title && sk->title[0]) ? sk->title : scope);
+        label = labelBuf;
+      }
+    }
+    char *rid = store_run_start(g_store, g_task, label, scope);
+    if (rid) {
+      int pages = store_count(g_store, "assets") - assets_before;
+      int fresh = store_count(g_store, "findings") - findings_before;
+      if (pages < 0) pages = 0;
+      if (fresh < 0) fresh = 0;
+      store_run_finish(g_store, rid, st.stop_code == STOP_ERROR ? "failed" : "done",
+                       pages, net_http_calls() - calls_before_chat, fresh,
+                       st.stop_code == STOP_ERROR ? reason : "");
+      free(rid);
+    }
   }
 
   /* 收尾把"为什么停"也播出去 —— 这是智能体和脚本的区别,得让评审看见 */

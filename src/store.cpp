@@ -480,6 +480,31 @@ int store_run_finish(store_t *s, const char *run_id, const char *status, int pag
 }
 
 /* ================= 运行索引 ================= */
+int store_count(store_t *s, const char *collection) {
+  if (!s || !collection) return 0;
+  const coll_t *c = coll_find(collection);
+  if (!c) return 0;
+  char path[MAX_PATH * 2];
+  coll_path(s, c, path, sizeof(path));
+  if (c->jsonl) {
+    size_t len = 0;
+    char *text = file_read_all(path, &len);
+    if (!text) return 0;
+    int n = 0;
+    for (size_t i = 0; i < len; i++) {
+      if (text[i] != '\n') continue;
+      /* 空行不算:文件末尾和多写的那一行都会出现 */
+      size_t k = i;
+      while (k > 0 && (text[k - 1] == '\r' || text[k - 1] == ' ')) k--;
+      if (k > 0) n++;
+    }
+    free(text);
+    return n;
+  }
+  /* 记录类:一对象一文件,数文件即可 */
+  return (int)fs_list_files(path, ".json").size();
+}
+
 int store_link_run(store_t *s, const char *run_id, const char *finding_id, int is_new) {
   if (!s || !run_id || !run_id[0] || !finding_id || !finding_id[0]) return -1;
   json_t *row = j_obj();

@@ -91,10 +91,14 @@ char *store_run_start(store_t *s, const char *task_id, const char *triggered_by,
 int   store_run_finish(store_t *s, const char *run_id, const char *status, int pages_found,
                        int tools_called, int findings_new, const char *error);
 
+/* 某一册现在有多少条(结果类数行,记录类数文件)。
+   用来做"这一轮新增了几条"的差值:比把整册读进内存再数长度便宜得多,
+   而且不需要为了计数去理解每条记录的语义。 */
+int store_count(store_t *s, const char *collection);
+
 /* 触发来源标签(「手动」/「周期巡检」)。
    为什么要一个全局:技能里创建运行记录时并不知道"是谁触发的",
-   而这个信息恰恰是评审要看的东西(这一轮是人点的还是定时跑的)。 */
-void store_set_trigger(const char *label);
+   而这个信息恰恰是评审要看的东西(这一轮是人点的还是定时跑的)。 */void store_set_trigger(const char *label);
 const char *store_trigger_label(void);
 
 /* 证据去敏:手机号/邮箱/IP/身份证/卡号/凭据,落盘前就脱敏 */
