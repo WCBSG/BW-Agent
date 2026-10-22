@@ -717,13 +717,14 @@ static void post_json_ex(const char *url, const char *headers, int timeout_ms,
       DWORD timeout = (DWORD)(timeout_ms > 0 ? timeout_ms : 20000);
       /* 三个超时都要设:只设接收超时的话,对端"接了但不回"或"连不上"都会
          把整个会话挂在一次调用上 —— 实测恒脑被 WAF 拦时就出现过一次调用卡 80 秒。
-         接收超时故意切成小片(800ms):这样"停止"不必等到整段超时才生效,
+         等响应头这一段要给足时间(模型服务首字节常常要几秒),
+         收到头之后的每一片读故意切成 800ms:这样"停止"不必等到整段超时才生效,
          总时长仍由 deadline 兜住。 */
       DWORD conn_to = 8000, send_to = 15000;
-      DWORD slice = 800;
+      DWORD hdr_to = timeout < 20000 ? timeout : 20000;
       WinHttpSetOption(req, WINHTTP_OPTION_CONNECT_TIMEOUT, &conn_to, sizeof(conn_to));
       WinHttpSetOption(req, WINHTTP_OPTION_SEND_TIMEOUT, &send_to, sizeof(send_to));
-      WinHttpSetOption(req, WINHTTP_OPTION_RECEIVE_TIMEOUT, &slice, sizeof(slice));
+      WinHttpSetOption(req, WINHTTP_OPTION_RECEIVE_TIMEOUT, &hdr_to, sizeof(hdr_to));
       DWORD deadline = GetTickCount() + timeout;
       const wchar_t *whdrs = headers && headers[0] ? u8_to_w(headers) : NULL;
       BOOL ok = WinHttpSendRequest(req, whdrs ? whdrs : WINHTTP_NO_ADDITIONAL_HEADERS,
@@ -737,12 +738,20 @@ static void post_json_ex(const char *url, const char *headers, int timeout_ms,
         buf_printf(&e, "发送失败 (err=%lu)", GetLastError());
         resp->error = buf_take(&e);
       } else if (!WinHttpReceiveResponse(req, NULL)) {
-        resp->error = xstrdup("接收响应失败");
+        /* 带上错误码:是超时、被重置还是证书问题,一眼能分清 ——
+           只说"接收响应失败"等于让人猜。 */
+        buf_t e;
+        buf_init(&e);
+        buf_printf(&e, "接收响应失败 (err=%lu)", GetLastError());
+        resp->error = buf_take(&e);
       } else {
         DWORD status = 0, len = sizeof(status);
         WinHttpQueryHeaders(req, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
                             WINHTTP_HEADER_NAME_BY_INDEX, &status, &len, WINHTTP_NO_HEADER_INDEX);
         resp->status = (int)status;
+        /* 响应头到手,读正文改成小片超时:这样"停止"能在 1 秒内生效 */
+        DWORD slice = 800;
+        WinHttpSetOption(req, WINHTTP_OPTION_RECEIVE_TIMEOUT, &slice, sizeof(slice));
         buf_t acc;
         buf_init(&acc);
         for (;;) {

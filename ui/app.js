@@ -145,8 +145,28 @@ async function api(path, opts) {
   if (o.body && !o.headers['Content-Type']) o.headers['Content-Type'] = 'application/json';
   const r = await fetch(path, o);
   const j = await r.json().catch(() => null);
+  if (r.status === 401) {
+    /* 令牌每次启动都会换:这个页面多半是上一个进程留下的。
+       不明说的话,界面只会把"读不到"显示成"没有",人就会以为配置丢了。 */
+    stalePage();
+    throw new Error('这个页面已经过期（程序重启过），请按 F5 或重新从托盘打开界面');
+  }
   if (!r.ok) throw new Error((j && (j.error || j.detail)) || ('HTTP ' + r.status));
   return j;
+}
+
+/* 页面过期:只提示一次,不刷屏 */
+let staleNotified = false;
+function stalePage() {
+  if (staleNotified) return;
+  staleNotified = true;
+  const bar = el('div', 'stale-bar');
+  bar.textContent = '这个页面已经过期（程序重启过），按 F5 刷新后配置和会话才会显示。';
+  const btn = el('button', 'btn', '刷新页面');
+  btn.type = 'button';
+  btn.addEventListener('click', () => location.reload());
+  bar.appendChild(btn);
+  document.body.appendChild(bar);
 }
 
 function fmtTime(iso) {
@@ -2672,7 +2692,12 @@ function modelApi(body) {
 
 async function modelsOpen() {
   try { MODELS.data = await api('/api/models'); }
-  catch (e) { MODELS.data = { providers: [], active: '', path: '' }; }
+  catch (e) {
+    /* 读不到 ≠ 没配:把原因留在页面上,别让人以为配置丢了 */
+    MODELS.data = { providers: [], active: '', path: '' };
+    const box = $('model-note');
+    if (box) box.textContent = '没能读到模型配置：' + ((e && e.message) || e);
+  }
   modelsRenderList();
   modelsRenderForm(MODELS.editing);
 }
@@ -2708,7 +2733,12 @@ function modelsRenderList() {
     const main = el('div', 'ci-main');
     const head = el('div');
     head.appendChild(el('span', 'ci-name', x.name || x.id));
-    head.appendChild(el('span', 'ci-tag', modelKindLabel(x.kind)));
+    /* 名字已经说明了是哪家(比如「恒脑」)就别再顶一个「恒脑智能体」的标签:
+       两个一样的东西并排,读起来像重复。 */
+    const kindText = modelKindLabel(x.kind);
+    if (!x.name || !kindText || !x.name.includes(kindText.slice(0, 2))) {
+      head.appendChild(el('span', 'ci-tag', kindText));
+    }
     if (x.id === active) head.appendChild(el('span', 'ci-tag mine', '当前'));
     if (!x.enabled) head.appendChild(el('span', 'ci-tag', '已停用'));
     if (x.ready) head.appendChild(el('span', 'ci-tag ext', '可用'));
@@ -2858,6 +2888,8 @@ async function modelsSave(btn, thenTest) {
     else list.push(item);
     const r = await modelApi({ action: 'save', active: cur.active || '', providers: list });
     MODELS.data = (r && r.models) || cur;
+    /* 顶部那盏灯与"当前模型"跟着变:否则保存完还显示"离线",得等下一轮才更新 */
+    api('/api/status').then(renderStatus).catch(() => {});
     const idx = MODELS.index;
     await modelsOpen();
     const after = MODELS.data.providers || [];
@@ -2910,6 +2942,7 @@ async function modelsDelete(x) {
     MODELS.editing = null;
     modelsRenderForm(null);
     modelsRenderList();
+    api('/api/status').then(renderStatus).catch(() => {});
   } catch (e) {
     if ($('model-note')) $('model-note').textContent = '删除失败：' + e.message;
   }

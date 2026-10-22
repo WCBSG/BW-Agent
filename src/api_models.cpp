@@ -122,5 +122,8 @@ void api_models(const http_req_t *req, http_res_t *res) {
     http_res_json(res, 400, msg);
     return;
   }
+  /* 顶部那盏"在线/离线"灯是缓存出来的 —— 改完模型必须重算,
+     否则界面得等到下一次巡检才肯承认"模型已经接上了"。 */
+  serve_refresh_status();
   models_ok(res, 200, str_ieq(action, "save") ? "已保存" : "已生效");
 }
