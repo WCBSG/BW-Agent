@@ -707,10 +707,33 @@ code,pre,.mono{font-family:var(--mono)}
 .pool-row{display:flex;align-items:center;gap:8px;padding:6px 8px;border-radius:5px;font-size:13px}
 .pool-row:hover{background:#f2f2ec}
 .pool-host{font-family:var(--mono);font-size:12.5px;color:var(--ink)}
+.pool-row.deny .pool-host{color:#8a3b34;text-decoration:line-through;text-decoration-color:#e0b9b4}
+.pool-row .pool-flag{
+  font-size:11px;color:#8a3b34;background:#fcf3f2;border:1px solid #ecd4d1;
+  border-radius:4px;padding:0 5px;margin-left:6px;
+}
 .pool-row .chip{margin-left:auto}
 .pool-row .ghost.tiny{margin-left:auto}
 .pool-row .chip + .ghost.tiny{margin-left:0}
 .pool-empty{padding:12px 10px;font-size:12.5px;color:var(--ink-3)}
+
+/* 批量录入：折叠起来，不抢单条输入的注意力 */
+.pool-batch{margin:10px 0 2px;border:1px solid var(--line);border-radius:7px;padding:0 10px 10px;background:#fcfcfa}
+.pool-batch summary{
+  cursor:pointer;padding:8px 0;font-size:12.5px;color:var(--ink-2);list-style:none;
+}
+.pool-batch summary::-webkit-details-marker{display:none}
+.pool-batch summary::before{content:"＋ ";color:var(--ink-3)}
+.pool-batch[open] summary::before{content:"− "}
+.pool-batch textarea{
+  width:100%;border:1px solid var(--line-2);border-radius:6px;padding:7px 9px;
+  font-family:var(--mono);font-size:12px;line-height:1.6;resize:vertical;outline:none;
+  background:var(--panel);color:var(--ink);
+}
+.pool-batch textarea:focus{border-color:#bdbdb5}
+.pool-batch-foot{display:flex;align-items:center;gap:10px;margin-top:7px}
+.file-btn{cursor:pointer}
+.pool-batch-foot .muted{font-size:11.5px}
 .modal-box p{font-size:13px;color:var(--ink-2);line-height:1.7}
 .modal-box label{display:block;margin-top:14px;font-size:12.5px;color:var(--ink-3)}
 .modal-box input[type="text"],.modal-box input:not([type]){

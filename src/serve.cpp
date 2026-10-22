@@ -327,6 +327,9 @@ typedef struct {
 static approval_slot_t g_appr;
 static int g_appr_ready = 0;
 static volatile LONG g_appr_seq = 0;
+/* 定时任务不该被"询问"卡住:规则是你自己建的,到点就等同于预授权。
+   但它同样受授权池、只读、限速、审计约束 —— 少掉的只是"每步点一次"。 */
+static volatile LONG g_appr_unattended = 0;
 
 static void approval_init(void) {
   if (g_appr_ready) return;
@@ -345,6 +348,8 @@ static int hook_approval(void *ud, const char *tool, json_t *args, char **reason
 
   approval_action_t act = approval_decide(tool ? tool : "");
   if (act == APPROVAL_ALLOW) return 1;
+  /* 定时巡检:规则是人建的,到点即预授权。策略里的"拒绝"仍然生效。 */
+  if (act == APPROVAL_ASK && g_appr_unattended) return 1;
   if (act == APPROVAL_DENY) {
     if (reason) *reason = xstrdup("按当前审批策略,这个动作被直接拒绝");
     return 0;
@@ -458,12 +463,29 @@ static int pool_contains(const char *entry) {
   char host[256];
   int port = net_host_port_of(entry, host, sizeof(host));
   if (!host[0]) snprintf(host, sizeof(host), "%s", entry);
-  return net_pool_has(host, port);
+  /* 问的是"这个主机整体是否可用"(没有具体路径),所以按 "/" 判 */
+  return net_pool_has(host, port, "/");
 }
 
 static int pool_add(const char *entry) {
   if (!entry || !entry[0]) return -1;
-  if (strstr(entry, "://") || strchr(entry, '/') || strchr(entry, ' ')) return -1;
+  if (strstr(entry, "://") || strchr(entry, ' ') || strchr(entry, '\t')) return -1;
+  if (strstr(entry, "..")) return -1;              /* 路径穿越在安全工具里尤其不能有 */
+  const char *body = entry[0] == '!' ? entry + 1 : entry;
+  if (!body[0]) return -1;
+  char hostport[300];
+  snprintf(hostport, sizeof(hostport), "%s", body);
+  char *slash = strchr(hostport, '/');
+  if (slash) {
+    *slash = 0;
+    if (slash[1] == 0) return -1;                  /* "host/" 这种半条规则没有意义 */
+  }
+  if (!hostport[0]) return -1;
+  /* 主机段只允许字母数字与点横线冒号,避免把 URL 或路径写进来 */
+  for (const char *p = hostport; *p; p++) {
+    char c = *p;
+    if (!(isalnum((unsigned char)c) || c == '.' || c == '-' || c == ':' || c == '[' || c == ']')) return -1;
+  }
   json_t *root = json_parse(g_pool_json);
   if (!root) root = j_obj();
   json_t *hosts = j_get(root, "hosts");
@@ -1431,10 +1453,12 @@ static DWORD WINAPI sched_thread(LPVOID param) {
     sse_ctx_t *saved_sse = g_sse;
     g_sse = NULL;                       /* 无人值守:没有界面在等这些事件 */
     store_set_trigger("周期巡检");
+    InterlockedExchange(&g_appr_unattended, 1);
     agent_add_history(g_agent, "user", instr);
     loop_state_t st;
     memset(&st, 0, sizeof(st));
     int rc = agent_run_turn(g_agent, instr, &st);
+    InterlockedExchange(&g_appr_unattended, 0);
     store_set_trigger("手动");
     g_sse = saved_sse;
 
@@ -1699,6 +1723,39 @@ static void h_scope(const http_req_t *req, http_res_t *res) {
 }
 
 /* ================= 授权池接口 ================= */
+/* 单条加入:也允许一次给多行(批量):entries 可以是数组,也可以是换行/逗号分隔的文本。
+   "一次录一批"是真实场景(一个单位十几个站),让人一条条点不现实。 */
+static int pool_add_text(const char *text, int *added, int *skipped, buf_t *bad, int max_add) {
+  if (!text || !text[0]) return 0;
+  *added = 0;
+  *skipped = 0;
+  char *copy = xstrdup(text);
+  /* 换行、逗号、分号、空白都当分隔符 */
+  for (char *p = copy; *p; p++) {
+    if (*p == ',' || *p == ';' || *p == '\r' || *p == '\t') *p = '\n';
+  }
+  char **lines = NULL;
+  int n = str_split(copy, '\n', &lines, 400);
+  for (int i = 0; i < n; i++) {
+    char *e = str_trim(lines[i]);
+    if (!e[0] || e[0] == '#') continue;
+    if (*added >= max_add) break;
+    int rc = pool_add(e);
+    if (rc > 0) (*added)++;
+    else if (rc == 0) (*skipped)++;
+    else {
+      if (bad && bad->len < 400) {
+        if (bad->len) buf_puts(bad, "、");
+        buf_printf(bad, "%s(格式不对)", e);
+      }
+      (*skipped)++;
+    }
+  }
+  str_free_list(lines, n);
+  free(copy);
+  return *added;
+}
+
 static void h_pool(const http_req_t *req, http_res_t *res) {
   if (strcmp(req->method, "POST") == 0) {
     json_t *body = req->body ? json_parse(req->body) : NULL;
@@ -1706,18 +1763,43 @@ static void h_pool(const http_req_t *req, http_res_t *res) {
     const char *action = j_s(body, "action", "add");
     const char *entry = j_s(body, "entry", "");
     if (!entry[0]) entry = j_s(body, "domain", "");
-    int rc = 0;
+    int changed = 0, added = 0, skipped = 0;
+    buf_t bad;
+    buf_init(&bad);
+
     if (str_ieq(action, "remove")) {
-      rc = pool_remove(entry);
-    } else if (str_ieq(action, "add")) {
-      rc = pool_add(entry);
-      if (rc < 0) {
+      changed = pool_remove(entry);
+    } else if (str_ieq(action, "batch")) {
+      /* 批量:优先数组,其次多行文本 —— 两种都给用户留了路 */
+      json_t *arr = j_get(body, "entries");
+      if (arr && arr->type == J_ARR) {
+        buf_t joined;
+        buf_init(&joined);
+        for (int i = 0; i < j_len(arr); i++) {
+          json_t *v = j_at(arr, i);
+          if (!v || v->type != J_STR || !v->str) continue;
+          if (joined.len) buf_putc_(&joined, '\n');
+          buf_puts(&joined, v->str);
+        }
+        changed = pool_add_text(joined.data, &added, &skipped, &bad, 400);
+        buf_free(&joined);
+      } else {
+        const char *text = j_s(body, "text", "");
+        if (!text[0]) text = entry;
+        changed = pool_add_text(text, &added, &skipped, &bad, 400);
+      }
+      if (added) store_audit(g_store, "授权池批量加入", "批量", 1, "", g_task, "");
+    } else {
+      changed = pool_add(entry);
+      if (changed < 0) {
         json_free(body);
+        buf_free(&bad);
         http_res_json(res, 400,
-                      "{\"ok\":false,\"error\":\"只填主机名(可带端口),不要带协议、路径或空格\"}");
+                      "{\"ok\":false,\"error\":\"只填主机名(可带端口，前面加 ! 表示不允许；不允许写成 http:// 或带空格)\"}");
         return;
       }
-      store_audit(g_store, "授权池加入", entry, 1, "界面操作", g_task, "");
+      added = changed > 0 ? 1 : 0;
+      if (changed > 0) store_audit(g_store, "授权池加入", entry, 1, "界面操作", g_task, "");
     }
     json_free(body);
     EnterCriticalSection(&g_lock);
@@ -1726,12 +1808,17 @@ static void h_pool(const http_req_t *req, http_res_t *res) {
     buf_t b;
     buf_init(&b);
     buf_puts(&b, "{\"ok\":true,\"changed\":");
-    buf_printf(&b, "%d", rc > 0 ? 1 : 0);
+    buf_printf(&b, "%d,\"added\":%d,\"skipped\":%d", changed > 0 ? 1 : 0, added, skipped);
+    if (bad.len) {
+      buf_puts(&b, ",\"rejected\":");
+      buf_json_str(&b, bad.data);
+    }
     buf_puts(&b, ",\"pool\":");
     buf_puts(&b, g_pool_json);
     buf_puts(&b, "}");
     http_res_json(res, 200, b.data);
     buf_free(&b);
+    buf_free(&bad);
     return;
   }
   buf_t b;

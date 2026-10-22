@@ -86,8 +86,12 @@ const char *auto_scope_instruction(const char *scope) {
 /* 一串检查项 → 一句话。顺序固定(资产 → 完整性 → 敏感信息 → 复测),
    这样"只查这两项"的每一轮读起来都是同一个口径。 */
 void auto_checks_instruction(const char *checks, const char *scope, char *out, size_t cap) {
-  if (!checks || !checks[0] || str_icontains(checks, "full")) {
+  if (!checks || !checks[0]) {
     snprintf(out, cap, "%s", auto_scope_instruction(scope && scope[0] ? scope : "full"));
+    return;
+  }
+  if (str_icontains(checks, "full")) {
+    snprintf(out, cap, "%s", auto_scope_instruction("full"));
     return;
   }
   buf_t b;
@@ -103,7 +107,13 @@ void auto_checks_instruction(const char *checks, const char *scope, char *out, s
 }
 
 void auto_checks_signature(const char *checks, const char *scope, char *out, size_t cap) {
-  if (!checks || !checks[0] || str_icontains(checks, "full")) {
+  /* 没勾检查项 = 按范围预设走;此时签名就是那个预设(leak/full/…),
+     不能一律写成 full —— 否则"只查泄露"的一轮会被拿去和完整巡检比。 */
+  if (!checks || !checks[0]) {
+    snprintf(out, cap, "%s", (scope && scope[0]) ? scope : "full");
+    return;
+  }
+  if (str_icontains(checks, "full")) {
     snprintf(out, cap, "full");
     return;
   }

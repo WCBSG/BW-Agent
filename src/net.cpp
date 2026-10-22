@@ -22,7 +22,7 @@ static char **g_pool = NULL;
 static int g_pool_count = 0;
 static volatile LONG g_violation = 0;
 
-static int host_allowed(const char *host, int port);   /* 边界判定,实现在下方 */
+static int host_allowed(const char *host, int port, const char *path);   /* 边界判定,实现在下方 */
 
 static char g_audit_path[MAX_PATH * 2] = {0};
 static char g_target_base[512] = {0};
@@ -139,9 +139,9 @@ int net_pool_count(void) {
   return n;
 }
 
-int net_pool_has(const char *host, int port) {
+int net_pool_has(const char *host, int port, const char *path) {
   if (!host || !*host) return 0;
-  return host_allowed(host, port);
+  return host_allowed(host, port, path);
 }
 
 int net_scope_violation(void) { return (int)g_violation; }
@@ -239,40 +239,91 @@ int net_same_host(const char *a, const char *b) {  char ha[256], hb[256];
   return ha[0] && strcmp(ha, hb) == 0;
 }
 
-/* 授权匹配:精确匹配,或"授权的是子域"(x.cn 授权后可访问 a.x.cn)。
-   池内条目允许带端口:写了端口就只放行那个端口,不写端口表示该主机的任意端口。
-   这是从宽还是从严的取舍:为了演示方便放行子域,但会在审计里如实记录。 */
-static int entry_matches(const char *entry, const char *host, int port) {
-  if (!entry || !*entry) return 0;
-  char want_host[256];
-  int want_port = net_host_port_of(entry, want_host, sizeof(want_host));
-  if (!want_host[0]) return 0;
-  if (want_port > 0 && port > 0 && want_port != port) return 0;
+/* 池内条目 → 结构化。支持四种写法:
+     exp.com           允许这个主机(任意端口)
+     exp.com:8443      允许这个主机的指定端口
+     !exp.com          不允许这个主机(优先于允许)
+     !exp.com/admin/   不允许这个主机的这个路径前缀
+   路径只对 deny 有意义(allow 的作用域始终是整个主机),这样匹配规则一眼能懂。 */
+typedef struct {
+  int deny;
+  char host[256];
+  int port;
+  char path[512];
+} pool_entry_t;
 
-  if (str_ieq(host, want_host)) return 1;
-  size_t lh = strlen(host), ld = strlen(want_host);
-  if (lh > ld && str_ieq(host + (lh - ld), want_host) && host[lh - ld - 1] == '.') return 1;
+static int pool_parse_entry(const char *raw, pool_entry_t *out) {
+  memset(out, 0, sizeof(*out));
+  if (!raw || !*raw) return -1;
+  const char *p = raw;
+  if (*p == '!') { out->deny = 1; p++; }
+  if (!*p) return -1;
+  char body[768];
+  snprintf(body, sizeof(body), "%s", p);
+  char *slash = strchr(body, '/');
+  if (slash) {
+    snprintf(out->path, sizeof(out->path), "%s", slash);   /* 保留前导 / */
+    *slash = 0;
+    if (!out->path[0]) snprintf(out->path, sizeof(out->path), "/");
+  }
+  if (!body[0]) return -1;
+  out->port = net_host_port_of(body, out->host, sizeof(out->host));
+  if (!out->host[0]) return -1;
   return 0;
 }
 
-/* 边界判定:池子非空时以池子为准(池子是唯一边界),否则退回"本轮授权范围"。
-   为什么要有"否则":命令行单工具跑(agent.exe tool ...)不一定建池,
-   那时仍然按当轮指定的域名校验,不能因为没池子就什么都放行。 */
-static int host_allowed(const char *host, int port) {
+static int entry_matches(const char *entry, const char *host, int port, const char *path) {
+  pool_entry_t e;
+  if (pool_parse_entry(entry, &e) != 0) return 0;
+  if (e.port > 0 && port > 0 && e.port != port) return 0;
+
+  int host_hit = str_ieq(host, e.host);
+  if (!host_hit) {
+    size_t lh = strlen(host), ld = strlen(e.host);
+    if (lh > ld && str_ieq(host + (lh - ld), e.host) && host[lh - ld - 1] == '.') host_hit = 1;
+  }
+  if (!host_hit) return 0;
+
+  if (e.path[0]) {
+    /* 路径按"段边界"匹配:/admin/ 命中 /admin/users.json 与 /admin 本身;
+       /admin 命中 /admin 与 /admin/x,但**不**命中 /administrator ——
+       前缀匹配不做到这个程度就会误伤。 */
+    const char *q = path && path[0] ? path : "/";
+    size_t pl = strlen(e.path);
+    int hit = 0;
+    if (strncmp(q, e.path, pl) == 0) {
+      hit = (e.path[pl - 1] == '/') ? 1
+                                    : (q[pl] == 0 || q[pl] == '/' || q[pl] == '?' || q[pl] == '#');
+    } else if (e.path[pl - 1] == '/' && pl > 1 && strncmp(q, e.path, pl - 1) == 0) {
+      char next = q[pl - 1];
+      hit = (next == 0 || next == '/' || next == '?' || next == '#');
+    }
+    if (!hit) return 0;
+  }
+  return 1;
+}
+
+/* 判定:先看有没有命中"不允许",再看有没有命中"允许"。
+   池子非空时,既不命中允许也不命中不允许 —— 一律拒(默认关门)。 */
+static int host_allowed(const char *host, int port, const char *path) {
   if (!host || !*host) return 0;
   EnterCriticalSection(&g_net_lock);
-  int pooled = 0;
-  if (g_pool_count > 0) {
+  int have_pool = g_pool_count > 0;
+  int denied = 0, allowed = 0;
+  if (have_pool) {
     for (int i = 0; i < g_pool_count; i++) {
-      if (entry_matches(g_pool[i], host, port)) { pooled = 1; break; }
+      pool_entry_t e;
+      if (pool_parse_entry(g_pool[i], &e) != 0) continue;
+      if (!entry_matches(g_pool[i], host, port, path)) continue;
+      if (e.deny) denied = 1;
+      else allowed = 1;
     }
-    LeaveCriticalSection(&g_net_lock);
-    return pooled;
   }
   LeaveCriticalSection(&g_net_lock);
+  if (have_pool) return denied ? 0 : allowed;
 
   for (int i = 0; i < g_domain_count; i++) {
-    if (entry_matches(g_domains[i], host, port)) return 1;
+    if (entry_matches(g_domains[i], host, port, path)) return 1;
   }
   return 0;
 }
@@ -391,6 +442,20 @@ void net_request(const char *url, const char *method, const char *content_type,
   net_host_of(url, host_u8, sizeof(host_u8));
   char host_only[256];
   int url_port = net_host_port_of(url, host_only, sizeof(host_only));
+  /* 路径也要参与判定:池子里的 !host/admin/ 只拦那个前缀,不拦整站 */
+  char url_path[1024] = "/";
+  {
+    const char *scheme = strstr(url, "://");
+    const char *p = scheme ? strchr(scheme + 3, '/') : strchr(url, '/');
+    if (p && p[0]) {
+      size_t n = strlen(p);
+      if (n >= sizeof(url_path)) n = sizeof(url_path) - 1;
+      memcpy(url_path, p, n);
+      url_path[n] = 0;
+      char *q = strpbrk(url_path, "?#");
+      if (q) *q = 0;
+    }
+  }
   int pooled = net_pool_count() > 0;
   /* 池子空、本轮也没有授权范围 ⇒ 没有任何边界可言,一律不发。
      "什么都没配"绝不能等价于"什么都能访问"。 */
@@ -400,7 +465,7 @@ void net_request(const char *url, const char *method, const char *content_type,
     net_audit("authorize", url, 0, resp->error, NULL);
     return;
   }
-  if (!host_allowed(host_u8, url_port)) {
+  if (!host_allowed(host_u8, url_port, url_path)) {
     buf_t e;
     buf_init(&e);
     if (pooled) buf_printf(&e, "目标 %s 不在授权池内", host_u8);

@@ -142,7 +142,7 @@ function renderStatus(s) {
   ps.className = 'pill status-pill ' + (s.authorized ? 'on' : 'off');
   const poolSize = s.poolSize !== undefined ? s.poolSize : 0;
   ps.title = poolSize
-    ? `授权池 ${poolSize} 个主机；当前巡检目标：${s.domain || '未选'}`
+    ? `授权池 ${poolSize} 个主机：池内的站都能查，池外的请求发不出去`
     : '授权池是空的：任何请求都不会发出去';
 
   const pc = $('pill-count');
@@ -169,37 +169,20 @@ function renderStatus(s) {
     sideStatus.textContent = poolSize ? `授权池 ${poolSize} 个主机` : '授权池为空';
     sideStatus.dataset.ready = poolSize ? 'true' : 'false';
   }
-  if (sideName) sideName.textContent = s.domain || (poolSize ? '从池里挑一个目标' : '先加一个授权主机');
+  if (sideName) sideName.textContent = poolSize ? `授权池 ${poolSize} 个主机` : '先加一个授权主机';
   const introModel = $('intro-model');
   if (introModel) introModel.textContent = s.model ? '恒脑在线' : '离线规则';
 
   /* 起手式与工作台各自的读数：同一份状态，两处写法不同 */
   const hs = $('home-scope');
-  if (hs) hs.textContent = s.domain ? '目标：' + s.domain : (poolSize ? `授权池 ${poolSize} 个主机` : '授权池为空');
+  if (hs) hs.textContent = poolSize ? `授权池 ${poolSize} 个主机` : '授权池为空';
   const ws = $('work-scope');
-  if (ws) ws.textContent = s.domain || '未选目标';
-  /* 工作台右上角的目标选择器：选项就是授权池。
-     "这轮看哪个站"是这一轮的事，不是全局设定 —— 所以放在发送的地方，而不是设置页。 */
-  const sel = $('target-select');
-  if (sel) {
-    const entries = POOL.entries;
-    sel.innerHTML = '';
-    if (!entries.length) {
-      const o = document.createElement('option');
-      o.value = '';
-      o.textContent = '授权池为空';
-      sel.appendChild(o);
-    } else {
-      for (const e of entries) {
-        const o = document.createElement('option');
-        o.value = e;
-        o.textContent = e;
-        sel.appendChild(o);
-      }
-      const cur = s.domain || entries[0];
-      sel.value = entries.includes(cur) ? cur : entries[0];
-    }
+  if (ws) {
+    /* 不再有"当前目标"这个概念:边界是池子,看哪个站由指令决定。
+       这个 chip 只说明规则,不显示任何"当前值"。 */
+    ws.textContent = poolSize ? `授权池 ${poolSize} 个主机` : '授权池为空';
   }
+  /* 工作台右上角不再有目标选择器 —— 目标由用户这句话决定 */
   const wm = $('work-model');
   if (wm) wm.textContent = s.model ? '恒脑在线' : '离线规则';
   const rb = $('rail-boundary');
@@ -207,7 +190,7 @@ function renderStatus(s) {
     rb.innerHTML = '';
     const rows = [
       ['授权池', poolSize ? poolSize + ' 个主机' : '空'],
-      ['本轮目标', s.domain || '未选'],
+      ['目标', '由指令指定'],
       ['方法', 'GET / HEAD / OPTIONS'],
       ['限速', '2 请求/秒'],
       ['越界', '立刻掐断整轮'],
@@ -233,9 +216,9 @@ function renderPoolList() {
     return;
   }
   for (const entry of POOL.entries) {
-    const row = el('div', 'pool-row');
+    const row = el('div', 'pool-row' + (entry[0] === '!' ? ' deny' : ''));
     row.appendChild(el('span', 'pool-host', entry));
-    if (state.status && state.status.domain === entry) row.appendChild(el('span', 'chip', '当前目标'));
+    if (entry[0] === '!') row.appendChild(el('span', 'pool-flag', '不允许'));
     const b = el('button', 'ghost tiny', '移出');
     b.addEventListener('click', async () => {
       try {
@@ -250,26 +233,78 @@ function renderPoolList() {
   }
 }
 
-async function addPoolEntry() {
+/* 批量:把一段文本(或导入的文件内容)交给后端解析。
+   后端接受换行/逗号/分号分隔,并且逐条校验,回话里带 added/skipped/rejected。 */
+async function addPoolBatch(text) {
   const err = $('scope-err');
-  const entry = $('scope-domain').value.trim();
   err.textContent = '';
-  if (!entry) { $('scope-domain').focus(); return; }
+  if (!text || !text.trim()) {
+    err.textContent = '先粘一段主机清单，或者从文件导入';
+    return;
+  }
   if (!$('scope-ok').checked) {
     err.textContent = '请先勾选"已获得该目标的巡检授权"';
     return;
   }
   try {
-    const r = await api('/api/scope', { method: 'POST', body: JSON.stringify({ domain: entry, authorized: 1 }) });
+    const r = await api('/api/pool', { method: 'POST', body: JSON.stringify({ action: 'batch', text }) });
     POOL.entries = ((r.pool || {}).hosts || []).slice();
     renderPoolList();
-    renderStatus(r);
+    renderStatus(await api('/api/status'));
+    $('pool-batch-text').value = '';
+    const parts = [`加入 ${r.added || 0} 个`];
+    if (r.skipped) parts.push(`跳过 ${r.skipped} 个`);
+    if (r.rejected) parts.push(`格式不对：${r.rejected}`);
+    $('pool-batch-hint').textContent = parts.join(' · ');
+  } catch (e) {
+    err.textContent = '批量加入失败：' + e.message;
+  }
+}
+
+async function addPoolEntry() {
+  const err = $('scope-err');
+  const entry = $('scope-domain').value.trim();
+  err.textContent = '';
+  if (!entry) {
+    /* 单条输入空着就按批量处理:用户可能直接把清单粘在大框里 */
+    const batch = $('pool-batch-text').value.trim();
+    if (batch) { addPoolBatch(batch); return; }
+    $('scope-domain').focus();
+    return;
+  }
+  if (!$('scope-ok').checked) {
+    err.textContent = '请先勾选"已获得该目标的巡检授权"';
+    return;
+  }
+  try {
+    const r = await api('/api/pool', { method: 'POST', body: JSON.stringify({ action: 'add', entry }) });
+    POOL.entries = ((r.pool || {}).hosts || []).slice();
+    renderPoolList();
+    renderStatus(await api('/api/status'));
     $('scope-domain').value = '';
     $('scope-ok').checked = false;
     shutModal();
   } catch (e) {
     err.textContent = '没加进去：' + e.message;
   }
+}
+
+/* 从本地文本文件导入:浏览器读文本 → 交给同一个批量接口,后端不需要处理 multipart */
+function bindPoolImport() {
+  const input = $('pool-import');
+  if (!input) return;
+  input.addEventListener('change', () => {
+    const f = input.files && input.files[0];
+    if (!f) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      $('pool-batch-text').value = String(reader.result || '').slice(0, 20000);
+      $('pool-batch-hint').textContent = `已读入 ${f.name}，点「批量加入」生效`;
+    };
+    reader.onerror = () => { $('pool-batch-hint').textContent = '读文件失败，可以直接粘贴内容'; };
+    reader.readAsText(f, 'utf-8');
+    input.value = '';
+  });
 }
 
 function renderManifest(m) {  state.manifest = m;
@@ -463,9 +498,9 @@ function send(text) {
   if (stepsBox) stepsBox.innerHTML = '<div class="muted">执行后这里按步列出「为什么这么做」。</div>';
 
   /* EventSource 不能自定义请求头,所以令牌走查询串 */
-  const target = ($('target-select') && $('target-select').value) || '';
+  /* 目标不再是全局设定:这一轮看哪个站,由用户这句话决定。
+     边界交给授权池,越池的请求在取数通道就被掐断。 */
   const es = new EventSource('/api/chat?q=' + encodeURIComponent(q) +
-                             (target ? '&target=' + encodeURIComponent(target) : '') +
                              (BW_TOKEN ? '&t=' + encodeURIComponent(BW_TOKEN) : ''));
   let closed = false;
 
@@ -1867,6 +1902,8 @@ function shutModal() { $('modal').classList.remove('on'); }
 $('btn-scope').addEventListener('click', openModal);
 $('scope-cancel').addEventListener('click', shutModal);
 $('scope-save').addEventListener('click', addPoolEntry);
+$('scope-batch').addEventListener('click', () => addPoolBatch($('pool-batch-text').value));
+bindPoolImport();
 $('scope-domain').addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); addPoolEntry(); } });
 $('modal').addEventListener('click', (e) => {
   if (e.target.classList.contains('modal-backdrop')) shutModal();

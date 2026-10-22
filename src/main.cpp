@@ -282,6 +282,21 @@ static void selftest_agent(void) {
     DeleteFileA(apath);
   }
 
+  /* ---- 授权池:允许 / 不允许(含路径前缀) ---- */
+  {
+    const char *pool[] = {"exp.com", "exp.com:8443", "!exp.com/admin/", "!bad.example.org"};
+    net_pool_set(pool, 4);
+    check(net_pool_has("exp.com", 443, "/index.html") == 1, "池:允许的主机可访问");
+    check(net_pool_has("exp.com", 443, "/admin/users.json") == 0, "池:!路径前缀被拦下");
+    check(net_pool_has("exp.com", 443, "/admin") == 0, "池:/admin 本身也算命中该前缀");
+    check(net_pool_has("exp.com", 443, "/administrator") == 1, "池:前缀匹配不误伤 /administrator");
+    check(net_pool_has("bad.example.org", 443, "/") == 0, "池:!整站被拦下");
+    check(net_pool_has("other.example.org", 443, "/") == 0, "池:池外主机一律拒(默认关门)");
+    check(net_pool_has("exp.com", 8443, "/") == 1, "池:带端口的条目放行该端口");
+    check(net_pool_has("exp.com", 8080, "/") == 1, "池:同一主机的其它端口按主机条目放行");
+    net_pool_set(NULL, 0);
+  }
+
   /* 目标解析与授权 */
   buf_t u;
   buf_init(&u);

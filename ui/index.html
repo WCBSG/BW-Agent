@@ -116,7 +116,7 @@
       <h1 id="task-title">巡检会话</h1>
       <div class="head-right">
         <select class="target-select policy-select" id="approval-select" title="工具调用的审批策略"></select>
-        <select class="target-select" id="target-select" title="从授权池里挑本轮目标"></select>
+        <span class="chip" id="work-scope" title="边界是授权池；具体看哪个站由你在指令里说">目标由指令决定</span>
         <span class="chip" id="work-model">离线规则</span>
         <button class="ghost" id="btn-refresh" title="刷新数据">刷新</button>
         <button class="ghost" data-goto="report">数据</button>
@@ -539,15 +539,32 @@
   <div class="modal-backdrop"></div>
   <div class="modal-box">
     <h3 id="scope-title">授权池</h3>
-    <p class="muted">本工具只会对<strong>池内主机</strong>发请求。池子之外的目标，请求在发出去之前就被拦下，整轮巡检立刻停止。</p>
+    <p class="muted">本工具只会对<strong>池内主机</strong>发请求。池子之外的目标，请求在发出去之前就被拦下，整轮巡检立刻停止。
+      具体每一轮看哪个站，由你在指令里说 —— 没有"当前目标"这一说。</p>
+    <p class="field-help">条目写法：<code>exp.com</code> 允许；<code>exp.com:8443</code> 只允许这个端口；
+      <code>!exp.com</code> 不允许整站；<code>!exp.com/admin/</code> 只不允许这个路径前缀（不允许优先于允许）。</p>
 
     <div class="pool-list" id="pool-list"></div>
 
-    <label>加入授权主机<input id="scope-domain" placeholder="www.example-gov.cn 或 127.0.0.1:8899"></label>
-    <p class="field-help">只填主机名，可带端口；带端口表示只放行那个端口。确认前请确保已获得该目标的巡检授权。</p>
+    <label>加入授权主机<input id="scope-domain" placeholder="exp.com 或 !exp.com/admin/"></label>
+    <p class="field-help">只填主机名，可带端口；前面加 <code>!</code> 表示"不允许"。确认前请确保已获得该目标的巡检授权。</p>
+
+    <details class="pool-batch">
+      <summary>批量录入 / 从文件导入</summary>
+      <textarea id="pool-batch-text" rows="4" spellcheck="false"
+                placeholder="一行一个（也认逗号分隔；# 开头是注释）&#10;exp.com&#10;oa.b.gov.cn:8443&#10;!exp.com/admin/"></textarea>
+      <div class="pool-batch-foot">
+        <label class="ghost tiny file-btn">从文本文件导入
+          <input type="file" id="pool-import" accept=".txt,.csv,.list,text/plain" hidden>
+        </label>
+        <span class="muted" id="pool-batch-hint">支持 .txt / .csv，一行一个；<code>!</code> 开头表示不允许</span>
+      </div>
+    </details>
+
     <label class="check"><input type="checkbox" id="scope-ok"><span>我确认已获得该目标的巡检授权</span></label>
     <div class="modal-actions">
       <button class="ghost" id="scope-cancel">关闭</button>
+      <button class="ghost" id="scope-batch">批量加入</button>
       <button id="scope-save">加入授权池</button>
     </div>
     <div class="err" id="scope-err"></div>

@@ -29,7 +29,9 @@ void net_set_scope(const char *task_id, const char **domains, int count);
    池子非空时它是唯一边界 —— "这一轮看哪个站"只是焦点,不是边界。 */
 void net_pool_set(const char **entries, int count);
 int  net_pool_count(void);
-int  net_pool_has(const char *host, int port);
+/* path 传 URL 的路径(可传 "/")。条目里可写 !host 或 !host/path 表示"不允许",
+   不允许优先于允许 —— 用来表达"允许 exp.com,但除了 exp.com/admin/"。 */
+int  net_pool_has(const char *host, int port, const char *path);
 /* 最近一次请求是否因越权被拒(决策循环据此立刻收束) */
 int  net_scope_violation(void);
 void net_scope_violation_clear(void);

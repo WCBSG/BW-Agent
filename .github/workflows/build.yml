@@ -1,0 +1,59 @@
+name: build
+
+# 多人协作的门禁:每次 push / PR 都编译一遍并跑自检。
+# 为什么放在 windows-latest 上:这个作品的目标平台就是 Windows,
+# 用 mingw-w64 编出来的产物和本地 build.bat 是同一套工具链(g++ -std=c++20 -static)。
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 装 mingw-w64 工具链
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: false
+          install: mingw-w64-ucrt-x86_64-gcc
+          path-type: inherit
+
+      - name: 编译(等价于本地 build.bat)
+        shell: cmd
+        run: |
+          where g++
+          g++ --version
+          call build.bat
+
+      - name: 自检(技能/工具/规则/审批/授权池/决策循环)
+        shell: cmd
+        run: build\agent.exe selftest
+
+      - name: 冒烟:起服务、查健康、取首页
+        shell: pwsh
+        run: |
+          $p = Start-Process -FilePath "build\agent.exe" -ArgumentList "serve","example.com","8799","--no-ui" -PassThru
+          Start-Sleep -Seconds 4
+          try {
+            $h = @{ Host = "127.0.0.1:8799" }
+            $health = Invoke-WebRequest -Uri "http://127.0.0.1:8799/api/health" -Headers $h -UseBasicParsing
+            if ($health.StatusCode -ne 200) { throw "health 不是 200" }
+            $html = (Invoke-WebRequest -Uri "http://127.0.0.1:8799/" -Headers $h -UseBasicParsing).Content
+            if ($html -notmatch 'bw-token') { throw "首页没有注入接口令牌" }
+            Write-Host "冒烟通过"
+          } finally {
+            if ($p -and -not $p.HasExited) { Stop-Process -Id $p.Id -Force }
+          }
+
+      - name: 产出单文件 exe
+        uses: actions/upload-artifact@v4
+        with:
+          name: agent-exe
+          path: |
+            build/网站安全巡检智能体.exe
+            build/agent.exe
