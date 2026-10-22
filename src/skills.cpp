@@ -775,7 +775,6 @@ static int s_full_inspection(tool_ctx_t *ctx, json_t *args, skill_result_t *out)
     ~run_guard() { c->run_id = prev; }
   } guard{ctx, outer_run};
   int http_calls_at_start = ctx->http_calls;
-  int findings_new = 0;
   int pages_found = 0;
 
   json_t *steps = j_arr();

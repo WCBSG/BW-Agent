@@ -8,6 +8,8 @@
 - 界面：自建网页界面（起手式 → 任务工作台 → 数据视图，一套纸白），由程序内置
 - 数据：默认放 `C:\Users\<用户名>\.bw_agent`
 
+> 想先看「做了哪些验证、怎么复现」？见 [测试报告.md](./测试报告.md)。
+>
 > 多人一起改？先看 [CONTRIBUTING.md](./CONTRIBUTING.md)：分支模型、构建与自检、以及"改代码时不能破的四条线"。
 > CI 在 `.github/workflows/build.yml`，每次 push / PR 都会编译并跑 `agent.exe selftest`。
 

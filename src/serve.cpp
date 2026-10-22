@@ -1454,10 +1454,13 @@ static DWORD WINAPI sched_thread(LPVOID param) {
     g_sse = NULL;                       /* 无人值守:没有界面在等这些事件 */
     store_set_trigger("周期巡检");
     InterlockedExchange(&g_appr_unattended, 1);
+    net_scope_violation_clear();        /* 每轮从零开始记越界 */
     agent_add_history(g_agent, "user", instr);
     loop_state_t st;
     memset(&st, 0, sizeof(st));
     int rc = agent_run_turn(g_agent, instr, &st);
+    int violated = net_scope_violation();
+    net_scope_violation_clear();
     InterlockedExchange(&g_appr_unattended, 0);
     store_set_trigger("手动");
     g_sse = saved_sse;
@@ -1474,13 +1477,16 @@ static DWORD WINAPI sched_thread(LPVOID param) {
     }
 
     int changed = 0;
-    if (rc == 0 && run_id) changed = auto_after_run(g_store, &rule, run_id);
+    /* 越界中止的一轮不参与差分:它本来就没跑完,拿它当基线会把"没查到"
+       误读成"问题消失了"。 */
+    if (rc == 0 && run_id && !violated) changed = auto_after_run(g_store, &rule, run_id);
     log_info("周期巡检: %s %s,停止原因 %s%s", rule.id,
              rc == 0 ? "完成" : "失败", st.stop_reason[0] ? st.stop_reason : "—",
-             !run_id ? " · 没拿到运行记录,这轮不做差分"
-                     : (changed == 2 ? " · 同类范围的首轮,已建立基线(不告警)"
-                                     : (changed ? " · 与上一轮相比有变化,已写告警"
-                                                : " · 与上一轮相比没有变化")));
+             violated ? " · 有请求越出授权池,本轮中止且不做差分"
+                      : (!run_id ? " · 没拿到运行记录,这轮不做差分"
+                                 : (changed == 2 ? " · 同类范围的首轮,已建立基线(不告警)"
+                                                : (changed ? " · 与上一轮相比有变化,已写告警"
+                                                           : " · 与上一轮相比没有变化"))));
     free(run_id);
     free(wrap_run);
     if (st.steps) json_free(st.steps);
@@ -1629,7 +1635,7 @@ static void h_collection(const http_req_t *req, http_res_t *res) {
   char name[32];
   http_query(req, "name", name, sizeof(name), "findings");
   static const char *ALLOWED[] = {"findings", "assets", "alerts", "runs", "reports",
-                                  "evals", "tasks", "profiles", "testcases",
+                                  "tasks", "profiles", "testcases",
                                   "baselines", "diffs", "automations", NULL};
   int ok = 0;
   for (int i = 0; ALLOWED[i]; i++) if (strcmp(ALLOWED[i], name) == 0) ok = 1;
@@ -1866,9 +1872,9 @@ static void h_chat(const http_req_t *req, http_res_t *res) {
     }
     EnterCriticalSection(&g_lock);
     apply_scope(target);
-    net_scope_violation_clear();
     LeaveCriticalSection(&g_lock);
   }
+  net_scope_violation_clear();       /* 每轮从零开始记越界 */
 
   if (!http_sse_begin(res)) return;
 
