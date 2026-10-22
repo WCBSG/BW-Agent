@@ -760,12 +760,14 @@ body.row-resizing *{cursor:row-resize !important}
 .market-link:hover{border-color:var(--accent)}
 .config-grid{display:grid;grid-template-columns:242px minmax(0,1fr);gap:14px;align-items:start}
 
-/* 界面偏好:三条滑杆，拖动即时生效 */
-.ui-form{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:12px 26px;margin-top:4px}
-.ui-row{display:grid;grid-template-columns:88px minmax(120px,1fr) 52px;align-items:center;gap:10px;font-size:12.5px;color:var(--ink-2)}
+/* 界面偏好：两列对齐，标签定宽，控件左对齐 */
+.ui-form{display:grid;grid-template-columns:repeat(2,minmax(280px,1fr));gap:10px 28px;margin-top:2px}
+.ui-row{display:grid;grid-template-columns:92px minmax(120px,1fr) 52px;align-items:center;gap:10px;
+  font-size:12.5px;color:var(--ink-2);min-height:26px}
+.ui-row > span{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .ui-row input[type="range"]{width:100%;accent-color:var(--ink)}
 .ui-row b{font-family:var(--mono);font-weight:500;font-size:12px;color:var(--ink-3);text-align:right}
-.ui-check input[type="checkbox"]{justify-self:start;width:15px;height:15px;accent-color:var(--ink)}
+.ui-check input[type="checkbox"]{justify-self:start;width:14px;height:14px;accent-color:var(--ink);margin-top:1px}
 .ui-check b{display:none}
 body.no-motion *{animation:none !important;transition:none !important}
 .ui-foot{margin-top:12px;display:flex;align-items:center;gap:10px;font-size:11.5px;color:var(--ink-3)}
@@ -773,21 +775,20 @@ body.no-motion *{animation:none !important;transition:none !important}
 /* 规则设置：左分类 / 右表单 */
 .set-shell{display:grid;grid-template-columns:196px minmax(0,1fr);gap:0;
   border:1px solid var(--line-2);border-radius:var(--r);background:var(--panel);overflow:hidden;margin-bottom:14px}
-.cfg-advanced{display:none}
-.ui-panel{display:none}
+.set-panel{display:none}
+.set-main{padding:14px 18px 12px;min-width:0}
+.set-head{display:flex;align-items:baseline;gap:10px;margin-bottom:12px}
+.set-head h2{font-size:15px;font-weight:600}
+.set-head span{font-size:11.5px;color:var(--ink-3)}
 .set-nav{border-right:1px solid var(--line);background:#fcfcfa;padding:8px 6px;display:flex;flex-direction:column;gap:1px}
 .set-tab{text-align:left;padding:7px 10px;border-radius:6px;font-size:12.5px;color:var(--ink-2);width:100%}
 .set-tab:hover{background:#f1f1ec}
 .set-tab.active{background:var(--ink);color:#fdfcf9}
-.set-main{padding:14px 16px 12px;min-width:0}
-.set-head{display:flex;align-items:baseline;gap:10px;margin-bottom:10px}
-.set-head h2{font-size:15px;font-weight:600}
-.set-head span{font-size:11.5px;color:var(--ink-3)}
 .set-form{display:flex;flex-direction:column;gap:14px}
 .set-field-head{display:flex;align-items:baseline;gap:8px}
 .set-label{font-size:12.5px;color:var(--ink-2);font-weight:500}
 .set-hint{font-size:11.5px;color:var(--ink-3);margin-top:3px}
-.set-input{width:100%;max-width:420px;border:1px solid var(--line-2);border-radius:6px;
+.set-input{width:100%;max-width:360px;border:1px solid var(--line-2);border-radius:6px;
   padding:6px 9px;font-size:13px;outline:none;background:var(--panel);margin-top:5px}
 .set-input:focus{border-color:#bdbdb5}
 .set-lines{width:100%;border:1px solid var(--line-2);border-radius:6px;padding:7px 9px;
@@ -809,6 +810,17 @@ body.no-motion *{animation:none !important;transition:none !important}
 .set-foot #set-save{background:var(--ink);color:#fdfcf9;border-radius:6px;padding:6px 14px;font-size:13px;font-weight:600}
 .set-foot #set-save:disabled{opacity:.55;cursor:default}
 .set-foot #set-msg{font-size:11.5px;color:var(--ink-3)}
+.set-foot .set-msg{font-size:11.5px;color:var(--ink-3)}
+.set-panel .market-bar{margin:0 0 12px}
+.set-panel .config-grid{margin-top:0}
+
+/* 窄屏：分类改成横向滚动条，表单收成一列 */
+@media (max-width:900px){
+  .set-shell{grid-template-columns:1fr}
+  .set-nav{flex-direction:row;overflow:auto;border-right:0;border-bottom:1px solid var(--line);padding:6px}
+  .set-tab{width:auto;white-space:nowrap}
+  .ui-form{grid-template-columns:1fr}
+}
 .config-side{border:1px solid var(--line);border-radius:6px;background:var(--panel);overflow:hidden}
 .config-side-head{display:flex;justify-content:space-between;align-items:center;padding:8px 11px;border-bottom:1px solid var(--line);font-size:12px;color:var(--ink-3)}
 .filelist{max-height:520px;overflow:auto;padding:5px}

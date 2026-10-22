@@ -1954,7 +1954,7 @@ const SET_SCHEMA = [
   { id: 'ui', title: '界面', desc: '布局与观感（记在本机）' },
   { id: 'severity', title: '严重等级', desc: '等级名称与排序权重',
     fields: [{ k: 'severity_levels', label: '等级（权重越大越严重）', type: 'table',
-      cols: [{ k: 'name', label: '名称' }, { k: 'rank', label: '权重', type: 'number' }] }] },
+      cols: [{ k: 'name', label: '名称', w: 220 }, { k: 'rank', label: '权重', type: 'number', w: 120 }] }] },
   { id: 'alerts', title: '告警', desc: '什么等级走什么渠道',
     fields: [
       { k: 'alerts.min_rank', label: '告警最低权重', type: 'number', hint: '低于它的只进报告，不进告警' },
@@ -1963,15 +1963,15 @@ const SET_SCHEMA = [
       { k: 'alerts.channel_normal', label: '普通通知渠道', type: 'text' }] },
   { id: 'patterns', title: '敏感信息', desc: '正文里出现即命中',
     fields: [{ k: 'patterns.sensitive', label: '识别规则', type: 'table',
-      cols: [{ k: 'kind', label: '类型' }, { k: 'pattern', label: '正则（内置方言）', mono: true },
-             { k: 'severity', label: '等级' }] }] },
+      cols: [{ k: 'kind', label: '类型', w: 140 }, { k: 'pattern', label: '正则（内置方言）', mono: true },
+             { k: 'severity', label: '等级', w: 100 }] }] },
   { id: 'markers', title: '页面标记', desc: '目录索引与口令字段',
     fields: [
       { k: 'markers.dir_listing', label: '目录索引标记（一行一个）', type: 'lines' },
       { k: 'markers.login_password_field', label: '口令字段名', type: 'text' }] },
   { id: 'payloads', title: '注入载荷', desc: '布尔差分成对使用',
     fields: [{ k: 'payloads.boolean_diff', label: '载荷族', type: 'table',
-      cols: [{ k: 'context', label: '场景' }, { k: 'true', label: '恒真', mono: true },
+      cols: [{ k: 'context', label: '场景', w: 110 }, { k: 'true', label: '恒真', mono: true },
              { k: 'false', label: '恒假', mono: true }] }] },
   { id: 'passwords', title: '弱口令', desc: '口令强度评估用的字典',
     fields: [{ k: 'weak_passwords', label: '字典（一行一个）', type: 'lines' }] },
@@ -1995,8 +1995,8 @@ const SET_SCHEMA = [
              { k: 'min_bytes', label: '最小字节', type: 'number' }] }] },
   { id: 'headers', title: '安全响应头', desc: '缺哪一条算弱配置',
     fields: [{ k: 'weak_headers', label: '期望头', type: 'table',
-      cols: [{ k: 'name', label: '头名' }, { k: 'title', label: '说明' }, { k: 'severity', label: '等级' },
-             { k: 'only_https', label: '仅 HTTPS', type: 'bool' },
+      cols: [{ k: 'name', label: '头名', w: 170 }, { k: 'title', label: '说明', w: 190 }, { k: 'severity', label: '等级', w: 90 },
+             { k: 'only_https', label: '仅 HTTPS', type: 'bool', w: 90 },
              { k: 'impact', label: '影响' }, { k: 'fix', label: '修复建议' }] }] },
   { id: 'org', title: '单位口径', desc: '本单位的关键词与特征',
     fields: [
@@ -2110,7 +2110,11 @@ function setTableEl(f, rows) {
   const t = el('table', 'set-table');
   const thead = el('thead');
   const hr = el('tr');
-  for (const c of f.cols) hr.appendChild(el('th', null, c.label));
+  for (const c of f.cols) {
+    const th = el('th', null, c.label);
+    if (c.w) th.style.width = c.w + 'px';
+    hr.appendChild(th);
+  }
   hr.appendChild(el('th', null, ''));
   thead.appendChild(hr);
   t.appendChild(thead);
@@ -2147,12 +2151,12 @@ function setRenderPage() {
   const form = $('set-form');
   const adv = $('cfg-advanced');
   const head = document.querySelector('.set-head');
-  const foot = document.querySelector('.set-foot');
+  const foot = $('set-foot');
   const isAdv = page.id === 'advanced';
   const isUi = page.id === 'ui';
   if ($('set-title')) $('set-title').textContent = page.title;
   if ($('set-desc')) $('set-desc').textContent = page.desc || '';
-  if (head) head.style.display = (isAdv || isUi) ? 'none' : '';
+  if (head) head.style.display = '';
   if (foot) foot.style.display = (isAdv || isUi) ? 'none' : '';
   if (form) form.style.display = (isAdv || isUi) ? 'none' : '';
   if (adv) adv.style.display = isAdv ? 'block' : 'none';

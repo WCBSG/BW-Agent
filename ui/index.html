@@ -511,64 +511,63 @@
             <h2 id="set-title">基础</h2>
             <span id="set-desc">规则版本</span>
           </div>
+
           <div class="set-form" id="set-form"></div>
-          <div class="set-foot">
+
+          <section class="set-panel" id="ui-panel">
+            <div class="ui-form">
+              <label class="ui-row"><span>左栏宽度</span>
+                <input type="range" id="ui-side" min="180" max="420" step="4"><b id="ui-side-v"></b></label>
+              <label class="ui-row"><span>右栏宽度</span>
+                <input type="range" id="ui-rail" min="240" max="560" step="4"><b id="ui-rail-v"></b></label>
+              <label class="ui-row"><span>输入框高度</span>
+                <input type="range" id="ui-compose" min="44" max="300" step="4"><b id="ui-compose-v"></b></label>
+              <label class="ui-row ui-check"><span>本轮留痕</span>
+                <input type="checkbox" id="ui-trace"><b></b></label>
+              <label class="ui-row ui-check"><span>自动滚动</span>
+                <input type="checkbox" id="ui-autoscroll"><b></b></label>
+              <label class="ui-row ui-check"><span>界面动效</span>
+                <input type="checkbox" id="ui-motion"><b></b></label>
+            </div>
+            <div class="set-foot">
+              <button class="ghost" id="ui-reset" type="button">恢复默认</button>
+              <span class="set-msg">拖动两条分隔线也能改宽度；双击分隔线回到默认。</span>
+            </div>
+          </section>
+
+          <div class="set-panel" id="cfg-advanced">
+            <div class="market-bar">
+              <span class="muted">寻找现成能力</span>
+              <a class="market-link" href="https://skillsmp.com/zh" target="_blank" rel="noopener noreferrer">Skill 市场 ↗</a>
+              <a class="market-link" href="https://gc.das-ai.com/marketplace/tools/mcp" target="_blank" rel="noopener noreferrer">官方 MCP 市场 ↗</a>
+              <span class="muted">技能放 <code>skills\</code>，MCP 写 <code>mcp.json</code>，工具放 <code>tools\</code></span>
+            </div>
+            <div class="config-grid">
+              <div class="config-side">
+                <div class="config-side-head"><span>可编辑文件</span><button class="ghost tiny" id="cfg-new">＋ 新建</button></div>
+                <div class="filelist" id="cfg-list"></div>
+              </div>
+              <div class="config-main">
+                <div class="config-main-head">
+                  <code id="cfg-name">（未选择文件）</code>
+                  <span class="muted" id="cfg-meta"></span>
+                  <span class="grow"></span>
+                  <button class="ghost" id="cfg-reload-file">重新载入</button>
+                  <button class="ghost" id="cfg-reload-rules">让规则生效</button>
+                  <button id="cfg-save">保存</button>
+                </div>
+                <textarea id="cfg-text" spellcheck="false" rows="22" placeholder="从左侧选一个文件开始编辑…"></textarea>
+                <div class="config-foot"><span class="note" id="cfg-msg"></span><span class="muted" id="cfg-tip"></span></div>
+              </div>
+            </div>
+          </div>
+
+          <div class="set-foot" id="set-foot">
             <button id="set-save">保存并生效</button>
             <button class="ghost" id="set-reset">放弃改动</button>
             <span id="set-msg"></span>
           </div>
         </div>
-      </div>
-
-      <section class="panel ui-panel" id="ui-panel">
-        <div class="panel-head"><div><h2>界面</h2></div><span class="hint" id="ui-hint">改动即时生效，记在本机</span></div>
-        <div class="ui-form">
-          <label class="ui-row"><span>左栏宽度</span>
-            <input type="range" id="ui-side" min="180" max="420" step="4"><b id="ui-side-v"></b></label>
-          <label class="ui-row"><span>右栏宽度</span>
-            <input type="range" id="ui-rail" min="240" max="560" step="4"><b id="ui-rail-v"></b></label>
-          <label class="ui-row"><span>输入框高度</span>
-            <input type="range" id="ui-compose" min="44" max="300" step="4"><b id="ui-compose-v"></b></label>
-          <label class="ui-row ui-check"><span>本轮留痕</span>
-            <input type="checkbox" id="ui-trace"><b></b></label>
-          <label class="ui-row ui-check"><span>自动滚动</span>
-            <input type="checkbox" id="ui-autoscroll"><b></b></label>
-          <label class="ui-row ui-check"><span>界面动效</span>
-            <input type="checkbox" id="ui-motion"><b></b></label>
-        </div>
-        <div class="ui-foot">
-          <button class="ghost" id="ui-reset">恢复默认</button>
-          <span>也可以在编辑器里直接拖两条分隔线；双击分隔线回到默认宽度。</span>
-        </div>
-      </section>
-
-      <div class="cfg-advanced" id="cfg-advanced">
-      <section class="panel">
-        <div class="market-bar">
-          <span class="muted">寻找现成能力</span>
-          <a class="market-link" href="https://skillsmp.com/zh" target="_blank" rel="noopener noreferrer">Skill 市场 ↗</a>
-          <a class="market-link" href="https://gc.das-ai.com/marketplace/tools/mcp" target="_blank" rel="noopener noreferrer">官方 MCP 市场 ↗</a>
-          <span class="muted">技能放 <code>skills\</code>，MCP 写 <code>mcp.json</code>，工具放 <code>tools\</code></span>
-        </div>
-        <div class="config-grid">
-          <div class="config-side">
-            <div class="config-side-head"><span>可编辑文件</span><button class="ghost tiny" id="cfg-new">＋ 新建</button></div>
-            <div class="filelist" id="cfg-list"></div>
-          </div>
-          <div class="config-main">
-            <div class="config-main-head">
-              <code id="cfg-name">（未选择文件）</code>
-              <span class="muted" id="cfg-meta"></span>
-              <span class="grow"></span>
-              <button class="ghost" id="cfg-reload-file">重新载入</button>
-              <button class="ghost" id="cfg-reload-rules">让规则生效</button>
-              <button id="cfg-save">保存</button>
-            </div>
-            <textarea id="cfg-text" spellcheck="false" rows="22" placeholder="从左侧选一个文件开始编辑…"></textarea>
-            <div class="config-foot"><span class="note" id="cfg-msg"></span><span class="muted" id="cfg-tip"></span></div>
-          </div>
-        </div>
-      </section>
       </div>
     </section>
 
