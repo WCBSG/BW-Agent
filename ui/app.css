@@ -227,8 +227,7 @@ code,pre,.mono{font-family:var(--mono)}
 .link.weak{color:var(--ink-3)}
 
 .brand{display:flex;align-items:center;gap:8px;font-size:14px;font-weight:600;letter-spacing:-.01em;white-space:nowrap}
-.brand s{width:15px;height:15px;border:1.5px solid currentColor;border-radius:3px;text-decoration:none;position:relative;flex:0 0 auto}
-.brand s::after{content:"";position:absolute;inset:4px;background:currentColor}
+.brand .mark{width:18px;height:18px;border-radius:4px;flex:0 0 auto;display:block;object-fit:contain}
 
 /* ============================================================
    一 · 起手式（同一套纸白，不再黑底 —— 换屏不该换性格）

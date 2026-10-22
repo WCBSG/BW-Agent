@@ -39,8 +39,8 @@ if errorlevel 1 ( echo [失败] mkres 编译失败 & exit /b 1 )
     "ui/index.html=ui\index.html" ^
     "ui/app.css=ui\app.css" ^
     "ui/app.js=ui\app.js" ^
-    "ui/logo.ico=ui\logo.ico" ^
     "ui/logo.png=ui\logo.png" ^
+    "ui/favicon.ico=ui\favicon.ico" ^
     "data/rules.json=data\rules.json"
 if errorlevel 1 ( echo [失败] 内置资源生成失败 & exit /b 1 )
 if not exist "build\resources.cpp" ( echo [失败] 没有生成 build\resources.cpp & exit /b 1 )
