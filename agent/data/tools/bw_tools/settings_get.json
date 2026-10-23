@@ -1,0 +1,26 @@
+{
+  "name": "settings_get",
+  "kind": "内置",
+  "readonly": true,
+  "impl": "settings_get",
+  "description": "读本机设置(不改任何东西)。section 取 rules / approval / automation / models / profile,默认 all 给一份汇总;rules 还可以带 domain(detect/sensitive/probe/alert/org/page)只看一域,带 key 只看一个键(点号路径,如 timeout_ms 或 alerts.min_rank)。不碰被检目标。",
+  "schema": {
+    "type": "object",
+    "properties": {
+      "section": {
+        "type": "string",
+        "description": "rules|approval|automation|models|profile|all"
+      },
+      "domain": {
+        "type": "string",
+        "description": "section=rules 时的域 id"
+      },
+      "key": {
+        "type": "string",
+        "description": "section=rules 时只看这个键"
+      }
+    },
+    "additionalProperties": false
+  },
+  "source": "~/tools/bw_tools/bw_tools.exe"
+}

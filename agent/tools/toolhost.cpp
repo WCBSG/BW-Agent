@@ -23,7 +23,6 @@
 #include "agent.h"
 #include "approval.h"
 #include "common.h"
-#include "fs_tool.h"
 #include "json.h"
 #include "llm.h"
 #include "llm_provider.h"
@@ -32,10 +31,17 @@
 #include "rules.h"
 #include "skills.h"
 #include "store.h"
-#include "tools.h"
+#include "tool_api.h"
 
 #ifndef TOOL_NAME
 #define TOOL_NAME "fs_read"
+#endif
+
+/* 直接指向这个工具的实现函数(构建脚本用 -DTOOL_FN=... 指定)。
+   这样每个 exe 只链接自己那一份实现 —— "这个进程里有哪些能力"由构建表决定,
+   而不是由运行期查表决定。 */
+#ifndef TOOL_FN
+#define TOOL_FN fs_tool_read
 #endif
 
 /* 从 stdin 读完整请求(调用方写完就关,不会挂住) */
@@ -178,7 +184,7 @@ int main(int argc, char **argv) {
 
   tool_result_t r;
   memset(&r, 0, sizeof(r));
-  int rc = tools_run_builtin(&ctx, tool, args, &r);
+  int rc = TOOL_FN(&ctx, args, &r);
 
   write_result(&r, rc);
 

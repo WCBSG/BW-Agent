@@ -170,6 +170,20 @@ int tool_entry_parse(json_t *spec, const char *origin) {
     /* builtin:交给 tools.cpp 的 g_prims */
     return 0;
   }
+  /* 声明里的入口找不到时,退到统一工具宿主:升级后旧声明(指向已被清理的
+     每工具 exe)也不会让能力静默消失。
+     注意:写成命令行的入口(如 `cmd /c echo`)本来就不是文件,不能拿它去判存在性。 */
+  int looks_like_file = path[0] && (strchr(path, '\\') || path[1] == ':' ||
+                                    str_endswith(path, ".exe") || str_endswith(path, ".cmd") ||
+                                    str_endswith(path, ".bat"));
+  if (str_ieq(type, "exec") && looks_like_file && !file_exists(path)) {
+    char host[MAX_PATH * 2];
+    app_data_path(host, sizeof(host), "tools\\bw_tools\\bw_tools.exe");
+    if (file_exists(host)) {
+      snprintf(path, sizeof(path), "%s", host);
+      log_warn("[工具] %s 的入口不存在,改用统一工具宿主:%s", origin, host);
+    }
+  }
   if (str_ieq(type, "exec") && !path[0]) {
     log_warn("[工具] %s 声明是外部入口,但找不到可执行文件(看了 entry.path、source、同目录)", origin);
     return -1;

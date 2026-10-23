@@ -1,0 +1,21 @@
+{
+  "name": "sensitive_scan",
+  "kind": "内置",
+  "readonly": true,
+  "impl": "sensitive_scan",
+  "description": "扫描一段文本里的敏感信息(身份证/手机号/邮箱/IP/凭据/私钥),并叠加任务绑定的敏感信息定义(关键词、正则)。用于检查用户粘贴的文本或抓到的页面内容。",
+  "schema": {
+    "type": "object",
+    "properties": {
+      "text": {
+        "type": "string",
+        "description": "要扫描的文本"
+      }
+    },
+    "required": [
+      "text"
+    ],
+    "additionalProperties": false
+  },
+  "source": "~/tools/bw_tools/bw_tools.exe"
+}

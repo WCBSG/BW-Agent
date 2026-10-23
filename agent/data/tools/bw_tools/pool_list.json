@@ -1,0 +1,13 @@
+{
+  "name": "pool_list",
+  "kind": "内置",
+  "readonly": true,
+  "impl": "pool_list",
+  "description": "列出授权池里的目标:允许检查哪些主机、哪些被明确禁止(! 开头),以及本轮焦点。用户要求「把授权列表 / 所有授权站点都巡检一遍」时先用它拿到完整清单,再逐个站点动手。不需要参数,不发起任何网络请求。",
+  "schema": {
+    "type": "object",
+    "properties": {},
+    "additionalProperties": false
+  },
+  "source": "~/tools/bw_tools/bw_tools.exe"
+}

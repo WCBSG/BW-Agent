@@ -613,11 +613,15 @@ agent\build\agent.exe run skill_我的技能
     │   └─ app.rc                 图标与版本信息(UTF-8,windres 用 --codepage=65001)
     ├─ ui/                        界面源码(index.html / app.css / app.js / logo.ico),编译时打进 exe
     ├─ data/                      出厂数据(规则/技能/工具声明/默认 MCP),构建时打进 exe
-    ├─ tools/                     工具与构建期小工具
-    │   ├─ toolhost.cpp           工具宿主:每个内置工具编成一个独立 exe(声明 + 入口 + 协议)
+    ├─ src/tools/                 工具实现:一个工具一个 .cpp
+    │   ├─ bw_tools.cpp           工具宿主:一个 exe 承载全部工具,按请求里的 tool 字段分派
+    │   ├─ tool_common.cpp        公共手法:取数、URL 归一、软 404 校准
+    │   ├─ tool_api.h             各工具入口与公共手法的声明
+    │   └─ fs_read.cpp fs_write.cpp ... 15 个工具各自的实现
+    ├─ tools/                     构建期小工具
     │   ├─ mkres.cpp              把界面、出厂数据与 WebView2 加载器转成 C++ 数组编进 exe
     │   └─ gen_webview2_min.js    从官方 SDK 头里抽出用到的那几个接口(生成 src\main\webview2_min.h)
-    └─ data/                      出厂数据:rules/(6 个域) skills/ tools/(声明+exe) mcp.json
+    └─ data/                      出厂数据:rules/(6 个域) skills/ tools/bw_tools/(宿主+声明) mcp.json
                                    WebView2Loader.dll(微软官方加载器,构建时编进 exe)
 ```
 

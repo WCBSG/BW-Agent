@@ -1,0 +1,26 @@
+{
+  "name": "dir_probe",
+  "kind": "内置",
+  "readonly": true,
+  "impl": "dir_probe",
+  "description": "探测常见目录(上传/备份/数据/日志/管理入口等):判断是否开放目录索引、是否为登录入口、是否暴露文件。只做只读访问,不爆破、不上传。",
+  "schema": {
+    "type": "object",
+    "properties": {
+      "target": {
+        "type": "string"
+      },
+      "dirs": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      }
+    },
+    "required": [
+      "target"
+    ],
+    "additionalProperties": false
+  },
+  "source": "~/tools/bw_tools/bw_tools.exe"
+}

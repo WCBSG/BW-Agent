@@ -1,0 +1,30 @@
+{
+  "name": "site_crawl",
+  "kind": "内置",
+  "readonly": true,
+  "impl": "site_crawl",
+  "description": "从目标地址出发自动发现站点页面与资源(同域、限深、限速),记录类型、状态码、发现深度与父页面。资产底账由它建立。",
+  "schema": {
+    "type": "object",
+    "properties": {
+      "target": {
+        "type": "string"
+      },
+      "max_depth": {
+        "type": "integer",
+        "minimum": 0,
+        "maximum": 4
+      },
+      "max_pages": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 100
+      }
+    },
+    "required": [
+      "target"
+    ],
+    "additionalProperties": false
+  },
+  "source": "~/tools/bw_tools/bw_tools.exe"
+}

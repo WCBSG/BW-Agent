@@ -69,9 +69,23 @@ static int spill_dir(const char *res_prefix, const char *dst_dir) {
     snprintf(dst, sizeof(dst), "%s\\%s", dst_dir, rel);
 
     /* 配置文件:已存在就不覆盖(使用者改过的东西不能被冲掉)。
-       可执行文件:程序升级时必须换成新的,否则旧工具 exe 会一直跑下去。 */
+       可执行文件:程序升级时必须换成新的,否则旧工具 exe 会一直跑下去。
+       例外:旧版本的"每个工具一个 exe"声明(source 指向 ~/tools/<名字>/<名字>.exe)
+       在升级后指向已不存在的入口 —— 这一种必须换成新的,否则能力会静默失效。 */
     int is_bin = str_endswith(rel, ".exe") || str_endswith(rel, ".dll");
-    if (!is_bin && file_size(dst) >= 0) continue;
+    int exists = file_size(dst) >= 0;
+    int stale_layout = 0;
+    if (!is_bin && exists && str_endswith(rel, ".json") &&
+        strstr(data, "bw_tools") != NULL) {
+      size_t old_len = 0;
+      char *old = file_read_all(dst, &old_len);
+      if (old) {
+        stale_layout = (strstr(old, "bw_tools") == NULL);
+        free(old);
+      }
+    }
+    if (!is_bin && exists && !stale_layout) continue;
+    if (stale_layout) log_info("[数据目录] 升级工具声明(旧形态已不存在):%s", dst);
 
     char parent[MAX_PATH * 2];
     path_dir_of(dst, parent, sizeof(parent));
@@ -112,6 +126,41 @@ int res_bootstrap_data_dir(void) {
   ensure_dir(path);
   written += spill_dir("data/tools/", path);
 
+  /* 旧版本把每个工具编成自己的 exe(<数据目录>\tools\<名字>\<名字>.exe)。
+     现在全部由 bw_tools.exe 承载,那些散落的 exe 已经没有声明指向它们了 ——
+     留着既占地方,也会让人以为"改那个 exe 就能改行为"。这里清掉(只删我们自己产的)。 */
+  {
+    std::vector<std::string> subs = fs_list_dirs(path);
+    for (size_t i = 0; i < subs.size(); i++) {
+      if (subs[i] == "bw_tools") continue;
+      char old_exe[MAX_PATH * 2];
+      snprintf(old_exe, sizeof(old_exe), "%s\\%s\\%s.exe", path, subs[i].c_str(),
+               subs[i].c_str());
+      if (file_size(old_exe) >= 0) {
+        wchar_t *w = u8_to_w(old_exe);
+        if (w && DeleteFileW(w)) log_info("[数据目录] 已清理旧版独立工具 exe:%s", old_exe);
+        free(w);
+      }
+      /* 旧声明(source 指向 ~/tools/<名字>/<名字>.exe)也一并清掉:
+         同一工具在旧目录与 bw_tools 目录各有一份时,旧的会先被装载,把新的挤掉。 */
+      char old_json[MAX_PATH * 2];
+      snprintf(old_json, sizeof(old_json), "%s\\%s\\%s.json", path, subs[i].c_str(),
+               subs[i].c_str());
+      if (file_size(old_json) >= 0) {
+        size_t len = 0;
+        char *txt = file_read_all(old_json, &len);
+        int stale = txt && strstr(txt, "bw_tools") == NULL;
+        free(txt);
+        if (stale) {
+          wchar_t *wj = u8_to_w(old_json);
+          if (wj && DeleteFileW(wj)) {
+            log_info("[数据目录] 已清理旧版工具声明:%s", old_json);
+          }
+          free(wj);
+        }
+      }
+    }
+  }
   app_data_path(path, sizeof(path), "skills");
   ensure_dir(path);
   written += spill_dir("data/skills/", path);

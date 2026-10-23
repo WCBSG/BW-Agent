@@ -1,0 +1,23 @@
+{
+  "name": "nuclei_scan",
+  "kind": "内置 · 可选调 nuclei",
+  "readonly": true,
+  "impl": "nuclei_scan",
+  "description": "安全配置与漏洞模板检查:安全响应头、Cookie 安全属性、版本信息泄露、错误回显、允许的 HTTP 方法、目录索引、混合内容;本机装了 nuclei 时还会自动调它跑一轮信息收集/弱配置类模板并归并结果。非破坏性,不做爆破、不做带外探测。",
+  "schema": {
+    "type": "object",
+    "properties": {
+      "target": {
+        "type": "string"
+      },
+      "templates": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "target"
+    ],
+    "additionalProperties": false
+  },
+  "source": "~/tools/bw_tools/bw_tools.exe"
+}
