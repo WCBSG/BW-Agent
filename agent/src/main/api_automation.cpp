@@ -8,6 +8,11 @@
 #include "serve_ctx.h"
 
 #include "automation.h"
+
+#include <algorithm>
+#include <functional>
+#include <string>
+#include <vector>
 #include "json.h"
 /* ================= 周期巡检 =================
  * 数据全部来自 automations 集合;这里只做四件事:
@@ -117,3 +122,46 @@ void api_automation_post(const http_req_t *req, http_res_t *res) {
   json_free(root);
 }
 
+
+/* GET /api/automations/history?id=<任务id>&limit=50
+   读 <数据目录>\time\<任务id>\*.jsonl,每次执行一行 —— 这就是定时任务的"报告":
+   它不生成单独的报告文档(那是手动出报告才做的事),但每一轮看到了什么、
+   有没有变化、有没有越界,都在这里按时间排着。 */
+void api_automation_history(const http_req_t *req, http_res_t *res) {
+  char id[80] = {0};
+  http_query(req, "id", id, sizeof(id), "");
+  int limit = (int)atof(http_query(req, "limit", (char[16]){0}, 16, "50"));
+  if (limit <= 0 || limit > 500) limit = 50;
+
+  json_t *arr = j_arr();
+  if (id[0]) {
+    char dir[MAX_PATH * 2];
+    app_data_path(dir, sizeof(dir), "time");
+    char sub[MAX_PATH * 2];
+    snprintf(sub, sizeof(sub), "%s\\%s", dir, id);
+    std::vector<std::string> files = fs_list_files(sub, ".jsonl");
+    /* 文件名就是时间:倒序排即可,不用再解析 */
+    std::sort(files.begin(), files.end(), std::greater<std::string>());
+    for (size_t i = 0; i < files.size() && (int)i < limit; i++) {
+      char full[MAX_PATH * 4];
+      snprintf(full, sizeof(full), "%s\\%s", sub, files[i].c_str());
+      size_t len = 0;
+      char *text = file_read_all(full, &len);
+      if (!text) continue;
+      json_t *o = json_parse(text);
+      free(text);
+      if (!o) continue;
+      j_set_str(o, "file", files[i].c_str());
+      j_add(arr, o);
+    }
+  }
+
+  json_t *out = j_obj();
+  j_set_bool(out, "ok", 1);
+  j_set_str(out, "id", id);
+  j_set(out, "items", arr);
+  char *text = json_dump(out);
+  http_res_json(res, 200, text);
+  free(text);
+  json_free(out);
+}

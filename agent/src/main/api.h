@@ -34,6 +34,8 @@ void api_caps(const http_req_t *req, http_res_t *res);
 
 /* 周期巡检:列出 / 存一份 / 删一份 / 马上跑一次 */
 void api_automation_list(const http_req_t *req, http_res_t *res);
+/* 某条定时任务的执行流水(time/<id>/*.jsonl) */
+void api_automation_history(const http_req_t *req, http_res_t *res);
 void api_automation_post(const http_req_t *req, http_res_t *res);
 
 /* 本单位敏感信息定义 */

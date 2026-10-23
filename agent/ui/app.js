@@ -2171,6 +2171,68 @@ async function renderAutomationView() {
   refreshHBars();
 }
 
+
+/* 定时任务的「记录」:读 time/<任务id>/*.jsonl。
+   定时任务不单独生成报告文档 —— 它每一轮看到什么、有没有变化,
+   都按时间排在这里;要看细节就点进去打开那一轮的运行记录。 */
+async function openAutoHistory(a) {
+  let items = [];
+  try {
+    const r = await api('/api/automations/history?id=' + encodeURIComponent(a.id) + '&limit=50');
+    items = r.items || [];
+  } catch (e) { items = []; }
+
+  const old = document.getElementById('hist');
+  if (old) old.remove();
+
+  const box = el('div', 'hist-modal on');
+  box.id = 'hist';
+  const back = el('div', 'hist-backdrop');
+  back.addEventListener('click', () => box.remove());
+  box.appendChild(back);
+
+  const card = el('div', 'hist-box');
+  const head = el('div', 'hist-head');
+  const h = el('div');
+  h.appendChild(el('h3', null, `定时任务记录 · ${a.name || a.domain}`));
+  h.appendChild(el('p', 'muted', `每一轮执行一个文件：time\\${a.id}\\<时间>.jsonl`));
+  head.appendChild(h);
+  const close = el('button', 'ghost', '关闭');
+  close.type = 'button';
+  close.addEventListener('click', () => box.remove());
+  head.appendChild(close);
+  card.appendChild(head);
+
+  const list = el('div', 'hist-list');
+  if (!items.length) {
+    list.appendChild(el('div', 'muted', '还没有执行记录：等它自己到点跑，或点「马上跑一次」。'));
+  }
+  for (const it of items) {
+    const row = el('button', 'hist-row');
+    row.type = 'button';
+    const top = el('div', 'hr-top');
+    top.appendChild(el('span', 'hr-time', (it.at || '').replace('T', ' ').slice(0, 19)));
+    top.appendChild(el('span', 'hr-st ' + (it.status === 'done' ? 'ok' : 'bad'),
+                       it.status === 'done' ? '完成' : '失败'));
+    if (it.changed) top.appendChild(el('span', 'hr-tag', '有变化'));
+    if (it.violated) top.appendChild(el('span', 'hr-tag bad', '越界中止'));
+    row.appendChild(top);
+    row.appendChild(el('div', 'hr-meta',
+      `范围 ${it.checks || it.scope || '—'} · ${it.steps || 0} 步 · ${it.http_calls || 0} 次请求` +
+      (it.stop_reason ? ` · ${it.stop_reason}` : '')));
+    row.appendChild(el('div', 'hr-file', `time\\${a.id}\\${it.file || ''}`));
+    row.addEventListener('click', () => {
+      box.remove();
+      if (it.run_id) openRun(it.run_id);
+      else { showWork(); switchView('history'); loadView('history'); }
+    });
+    list.appendChild(row);
+  }
+  card.appendChild(list);
+  box.appendChild(card);
+  document.body.appendChild(box);
+}
+
 function ruleCard(a) {
   const c = el('div', 'rule' + (a.enabled ? '' : ' off'));
   const h = el('div', 'rh');
@@ -2218,6 +2280,8 @@ function ruleCard(a) {
       renderAutomationView();
     } catch (e) { console.warn(e.message); }
   });
+  const bHist = el('button', 'ghost', '记录');
+  bHist.addEventListener('click', () => openAutoHistory(a));
   const bEdit = el('button', 'ghost', '编辑');
   bEdit.addEventListener('click', () => fillAutoForm(a));
   const bDel = el('button', 'ghost danger', '删除');
@@ -2228,7 +2292,7 @@ function ruleCard(a) {
       renderAutomationView();
     } catch (e) { console.warn(e.message); }
   });
-  for (const b of [bRun, bToggle, bEdit, bDel]) act.appendChild(b);
+  for (const b of [bRun, bHist, bToggle, bEdit, bDel]) act.appendChild(b);
   c.appendChild(act);
   return c;
 }

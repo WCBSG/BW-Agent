@@ -2188,6 +2188,7 @@ static void router(const http_req_t *req, http_res_t *res, void *ud) {
       return;
     }
     if (!strcmp(p, "/api/reload")) { api_reload(req, res); return; }
+    if (!strcmp(p, "/api/automations/history")) { api_automation_history(req, res); return; }
     if (!strcmp(p, "/api/automations")) {
       if (strcmp(req->method, "POST") == 0) api_automation_post(req, res);
       else api_automation_list(req, res);
