@@ -321,7 +321,7 @@ static int s_report(tool_ctx_t *ctx, json_t *args, skill_result_t *out) {
   json_t *by_sev = j_obj();
   json_t *by_kind = j_obj();
   json_t *ids = j_arr();
-  int total = 0, fp = 0, retest_failed = 0, open = 0;
+  int total = 0, fp = 0, retest_failed = 0;
 
   /* 只统计"不是误报"的发现:误报要在报告里如实体现,不能计入问题数 */
   for (int i = 0; i < j_len(findings); i++) {
@@ -330,7 +330,6 @@ static int s_report(tool_ctx_t *ctx, json_t *args, skill_result_t *out) {
     int is_fp = strcmp(status, "false_positive") == 0;
     if (is_fp) fp++;
     if (strcmp(status, "retest_failed") == 0) retest_failed++;
-    if (!is_fp && strcmp(status, "retest_passed") != 0) open++;
     const char *sev = j_s(f, "severity", "信息");
     const char *kind = j_s(f, "kind", "弱配置");
     j_set_num(by_sev, sev, j_n(by_sev, sev, 0) + 1);
@@ -347,8 +346,7 @@ static int s_report(tool_ctx_t *ctx, json_t *args, skill_result_t *out) {
   buf_init(&summary);
   buf_printf(&summary, "本次共确认 %d 条发现", total);
   int n_crit = (int)j_n(by_sev, "严重", 0), n_high = (int)j_n(by_sev, "高", 0);
-  if (n_crit) buf_printf(&summary, ",其中严重 %d 条", n_crit);
-  if (n_high) buf_printf(&summary, "、高危 %d 条", n_high);
+  if (n_crit || n_high) buf_printf(&summary, ",其中严重 %d 条、高危 %d 条", n_crit, n_high);
   if (fp) buf_printf(&summary, ";误报 %d 条(已排除在问题数之外)", fp);
   if (retest_failed) buf_printf(&summary, ";复测未通过 %d 条", retest_failed);
   if (!total) buf_puts(&summary, ":本次没有确认任何风险");
@@ -366,7 +364,6 @@ static int s_report(tool_ctx_t *ctx, json_t *args, skill_result_t *out) {
   j_set(stats, "by_severity", json_parse(json_dump(by_sev)));
   j_set(stats, "by_kind", json_parse(json_dump(by_kind)));
   j_set_num(stats, "false_positive", fp);
-  j_set_num(stats, "open", open);
   j_set_num(stats, "duration_seconds", 0);
   j_set(report, "stats", stats);
   j_set(report, "finding_ids", json_parse(json_dump(ids)));
@@ -473,15 +470,27 @@ static int s_report(tool_ctx_t *ctx, json_t *args, skill_result_t *out) {
   buf_t s;
   buf_init(&s);
   if (total == 0) {
-    buf_printf(&s, "报告已生成(%s):本次没有确认任何风险。", rid);
+    buf_printf(&s, "报告已生成(%s):本次没有确认任何风险,也没有需要整改的条目。", rid);
   } else {
     buf_printf(&s, "报告已生成(%s),共 %d 条发现", rid, total);
     if (n_crit || n_high) buf_printf(&s, ",其中严重 %d 条、高危 %d 条", n_crit, n_high);
-    buf_printf(&s, ";已生成 %d 条告警", j_len(alerts));
-    if (delivered) buf_printf(&s, "(其中 %d 条已投递到配置的 webhook)", delivered);
-    else if (!webhook[0]) buf_puts(&s, "(严重/高危标为立即推送;配了 alerts.webhook 会自动投递)");
-    else buf_puts(&s, "(webhook 投递失败,详见告警记录里的交付状态)");
-    buf_puts(&s, "。");
+    /* 挑最要紧的一条点名:模型据此在对话里说人话,不用它自己去翻整份清单 */
+    const char *top_title = "", *top_target = "", *top_sev = "";
+    int top_rank = -1;
+    for (int i = 0; i < j_len(findings); i++) {
+      json_t *f = j_at(findings, i);
+      if (strcmp(j_s(f, "status", "new"), "false_positive") == 0) continue;
+      int rk = severity_rank(j_s(f, "severity", "信息"));
+      if (rk <= top_rank) continue;
+      top_rank = rk;
+      top_sev = j_s(f, "severity", "");
+      top_title = j_s(f, "title", "");
+      top_target = j_s(f, "target", "");
+    }
+    if (top_title[0]) {
+      buf_printf(&s, "。最要紧的一条:[%s]%s(%s)", top_sev, top_title, top_target);
+    }
+    buf_puts(&s, "。报告已落盘,可以导出;要闭环就对它做复测。");
   }
   out->summary = buf_take(&s);
   buf_free(&summary);

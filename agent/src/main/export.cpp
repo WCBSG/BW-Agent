@@ -15,7 +15,7 @@ struct report_t {
   char generated_at[40];
   char summary[2048];
   char task_id[24];
-  int total, open, crit, high, fp;
+  int total, crit, high, fp;
 };
 
 static void report_free(report_t *r) {
@@ -94,7 +94,6 @@ static int load_report(store_t *s, const char *report_id, report_t *out) {
 
   json_t *stats = j_get(report, "stats");
   out->total = (int)j_n(stats, "total", 0);
-  out->open = (int)j_n(stats, "open", 0);
   out->fp = (int)j_n(stats, "false_positive", 0);
   json_t *by_sev = j_get(stats, "by_severity");
   out->crit = (int)j_n(by_sev, "严重", 0);
@@ -116,7 +115,6 @@ static void render_md(report_t *r, buf_t *out) {
   for (int i = 0; i < 5; i++) {
     buf_printf(out, "| %s | %d |\n", SEV[i], (int)j_n(by_sev, SEV[i], 0));
   }
-  buf_printf(out, "| 未处理 | %d |\n", r->open);
   if (r->fp) buf_printf(out, "| 误报(不计入问题数) | %d |\n", r->fp);
   buf_puts(out, "\n");
 
@@ -238,7 +236,6 @@ static void render_html(report_t *r, buf_t *out) {
   for (int i = 0; i < 5; i++) {
     buf_printf(out, "<tr><td>%s</td><td>%d</td></tr>", SEV[i], (int)j_n(by_sev, SEV[i], 0));
   }
-  buf_printf(out, "<tr><td>未处理</td><td>%d</td></tr>", r->open);
   if (r->fp) buf_printf(out, "<tr><td>误报(不计入问题数)</td><td>%d</td></tr>", r->fp);
   buf_puts(out, "</table>");
 
@@ -444,11 +441,6 @@ static void render_docx(report_t *r, buf_t *out) {
     docx_cell(x, line, 0, 2400);
     x += "</w:tr>";
   }
-  snprintf(line, sizeof(line), "%d", r->open);
-  x += "<w:tr>";
-  docx_cell(x, "未处理", 0, 2400);
-  docx_cell(x, line, 0, 2400);
-  x += "</w:tr>";
   x += "</w:tbl>";
   docx_para(x, "", 12, 0, 120);
 

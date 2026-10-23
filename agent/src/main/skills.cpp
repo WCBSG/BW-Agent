@@ -74,8 +74,8 @@ static skill_t g_skills[] = {
      "用户说「复测一下」「修好了吗」「再看看那几个问题」时用。",
      "page_diff,sensitive_file_probe,dir_probe,nuclei_scan", 1, NULL},
 
-    {"skill_report", "报告与告警",
-     "汇总分级报告与发现引用并推送告警。",
+    {"skill_report", "巡检报告",
+     "汇总分级报告与发现引用清单。",
      "用户说「出报告」「导出报告」「把结果整理一下」时用。",
      "(汇总已有结果,不新发请求)", 0, NULL},
 

@@ -1278,12 +1278,10 @@ async function renderReportView() {
   $('report-kind').innerHTML = '';
   $('report-summary').textContent = '';
   $('report-hint').textContent = '';
-  $('alerts-list').innerHTML = '';
 
-  const [reports, findings, alerts] = await Promise.all([
+  const [reports, findings] = await Promise.all([
     fetchCollection('reports', 1).catch(() => ({ items: [] })),
     fetchCollection('findings', 200).catch(() => ({ items: [] })),
-    fetchCollection('alerts', 100).catch(() => ({ items: [] })),
   ]);
 
   const rep = (reports.items || [])[0];
@@ -1291,23 +1289,20 @@ async function renderReportView() {
 
   // 统计块：优先用报告里的 ReportStats（它就是"报告的口径"），没有就现场数
   const sev = {}, kind = {};
-  let fp = 0, open = 0;
+  let fp = 0;
   for (const f of fl) {
     sev[f.severity || '信息'] = (sev[f.severity || '信息'] || 0) + 1;
     kind[f.kind || '弱配置'] = (kind[f.kind || '弱配置'] || 0) + 1;
     if (f.status === 'false_positive') fp++;
-    if (f.status !== 'false_positive' && f.status !== 'retest_passed') open++;
   }
   const stats = (rep && rep.stats) || {
-    total: fl.length, by_severity: sev, by_kind: kind, false_positive: fp, open,
+    total: fl.length, by_severity: sev, by_kind: kind, false_positive: fp,
   };
 
   const tiles = [
     { l: '发现总数', v: stats.total !== undefined ? stats.total : fl.length },
-    { l: '待处理', v: stats.open !== undefined ? stats.open : open, cls: (stats.open || open) ? 'warn' : 'ok' },
     { l: '严重', v: (stats.by_severity || {})['严重'] || 0, cls: ((stats.by_severity || {})['严重'] || 0) ? 'bad' : 'ok' },
     { l: '高危', v: (stats.by_severity || {})['高'] || 0, cls: ((stats.by_severity || {})['高'] || 0) ? 'warn' : 'ok' },
-    { l: '告警条数', v: (alerts.items || []).length || 0 },
   ];
   for (const t of tiles) {
     const d = el('div', 'tile ' + (t.cls || ''));
@@ -1334,25 +1329,6 @@ async function renderReportView() {
   $('findings-hint').textContent = fl.length ? `${fl.length} 条（按等级排序）` : '';
   if (!fl.length) box.appendChild(emptyCard('还没有落盘的发现。'));
   for (const f of fl) box.appendChild(findingCard(f));
-
-  const al = alerts.items || [];
-  const alertsBox = $('alerts-list');
-  if (!al.length) alertsBox.appendChild(emptyCard('还没有推送过告警（严重/高危走邮件、中危走站内）。'));
-  for (const a of al.slice().reverse()) {
-    const c = el('div', 'card');
-    const head = el('div', 'ch');
-    head.appendChild(sevBadge(a.severity));
-    head.appendChild(el('span', 'ct', a.title || a.finding_id || ''));
-    const meta = el('div', 'side-meta');
-    meta.appendChild(el('span', 'chip', a.channel || '站内'));
-    meta.appendChild(el('span', 'chip st-' + (a.status === 'pending' ? 'new' : 'fixed'), a.status || 'pending'));
-    head.appendChild(meta);
-    c.appendChild(head);
-    c.appendChild(kv('关联发现', a.finding_id, 'cm'));
-    c.appendChild(kv('时间', fmtTime(a.created_at), 'cm'));
-    if (a.note) c.appendChild(el('div', 'cd', a.note));
-    alertsBox.appendChild(c);
-  }
 }
 
 function findingCard(f) {
@@ -1741,7 +1717,7 @@ async function renderRail() {
     if (bars) bars.appendChild(i);
   }
   if (kvBox) {
-    for (const [k, v] of [['严重', sev['严重'] || 0], ['中', sev['中'] || 0], ['低', sev['低'] || 0], ['未处理', stats.open === undefined ? '—' : stats.open]]) {
+    for (const [k, v] of [['严重', sev['严重'] || 0], ['中', sev['中'] || 0], ['低', sev['低'] || 0]]) {
       kvBox.appendChild(el('dt', null, k));
       kvBox.appendChild(el('dd', null, String(v)));
     }
@@ -2004,7 +1980,7 @@ function switchView(name) {
   state.view = name;
   openSheet();
   document.querySelectorAll('#views .view').forEach((v) => v.classList.toggle('active', v.id === 'view-' + name));  const meta = {
-    report: ['巡检 / 报告与告警', '报告与告警'],
+    report: ['巡检 / 报告', '巡检报告'],
     history: ['巡检 / 历史记录', '巡检历史'],
     assets: ['数据 / 资产底账', '资产底账'],
     eval: ['数据 / 证据与闭环', '证据与闭环'],
@@ -2323,7 +2299,7 @@ function ruleCard(a) {
   add('范围', a.scope_label || '—');
   add('下次', a.enabled ? fmtIn(a.next_run_at) : '已停用');
   add('已跑', `${a.run_count || 0} 轮`);
-  add('告警', `${a.change_count || 0} 次变化`);
+  add('变化', `${a.change_count || 0} 次`);
   if (a.last_run_at) add('上次', fmtTime(a.last_run_at));
   c.appendChild(m);
 
@@ -2771,12 +2747,6 @@ const RULE_FIELDS = [
     { k: 'probing.similar_ratio', label: '相似度阈值', type: 'number', step: '0.01' },
     { k: 'sensitive_paths', label: '落点（一行一个）', type: 'lines' },
     { k: 'dir_candidates', label: '目录（一行一个）', type: 'lines' },
-  ] },
-  { id: 'alert', fields: [
-    { k: 'alerts.min_rank', label: '告警最低权重', type: 'number', hint: '低于它的只进报告，不进告警' },
-    { k: 'alerts.immediate_rank', label: '立即通知权重', type: 'number' },
-    { k: 'alerts.channel_immediate', label: '立即通知渠道', type: 'text' },
-    { k: 'alerts.channel_normal', label: '普通通知渠道', type: 'text' },
   ] },
   { id: 'org', fields: [
     { k: 'profile_keywords', label: '敏感信息关键词', type: 'lines' },
@@ -5012,7 +4982,7 @@ function initTheme() {
 const PAL = { open: false, rows: [], sel: 0 };
 
 const PAL_VIEWS = [
-  ['report', '视图 · 报告与告警'], ['history', '视图 · 巡检历史'], ['assets', '视图 · 资产底账'],
+  ['report', '视图 · 巡检报告'], ['history', '视图 · 巡检历史'], ['assets', '视图 · 资产底账'],
   ['eval', '视图 · 证据与闭环'],
   ['config', '视图 · 配置与能力'],
 ];

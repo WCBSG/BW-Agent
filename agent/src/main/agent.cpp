@@ -562,12 +562,14 @@ int agent_run_turn(agent_t *a, const char *user_text, loop_state_t *st) {
         }
         if (already) {
           char *tool = d.tool ? xstrdup(d.tool) : NULL;
-          /* 读信息类工具(授权列表 / 本机信息 / 设置)的**结果本身就是回答**:
+          /* 读信息类工具(授权列表 / 本机信息 / 设置)和技能的结果**本身就是回答**:
              模型在线时它会照着结果讲一遍;降级到本地规则时没人转述,
              就该把结果原样交给用户,而不是说一句"已经跑完了"让人自己往上翻。 */
           const char *last_result = NULL;
-          if (tool && (!strcmp(tool, "pool_list") || !strcmp(tool, "agent_info") ||
-                       !strcmp(tool, "settings_get") || !strcmp(tool, "settings_set"))) {
+          int result_is_answer = tool && (!strcmp(tool, "pool_list") || !strcmp(tool, "agent_info") ||
+                                          !strcmp(tool, "settings_get") || !strcmp(tool, "settings_set") ||
+                                          str_startswith(tool, "skill_"));
+          if (result_is_answer) {
             for (int i = 0; i < j_len(observations); i++) {
               json_t *o = j_at(observations, i);
               if (strcmp(j_s(o, "tool", ""), tool) == 0) last_result = j_s(o, "result", "");
