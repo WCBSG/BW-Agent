@@ -244,7 +244,30 @@ static void expand_argv(buf_t *out, const char *tmpl, json_t *args) {
     if (n >= sizeof(key)) n = sizeof(key) - 1;
     memcpy(key, start, n);
     key[n] = 0;
+
+    /* ${名字:-默认值}:参数没给时用默认值。
+       为什么需要:命令行参数不能"空着跳过" —— 像 `es -n 20 关键词` 里,
+       少一个数就会被当成搜索词,整条命令的意思就变了。 */
+    char fallback[128];
+    fallback[0] = 0;
+    const char *after = end;
+    if (braced && end[0] == ':' && end[1] == '-') {
+      const char *fb = end + 2;
+      const char *fend = fb;
+      while (*fend && *fend != '}') fend++;
+      size_t fn = (size_t)(fend - fb);
+      if (fn >= sizeof(fallback)) fn = sizeof(fallback) - 1;
+      memcpy(fallback, fb, fn);
+      fallback[fn] = 0;
+      after = fend;
+    }
+
     json_t *v = args ? j_get(args, key) : NULL;
+    if ((!v || v->type == J_NULL) && fallback[0]) {
+      buf_puts(out, fallback);
+      p = braced ? after : end - 1;
+      continue;
+    }
     if (v && v->type == J_STR) {
       buf_putc_(out, '"');
       for (const char *s = v->str; *s; s++) {
@@ -261,7 +284,7 @@ static void expand_argv(buf_t *out, const char *tmpl, json_t *args) {
       else snprintf(tmp, sizeof(tmp), "%s", v->b ? "true" : "false");
       buf_puts(out, tmp);
     }
-    p = braced ? end : end - 1;
+    p = braced ? after : end - 1;
   }
 }
 

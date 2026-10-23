@@ -1699,7 +1699,6 @@ async function loadView(name) {
     history: renderHistoryView,
     assets: renderAssetsView,
     eval: renderEvalView,
-    automation: renderAutomationView,
     config: renderConfigView,
     rules: renderRulesView,
   };
@@ -1929,7 +1928,6 @@ function switchView(name) {
     eval: ['数据 / 证据与闭环', '证据与闭环'],
     rules: ['系统 / 检测规则', '检测规则'],
     caps: ['系统 / 能力清单', '能力清单'],
-    automation: ['系统 / 周期巡检', '周期巡检'],
     config: ['系统 / 配置编辑', '配置编辑'],
   }[name];
   if (meta) {
@@ -2010,7 +2008,7 @@ async function renderProfiles() {
     bEdit.addEventListener('click', () => fillProfileForm(p));
     const bDel = el('button', 'ghost danger', '删除');
     bDel.addEventListener('click', async () => {
-      if (!window.confirm(`删除定义「${p.name}」？引用它的周期规则会回到出厂口径。`)) return;
+      if (!window.confirm(`删除定义「${p.name}」？引用它的定时任务会回到出厂口径。`)) return;
       try {
         await api('/api/profiles', { method: 'POST', body: JSON.stringify({ action: 'delete', id: p.id }) });
         if (PROF.editing === p.id) fillProfileForm({});
@@ -2144,7 +2142,7 @@ async function renderAutomationView() {
     box.innerHTML = '';
     if (!AUTO.items.length) {
       const e = el('div', 'auto-empty');
-      e.appendChild(el('b', null, '还没有周期规则'));
+      e.appendChild(el('b', null, '还没有定时任务'));
       e.appendChild(el('span', null, '在下面填一个目标和周期，它能自己跑；跑完会与上一轮比对，变了才告警。'));
       box.appendChild(e);
     } else {
@@ -2209,7 +2207,7 @@ function ruleCard(a) {
   bEdit.addEventListener('click', () => fillAutoForm(a));
   const bDel = el('button', 'ghost danger', '删除');
   bDel.addEventListener('click', async () => {
-    if (!window.confirm(`删除周期规则「${a.name || a.domain}」？已跑过的记录会保留。`)) return;
+    if (!window.confirm(`删除定时任务「${a.name || a.domain}」？已跑过的记录会保留。`)) return;
     try {
       await api('/api/automations', { method: 'POST', body: JSON.stringify({ action: 'delete', id: a.id }) });
       renderAutomationView();
@@ -2245,7 +2243,7 @@ function checkedChecks() {
 
 function fillAutoForm(a) {
   AUTO.editing = a.id || '';
-  $('auto-form-title').textContent = a.id ? `编辑规则 ${a.id}` : '新建周期规则';
+  $('auto-form-title').textContent = a.id ? `编辑任务 ${a.id}` : '新建定时任务';
   $('auto-domain').value = a.domain || '';
   $('auto-scope').value = a.scope || 'full';
   $('auto-kind').value = a.kind || 'interval';
@@ -2308,7 +2306,9 @@ $('prof-reset').addEventListener('click', () => fillProfileForm({}));
 let autoTick = 0;
 setInterval(() => {
   const sheetOpen = $('sheet').classList.contains('on');
-  const onAuto = sheetOpen && $('view-automation') && $('view-automation').classList.contains('active');
+  /* 停在「设置 → 定时任务」时,每 8 秒把规则状态刷一遍 */
+  const taskPanel = $('auto-panel-rules');
+  const onAuto = sheetOpen && taskPanel && taskPanel.classList.contains('on');
   if (onAuto) { renderAutomationView().catch(() => {}); return; }
   autoTick++;
   if (autoTick % 4 === 0 && !sheetOpen) {
@@ -2556,6 +2556,8 @@ document.querySelectorAll('#export-list button').forEach((b) => {
    检测口径那 6 类挪去了侧栏「规则」——它们不是"设置一次就不动"的偏好,
    而是每次巡检都要对照的判断依据,值得单独一个入口。 */
 const SET_SCHEMA = [
+  { id: 'task', title: '定时任务', desc: '到点自动跑一轮，并与上一轮比对' },
+  { id: 'approval', title: '权限审批', desc: '工具调用前先过这道闸' },
   { id: 'ui', title: '界面', desc: '布局与观感（记在本机）' },
   { id: 'skills', title: '技能', desc: '智能体的专业能力' },
   { id: 'tools', title: '工具', desc: '智能体能做的动作' },
@@ -2762,6 +2764,8 @@ function setRenderPage() {
   const form = $('set-form');
   const head = document.querySelector('.set-head');
   const foot = $('set-foot');
+  const isTask = page.id === 'task';
+  const isAppr = page.id === 'approval';
   const isUi = page.id === 'ui';
   const isSkills = page.id === 'skills';
   const isTools = page.id === 'tools';
@@ -2780,6 +2784,14 @@ function setRenderPage() {
   if (modelPanel) modelPanel.style.display = isModels ? 'block' : 'none';
   const mcpPanel = $('mcp-panel');
   if (mcpPanel) mcpPanel.style.display = isMcp ? 'block' : 'none';
+  /* 定时任务与权限审批原本在「周期巡检」页,现在搬进设置:
+     面板本身不变,只由这里决定显示哪一个。 */
+  const taskPanel = $('auto-panel-rules');
+  if (taskPanel) taskPanel.classList.toggle('on', isTask);
+  const apprPanel = $('auto-panel-approval');
+  if (apprPanel) apprPanel.classList.toggle('on', isAppr);
+  if (isTask) { renderAutomationView().catch(() => {}); return; }
+  if (isAppr) { renderApprovals().catch(() => {}); return; }
   if (isUi) return;
   if (isSkills || isTools) { capsOpen(isSkills ? 'skill' : 'tool'); return; }
   if (isModels) { modelsOpen(); return; }
@@ -2883,6 +2895,8 @@ function ruleFieldsOf(id) {
   return (d && d.fields) || [];
 }
 
+const RULE_PROFILE_TAB = 'profile';   /* 伪域:敏感信息定义(不在 6 个规则域里) */
+
 function renderRuleDomains() {
   const box = $('rules-domains');
   if (!box) return;
@@ -2900,11 +2914,38 @@ function renderRuleDomains() {
     });
     box.appendChild(b);
   }
+
+  /* 本单位口径:和"检测口径"同属判断依据,放在规则页里比放设置里顺手 */
+  const pb = el('button', 'set-tab' + (RULE.current === RULE_PROFILE_TAB ? ' active' : ''),
+                 '敏感信息定义');
+  pb.type = 'button';
+  pb.title = '本单位口径：关键词 / 正则 / 落点';
+  pb.addEventListener('click', () => {
+    RULE.current = RULE_PROFILE_TAB;
+    renderRuleDomains();
+    renderRulePage();
+  });
+  box.appendChild(pb);
 }
 
 function renderRulePage() {
   const form = $('rules-form');
   if (!form) return;
+  const profile = $('auto-panel-profile');
+  const foot = $('rules-save') ? $('rules-save').parentElement : null;
+  const onProfile = RULE.current === RULE_PROFILE_TAB;
+
+  if (profile) profile.classList.toggle('on', onProfile);
+  form.style.display = onProfile ? 'none' : '';
+  if (foot) foot.style.display = onProfile ? 'none' : '';
+  if (onProfile) {
+    if ($('rules-title')) $('rules-title').textContent = '敏感信息定义';
+    if ($('rules-domain-note')) $('rules-domain-note').textContent = '本单位口径：关键词 / 正则 / 落点';
+    renderProfiles().catch(() => {});
+    refreshHBars();
+    return;
+  }
+
   const d = RULE.domains.find((x) => x.id === RULE.current) || { id: 'detect' };
   if ($('rules-title')) $('rules-title').textContent = d.title || '检测口径';
   if ($('rules-domain-note')) $('rules-domain-note').textContent = d.note || '';
@@ -4646,7 +4687,6 @@ const PAL = { open: false, rows: [], sel: 0 };
 const PAL_VIEWS = [
   ['report', '视图 · 报告与告警'], ['history', '视图 · 巡检历史'], ['assets', '视图 · 资产底账'],
   ['eval', '视图 · 证据与闭环'],
-  ['automation', '视图 · 周期巡检'],
   ['config', '视图 · 配置与能力'],
 ];
 
@@ -4771,7 +4811,6 @@ document.addEventListener('keydown', (e) => {
 (async () => {
   initTheme();
   enhanceSelects();          /* 静态下拉先接管;之后动态插入的由 MutationObserver 接管 */
-  autoShow('rules');         /* 周期巡检默认停在第一类(周期规则) */
   try {
     renderStatus(await api('/api/status'));
   } catch (e) {

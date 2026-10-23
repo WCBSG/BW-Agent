@@ -81,10 +81,29 @@ void api_caps(const http_req_t *req, http_res_t *res) {
       buf_init(&prompt);
       if (str_ieq(kind, "tool")) {
         buf_puts(&prompt,
-            "你在为一个网站安全巡检智能体写「外部工具」的定义。只输出一个 JSON 对象,不要解释、不要代码块。\n"
-            "字段:name(小写字母数字下划线,动词_名词)、description(一句话说明它做什么、什么时候用)、\n"
-            "command(要执行的命令行,参数用 $参数名 占位)、schema(JSON Schema 对象,描述参数)、\n"
-            "timeout_ms(整数,默认 20000)。\n用户需求:");
+            "你在为一个网站安全巡检智能体写「工具」的声明。只输出一个 JSON 对象,不要解释、不要代码块。\n"
+            "格式(与程序里 data/tools/<目录>/<名字>.json 一致):\n"
+            "{\"name\":\"动词_名词\",\"kind\":\"自建\",\"readonly\":true,\n"
+            " \"description\":\"一句话说明它做什么、什么时候用\",\n"
+            " \"source\":\"~/tools/<目录>/<程序>.exe\",\n"
+            " \"entry\":{\"type\":\"exec\",\"path\":\"~/tools/<目录>/<程序>.exe\",\n"
+            "          \"args\":[\"--json\",\"$参数名\"],\"protocol\":\"argv\"},\n"
+            " \"schema\":{JSON Schema 对象,描述参数,必填项写进 required},\n"
+            " \"timeout_ms\":20000}\n"
+            "说明:argv 协议下参数展开进命令行,$参数名 占位,可写 ${参数名:-默认值};\n"
+            "若程序读 stdin 的 JSON、写 stdout 的 JSON,改用 \"protocol\":\"json-stdio\"(此时 args 可省)。\n");
+        /* 把本机现状告诉它:已有工具名 + 怎么查本机装了什么。
+           不把整份清单塞进提示词,只给名字与一条检索途径,够它避免重名与找现成程序。 */
+        buf_puts(&prompt, "已有工具:");
+        for (int i = 0; i < tools_count() && i < 40; i++) {
+          tool_t *tt = tools_get(i);
+          if (tt && tt->name) buf_printf(&prompt, "%s%s", i ? "、" : "", tt->name);
+        }
+        buf_puts(&prompt,
+            "。\n"
+            "要复用本机已有的命令行程序时,先查:用内置工具 es_search(Everything),"
+            "query 填如 \"nuclei.exe\" 或 \"ext:exe python\",命中的路径写进 source 与 entry.path;"
+            "查不到就不要编造路径。\n用户需求:");
       } else if (str_ieq(kind, "mcp")) {
         buf_puts(&prompt,
             "你在写一条 Model Context Protocol(MCP)服务器配置,会被放进 mcp.json 的 mcpServers 里。\n"
@@ -123,10 +142,21 @@ void api_caps(const http_req_t *req, http_res_t *res) {
         json_t *t = j_obj();
         if (str_ieq(kind, "tool")) {
           j_set_str(t, "name", "my_check");
+          j_set_str(t, "kind", "自建");
+          j_set_bool(t, "readonly", 1);
           j_set_str(t, "description", "调用本机脚本做一次自定义检查(输出即结论依据)");
-          j_set_str(t, "command", "powershell -NoProfile -Command \"$u='$target'; ...\"");
+          j_set_str(t, "source", "~/tools/my_check/my_check.exe");
+          json_t *entry = j_obj();
+          j_set_str(entry, "type", "exec");
+          j_set_str(entry, "path", "~/tools/my_check/my_check.exe");
+          json_t *eargs = j_arr();
+          j_add(eargs, j_str("--target"));
+          j_add(eargs, j_str("$target"));
+          j_set(entry, "args", eargs);
+          j_set_str(entry, "protocol", "argv");
+          j_set_num(entry, "timeout_ms", 20000);
+          j_set(t, "entry", entry);
           j_set_str(t, "schema", "{\"type\":\"object\",\"properties\":{\"target\":{\"type\":\"string\"}},\"required\":[\"target\"]}");
-          j_set_num(t, "timeout_ms", 20000);
         } else if (str_ieq(kind, "mcp")) {
           j_set_str(t, "name", "my-mcp");
           j_set_str(t, "command", "npx");

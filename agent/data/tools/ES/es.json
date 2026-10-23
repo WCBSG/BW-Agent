@@ -1,0 +1,30 @@
+{
+  "name": "es_search",
+  "kind": "外置 · 本机",
+  "readonly": true,
+  "source": "~/tools/ES/es.exe",
+  "description": "用 Everything(ES)在本机快速查找文件或程序:回答「这台机器上有没有 nuclei / nmap / python」「某个工具装在哪」,或在新建工具前先看本机现成能用的命令行程序。query 用 Everything 语法(可写 ext:exe、nuclei.exe、路径片段);limit 是返回条数上限,默认 20。只读检索,不运行被找到的程序。",
+  "schema": {
+    "type": "object",
+    "properties": {
+      "query": {
+        "type": "string",
+        "description": "搜索串,如 nuclei.exe、ext:exe python、C:\\@Tool"
+      },
+      "limit": {
+        "type": "integer",
+        "minimum": 1,
+        "description": "最多返回多少条,默认 20"
+      }
+    },
+    "required": ["query"],
+    "additionalProperties": false
+  },
+  "entry": {
+    "type": "exec",
+    "path": "~/tools/ES/es.exe",
+    "args": ["-n", "${limit:-20}", "$query"],
+    "protocol": "argv",
+    "timeout_ms": 15000
+  }
+}
