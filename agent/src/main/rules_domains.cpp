@@ -8,6 +8,11 @@
 #include "res.h"
 #include "rules.h"
 
+#include <ctype.h>
+
+#include <string>
+#include <vector>
+
 /* ---------- 域的划分 ----------
    注意:order 有意义 —— 界面按这个顺序排,读起来是"先定口径,再看探测,最后告警"。 */
 static const rules_domain_t g_domains[] = {
@@ -313,3 +318,163 @@ int rules_domains_save_all(json_t *root, char *err, size_t errcap) {
   }
   return 0;
 }
+
+
+/* ================= 规则预设 =================
+   为什么需要:同一个程序在不同单位、不同场景下"判什么"并不一样 ——
+   门户站要盯误发布,办公网要盯弱口令。把整套规则存成一个预设,切换时不用手改 6 个文件。 */
+
+void rules_preset_dir(char *out, size_t cap) {
+  char dir[MAX_PATH * 2];
+  rules_domain_dir(dir, sizeof(dir));
+  path_join(out, cap, dir, "presets");
+}
+
+/* 预设名只允许字母数字下划线与中文:它要当目录名用 */
+static int preset_name_ok(const char *name) {
+  if (!name || !*name || strlen(name) > 64) return 0;
+  if (str_ieq(name, "出厂") || str_ieq(name, "custom")) return 1;
+  for (const unsigned char *p = (const unsigned char *)name; *p; p++) {
+    if (*p < 0x80) {
+      if (!(isalnum(*p) || *p == '_' || *p == '-' || *p == '.' || *p == ' ')) return 0;
+    }
+  }
+  if (strstr(name, "..") || strchr(name, ':') || strchr(name, '\\') || strchr(name, '/')) return 0;
+  return 1;
+}
+
+int rules_preset_list(json_t **out, char *err, size_t errcap) {
+  if (err && errcap) err[0] = 0;
+  json_t *arr = j_arr();
+  json_t *factory = j_obj();
+  j_set_str(factory, "name", "出厂");
+  j_set_bool(factory, "factory", 1);
+  j_add(arr, factory);
+
+  char dir[MAX_PATH * 2];
+  rules_preset_dir(dir, sizeof(dir));
+  ensure_dir(dir);
+  std::vector<std::string> subs = fs_list_dirs(dir);
+  for (size_t i = 0; i < subs.size(); i++) {
+    char one[MAX_PATH * 2];
+    snprintf(one, sizeof(one), "%s\\%s", dir, subs[i].c_str());
+    int files = 0;
+    for (int d = 0; d < g_domain_count; d++) {
+      char f[MAX_PATH * 4];
+      snprintf(f, sizeof(f), "%s\\%s", one, g_domains[d].file);
+      if (file_size(f) >= 0) files++;
+    }
+    json_t *o = j_obj();
+    j_set_str(o, "name", subs[i].c_str());
+    j_set_bool(o, "factory", 0);
+    j_set_num(o, "files", files);
+    j_add(arr, o);
+  }
+  *out = arr;
+  return j_len(arr);
+}
+
+/* 把 <src>/<file> 拷到 <dst>/<file>;成功返回 1 */
+static int copy_domain_file(const char *src, const char *dst, const char *file) {
+  char a[MAX_PATH * 4], b[MAX_PATH * 4];
+  snprintf(a, sizeof(a), "%s\\%s", src, file);
+  snprintf(b, sizeof(b), "%s\\%s", dst, file);
+  size_t len = 0;
+  char *text = file_read_all(a, &len);
+  if (!text) return 0;
+  int rc = file_write_all(b, text, len);
+  free(text);
+  return rc == 0;
+}
+
+int rules_preset_save(const char *name, char *err, size_t errcap) {
+  if (err && errcap) err[0] = 0;
+  if (!preset_name_ok(name) || str_ieq(name, "出厂")) {
+    if (err) snprintf(err, errcap, "预设名只能用字母、数字、下划线、连字符与中文,且不能用「出厂」");
+    return -1;
+  }
+  char dir[MAX_PATH * 2], dst[MAX_PATH * 4];
+  rules_domain_dir(dir, sizeof(dir));
+  rules_preset_dir(dst, sizeof(dst));
+  char one[MAX_PATH * 4];
+  snprintf(one, sizeof(one), "%s\\%s", dst, name);
+  ensure_dir(one);
+
+  int n = 0;
+  for (int i = 0; i < g_domain_count; i++) {
+    n += copy_domain_file(dir, one, g_domains[i].file);
+  }
+  if (n == 0) {
+    if (err) snprintf(err, errcap, "当前规则读不到,无法保存预设");
+    return -1;
+  }
+  return n;
+}
+
+int rules_preset_apply(const char *name, char *err, size_t errcap) {
+  if (err && errcap) err[0] = 0;
+  char dir[MAX_PATH * 2];
+  rules_domain_dir(dir, sizeof(dir));
+  ensure_dir(dir);
+
+  if (str_ieq(name, "出厂") || !name || !*name) {
+    for (int i = 0; i < g_domain_count; i++) {
+      char path[MAX_PATH * 4];
+      domain_path(g_domains[i].file, path, sizeof(path));
+      json_t *dom = factory_domain(g_domains[i].id, err, errcap);
+      if (!dom) return -1;
+      int rc = write_domain_file(g_domains[i].id, dom, err, errcap);
+      json_free(dom);
+      if (rc != 0) return -1;
+    }
+    return g_domain_count;
+  }
+
+  if (!preset_name_ok(name)) {
+    if (err) snprintf(err, errcap, "预设名不合法");
+    return -1;
+  }
+  char base[MAX_PATH * 2], src[MAX_PATH * 4];
+  rules_preset_dir(base, sizeof(base));
+  snprintf(src, sizeof(src), "%s\\%s", base, name);
+  if (file_size(src) < 0) {
+    if (err) snprintf(err, errcap, "找不到预设「%s」", name);
+    return -1;
+  }
+  int n = 0;
+  for (int i = 0; i < g_domain_count; i++) {
+    n += copy_domain_file(src, dir, g_domains[i].file);
+  }
+  if (n == 0) {
+    if (err) snprintf(err, errcap, "预设「%s」里没有可用的规则文件", name);
+    return -1;
+  }
+  return n;
+}
+
+int rules_preset_delete(const char *name, char *err, size_t errcap) {
+  if (err && errcap) err[0] = 0;
+  if (!preset_name_ok(name) || str_ieq(name, "出厂")) {
+    if (err) snprintf(err, errcap, "「出厂」不能删除");
+    return -1;
+  }
+  char base[MAX_PATH * 2], one[MAX_PATH * 4];
+  rules_preset_dir(base, sizeof(base));
+  snprintf(one, sizeof(one), "%s\\%s", base, name);
+  if (file_size(one) < 0) {
+    if (err) snprintf(err, errcap, "找不到预设「%s」", name);
+    return -1;
+  }
+  /* 只删预设目录里的文件与目录本身;不递归删除别的东西 */
+  for (int i = 0; i < g_domain_count; i++) {
+    char f[MAX_PATH * 4];
+    snprintf(f, sizeof(f), "%s\\%s", one, g_domains[i].file);
+    wchar_t *w = u8_to_w(f);
+    if (w) { DeleteFileW(w); free(w); }
+  }
+  wchar_t *w = u8_to_w(one);
+  if (w) { RemoveDirectoryW(w); free(w); }
+  return 0;
+}
+
+const char *rules_preset_active(void) { return ""; }

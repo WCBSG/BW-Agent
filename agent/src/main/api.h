@@ -17,6 +17,8 @@
 
 /* 规则设置(整份 rules 对象) */
 void api_rules(const http_req_t *req, http_res_t *res);
+/* 规则预设:list / save / apply / delete */
+void api_rules_preset(const http_req_t *req, http_res_t *res);
 
 /* 数据目录里的配置文件:列表 / 读一份 / 存一份 / 热加载规则 */
 void api_config_list(const http_req_t *req, http_res_t *res);

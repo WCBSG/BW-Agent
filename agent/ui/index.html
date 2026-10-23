@@ -71,6 +71,9 @@
   <aside class="side">
     <div class="side-top">
       <span class="brand"><img class="mark" src="/ui/logo.png" alt="" aria-hidden="true">网站安全巡检</span>
+      <button class="rail-toggle side-toggle" id="btn-side" type="button" title="收起侧边栏 (Ctrl+B)">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m14 6-6 6 6 6"/></svg>
+      </button>
       <div class="side-actions">
         <button class="act" id="btn-home" type="button" title="返回首页（起手式）">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 11.2 12 4l8 7.2"/><path d="M6.5 10.4V20h11v-9.6"/></svg>
@@ -84,10 +87,12 @@
         <button class="act" data-goto="rules" type="button" title="检测口径：判什么、按什么等级算、探多少">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 4.5h14v15H5z"/><path d="M8 8.5h8M8 12h8M8 15.5h5"/></svg>
           <span>规则</span>
+          <kbd>Ctrl L</kbd>
         </button>
         <button class="act" data-goto="config" type="button" title="规则、MCP、技能与工具配置">
           <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M12 3v2.2M12 18.8V21M3 12h2.2M18.8 12H21M5.6 5.6l1.6 1.6M16.8 16.8l1.6 1.6M18.4 5.6l-1.6 1.6M7.2 16.8l-1.6 1.6"/></svg>
           <span>设置</span>
+          <kbd>Ctrl I</kbd>
         </button>
       </div>
       <button class="new" id="btn-new" type="button">＋ 新建巡检</button>
@@ -300,6 +305,14 @@
           <div class="set-head">
             <h2 id="rules-title">检测口径</h2>
             <span id="rules-domain-note"></span>
+          </div>
+          <div class="rules-preset" id="rules-preset">
+            <span class="rp-label">规则预设</span>
+            <select id="preset-select" aria-label="规则预设"></select>
+            <button class="ghost" id="preset-apply" type="button">应用</button>
+            <button class="ghost" id="preset-save" type="button">另存为…</button>
+            <button class="ghost" id="preset-del" type="button">删除</button>
+            <span class="rp-note" id="preset-note">切换预设会把 6 个规则域整套换掉</span>
           </div>
           <div class="set-form" id="rules-form"></div>
           <div class="set-foot">

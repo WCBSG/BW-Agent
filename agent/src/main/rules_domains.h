@@ -61,4 +61,22 @@ int rules_domains_save_all(json_t *root, char *err, size_t errcap);
 /* 该键是否属于某个域(找不到域返回 NULL) */
 const rules_domain_t *rules_domain_of_key(const char *key);
 
+
+/* ================= 规则预设 =================
+   一套规则(6 个域)可以整套存成"预设",在不同口径之间切换:
+     出厂  → 代码里带的那份,只读
+     其它  → 用户自己存的(数据目录 rules\presets\<名字>\*.json)
+   切换 = 把预设里的 6 个文件拷回 rules\,再让调用方重载规则。 */
+void   rules_preset_dir(char *out, size_t cap);
+/* 列出预设(含"出厂",它永远排第一)。返回个数;<0 表示出错 */
+int    rules_preset_list(json_t **out, char *err, size_t errcap);
+/* 把当前 rules\ 里的 6 个文件另存为一个预设(同名覆盖) */
+int    rules_preset_save(const char *name, char *err, size_t errcap);
+/* 把某个预设应用到 rules\("出厂"= 重建为出厂内容) */
+int    rules_preset_apply(const char *name, char *err, size_t errcap);
+/* 删除一个预设("出厂"不可删) */
+int    rules_preset_delete(const char *name, char *err, size_t errcap);
+/* 当前生效的是哪个预设(没有标记就是"自定义") */
+const char *rules_preset_active(void);
+
 #endif /* AGENT_RULES_DOMAINS_H */

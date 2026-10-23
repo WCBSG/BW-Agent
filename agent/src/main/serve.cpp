@@ -2121,6 +2121,7 @@ static void router(const http_req_t *req, http_res_t *res, void *ud) {
     if (!strcmp(p, "/api/chats")) { h_chats(req, res); return; }
     if (!strcmp(p, "/api/attach")) { h_attach(req, res); return; }
     if (!strcmp(p, "/api/settings")) { api_rules(req, res); return; }
+    if (!strcmp(p, "/api/rules/preset")) { api_rules_preset(req, res); return; }
     if (!strcmp(p, "/api/caps")) { api_caps(req, res); return; }
     if (!strcmp(p, "/api/models")) { api_models(req, res); return; }
     if (!strcmp(p, "/api/quit")) { h_quit(req, res); return; }

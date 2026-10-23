@@ -2570,7 +2570,6 @@ const SET_SCHEMA = [
    至于"哪个键属于哪个域"由后端说了算 —— 前端不再维护一份会走偏的清单。 */
 const RULE_FIELDS = [
   { id: 'detect', fields: [
-    { k: 'version', label: '规则版本', type: 'text' },
     { k: 'severity_levels', label: '严重等级（权重越大越严重）', type: 'table',
       cols: [{ k: 'name', label: '名称', w: 220 }, { k: 'rank', label: '权重', type: 'number', w: 120 }] },
     { k: 'signatures', label: '内容特征（按正文判定文件性质）', type: 'table',
@@ -2954,8 +2953,86 @@ function renderRulePage() {
   refreshHBars();
 }
 
+
+/* ================= 规则预设 =================
+   一个预设 = 一整套 6 个域。切换预设就是整套换掉,不是逐字段合并 ——
+   合并会让"我现在到底在用哪套口径"变得说不清。 */
+const PRESET = { list: [], current: '' };
+
+async function renderPresets() {
+  const sel = $('preset-select');
+  if (!sel) return;
+  try {
+    const r = await api('/api/rules/preset');
+    PRESET.list = r.presets || [];
+    PRESET.current = r.active || '';
+  } catch (e) {
+    PRESET.list = [{ name: '出厂', factory: 1 }];
+  }
+  sel.innerHTML = '';
+  for (const p of PRESET.list) {
+    const o = el('option', null, p.factory ? '出厂（内置）' : p.name);
+    o.value = p.name;
+    sel.appendChild(o);
+  }
+  if (PRESET.current) sel.value = PRESET.current;
+  const note = $('preset-note');
+  if (note) {
+    note.textContent = PRESET.list.length > 1
+      ? `${PRESET.list.length - 1} 个自定义预设 · 切换会把 6 个域整套换掉`
+      : '还没有自定义预设：先调好规则，再「另存为…」';
+  }
+}
+
+async function presetAct(action, name) {
+  try {
+    const r = await api('/api/rules/preset', {
+      method: 'POST',
+      body: JSON.stringify({ action, name }),
+    });
+    if (action === 'apply') {
+      await renderRulesView(true);
+      await renderPresets();
+    } else {
+      await renderPresets();
+    }
+    return r;
+  } catch (e) {
+    const note = $('preset-note');
+    if (note) note.textContent = '操作失败：' + ((e && e.message) || e);
+    return null;
+  }
+}
+
+const presetApply = $('preset-apply');
+if (presetApply) presetApply.addEventListener('click', async () => {
+  const sel = $('preset-select');
+  const name = sel ? sel.value : '';
+  if (!name) return;
+  if (!window.confirm(`应用预设「${name}」？当前 6 个规则域会被整套替换。`)) return;
+  const r = await presetAct('apply', name);
+  if (r) { const n = $('preset-note'); if (n) n.textContent = `已应用「${name}」`; }
+});
+
+const presetSave = $('preset-save');
+if (presetSave) presetSave.addEventListener('click', async () => {
+  const name = window.prompt('把当前规则另存为预设，起个名字：', '');
+  if (!name) return;
+  const r = await presetAct('save', name.trim());
+  if (r) { const n = $('preset-note'); if (n) n.textContent = `已保存为「${name.trim()}」`; }
+});
+
+const presetDel = $('preset-del');
+if (presetDel) presetDel.addEventListener('click', async () => {
+  const sel = $('preset-select');
+  const name = sel ? sel.value : '';
+  if (!name || name === '出厂') return;
+  if (!window.confirm(`删除预设「${name}」？（不会影响当前正在用的规则）`)) return;
+  await presetAct('delete', name);
+});
+
 async function renderRulesView(force) {
-  if (RULE.loaded && !force) { renderRuleDomains(); renderRulePage(); return; }
+  if (RULE.loaded && !force) { renderRuleDomains(); renderRulePage(); renderPresets().catch(() => {}); return; }
   const hint = $('rules-hint');
   try {
     const r = await api('/api/settings');
@@ -2968,6 +3045,7 @@ async function renderRulesView(force) {
     }
     renderRuleDomains();
     renderRulePage();
+    renderPresets().catch(() => {});
   } catch (e) {
     if (hint) hint.textContent = '读不到规则：' + ((e && e.message) || e);
   }
@@ -4249,6 +4327,27 @@ if (railBtn) {
 }
 applyRail();
 
+/* 左栏收起/展开:和右栏同一套手感,快捷键 Ctrl+B */
+const SIDE_KEY = 'bw-side';
+let sideCollapsed = false;
+try { sideCollapsed = localStorage.getItem(SIDE_KEY) === '1'; } catch (e) { /* 忽略 */ }
+function applySide() {
+  const work = $('work');
+  if (work) work.classList.toggle('side-collapsed', sideCollapsed);
+  const b = $('btn-side');
+  if (b) b.title = sideCollapsed ? '展开侧边栏 (Ctrl+B)' : '收起侧边栏 (Ctrl+B)';
+}
+const sideBtn = $('btn-side');
+if (sideBtn) {
+  sideBtn.addEventListener('click', () => {
+    sideCollapsed = !sideCollapsed;
+    try { localStorage.setItem(SIDE_KEY, sideCollapsed ? '1' : '0'); } catch (e) { /* 忽略 */ }
+    applySide();
+    refreshHBars();
+  });
+}
+applySide();
+
 /* 附件:选了就先传上去,拿到 id 挂在这一轮里 */
 const attachBtn = $('btn-attach');
 const attachInput = $('attach');
@@ -4800,6 +4899,21 @@ $('palette-q').addEventListener('keydown', (e) => {
   if (e.key === 'Enter') { e.preventDefault(); palPick(PAL.sel); }
 });
 document.addEventListener('keydown', (e) => {
+  /* 全局快捷键:和侧栏按钮上的提示一一对应 */
+  if (e.ctrlKey || e.metaKey) {
+    const k = e.key.toLowerCase();
+    if (k === 'l') { e.preventDefault(); document.querySelector('[data-goto="rules"]').click(); return; }
+    if (k === 'i') { e.preventDefault(); document.querySelector('[data-goto="config"]').click(); return; }
+    if (k === 'n') { e.preventDefault(); const b = $('btn-new'); if (b) b.click(); return; }
+    if (k === 'b') {
+      e.preventDefault();
+      sideCollapsed = !sideCollapsed;
+      try { localStorage.setItem(SIDE_KEY, sideCollapsed ? '1' : '0'); } catch (err) { /* 忽略 */ }
+      applySide();
+      refreshHBars();
+      return;
+    }
+  }
   if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') {
     e.preventDefault();
     if (PAL.open) palClose(); else palOpen();

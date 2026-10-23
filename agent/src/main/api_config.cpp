@@ -450,3 +450,65 @@ void api_reload(const http_req_t *req, http_res_t *res) {
   http_res_json(res, 200, b.data);
   buf_free(&b);
 }
+
+
+/* ================= 规则预设 =================
+   GET  /api/rules/preset            → 列出现有预设
+   POST /api/rules/preset {action,save|apply|delete, name}
+   应用后立刻重载规则,和按域保存同一套处理。 */
+void api_rules_preset(const http_req_t *req, http_res_t *res) {
+  if (strcmp(req->method, "GET") == 0) {
+    json_t *list = NULL;
+    char err[256] = {0};
+    int n = rules_preset_list(&list, err, sizeof(err));
+    json_t *out = j_obj();
+    j_set_bool(out, "ok", n >= 0);
+    if (n < 0) j_set_str(out, "error", err[0] ? err : "读取预设失败");
+    j_set(out, "presets", list ? list : j_arr());
+    j_set_str(out, "active", rules_preset_active());
+    char *text = json_dump(out);
+    http_res_json(res, 200, text);
+    free(text);
+    json_free(out);
+    return;
+  }
+
+  json_t *body = req->body ? json_parse(req->body) : NULL;
+  if (!body) {
+    http_res_json(res, 400, "{\"ok\":false,\"error\":\"请求体不是合法 JSON\"}");
+    return;
+  }
+  char action[24], name[80];
+  snprintf(action, sizeof(action), "%s", j_s(body, "action", ""));
+  snprintf(name, sizeof(name), "%s", j_s(body, "name", ""));
+  json_free(body);
+
+  char err[256] = {0};
+  int rc = -1;
+  const char *what = "";
+  if (str_ieq(action, "save")) { rc = rules_preset_save(name, err, sizeof(err)); what = "保存预设"; }
+  else if (str_ieq(action, "apply")) { rc = rules_preset_apply(name, err, sizeof(err)); what = "应用预设"; }
+  else if (str_ieq(action, "delete")) { rc = rules_preset_delete(name, err, sizeof(err)); what = "删除预设"; }
+  else {
+    http_res_json(res, 400, "{\"ok\":false,\"error\":\"action 只能是 save / apply / delete\"}");
+    return;
+  }
+
+  json_t *out = j_obj();
+  j_set_bool(out, "ok", rc >= 0);
+  j_set_str(out, "name", name);
+  j_set_num(out, "files", rc);
+  if (rc < 0) j_set_str(out, "error", err[0] ? err : "操作失败");
+
+  if (rc >= 0 && str_ieq(action, "apply")) {
+    rules_shutdown();
+    rules_init(app_dir());
+    serve_refresh_status();
+    serve_audit_line("切换规则预设", name, "界面切换并重载");
+  }
+  char *text = json_dump(out);
+  http_res_json(res, rc >= 0 ? 200 : 500, text);
+  free(text);
+  json_free(out);
+  (void)what;
+}
