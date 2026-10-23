@@ -1,29 +1,17 @@
-/* tool_entry.h —— 工具的"入口层":让工具真的可以是任何东西。
+/* tool_entry.h —— 工具入口层:声明 + 入口(exec/http/builtin)+ 协议(argv/json-stdio)。
  *
- * 一份声明只要说清两件事,程序就能把它当工具用:
- *   1. 入口(entry):程序内的实现 / 本机进程 / HTTP 端点;
- *   2. 协议(protocol):怎么把参数交给它、怎么读它的结果。
- *
- * 声明写在 <数据目录>\tools\<名字>.json 里(与内置工具同一目录):
- *
+ *   <数据目录>\tools\<目录>\<名字>.json
  *   {
- *     "name": "whois_lookup",
- *     "kind": "自建 · 命令",
- *     "readonly": true,
- *     "allow": true,                       // 外部入口必须显式打开
- *     "description": "查域名注册信息",
- *     "schema": { "type": "object", "properties": { "domain": {"type":"string"} } },
+ *     "name": "whois_lookup", "kind": "自建", "readonly": true,
+ *     "description": "...", "schema": { ... },
  *     "entry": {
- *       "type": "exec",                    // exec | http | builtin
- *       "path": "bin\whois.exe",           // 入口命令;相对路径按数据目录算
- *       "args": ["--json", "$domain"],     // 固定参数(可含 $参数 占位)
- *       "protocol": "argv",                // argv(默认) | json-stdio
- *       "cwd": "",                         // 可选,默认数据目录
+ *       "type": "exec",                  // exec | http
+ *       "path": "~/tools/whois/whois.exe",  // 或 "cwd": "~/tools/x"
+ *       "args": ["--json", "$domain"],      // $名 占位,可写 ${名:-默认值}
+ *       "protocol": "argv",              // argv | json-stdio(默认)
  *       "timeout_ms": 30000
  *     }
  *   }
- *
- *   HTTP 端点把 type 换成 "http",写 "url",协议默认 "json"。
  *
  * 两种"对话"协议:
  *   argv       —— 参数展开进命令行,stdout+stderr 原样作为结果文本;

@@ -37,10 +37,7 @@ json_t *store_findings_of_run(store_t *s, const char *run_id);
 /* 审计与会话转录 */
 void store_audit(store_t *s, const char *action, const char *target, int allowed,
                  const char *detail, const char *task_id, const char *run_id);
-int  store_transcript(store_t *s, const char *session_id, json_t *event);
 /* 会话列表(按最后活动时间倒序)与单个会话的消息 */
-json_t *store_transcript_list(store_t *s);
-json_t *store_transcript_read(store_t *s, const char *session_id);
 /* 本轮属于哪个会话:运行记录带上它,界面才能从"某次运行"跳回"那次对话" */
 void store_set_chat(const char *session_id);
 

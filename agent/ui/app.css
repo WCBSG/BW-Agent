@@ -125,7 +125,6 @@ code,pre,.mono{font-family:var(--mono)}
 .home.on .ask{animation:rise .3s var(--ease) .02s both}
 .home.on .ask-sub{animation:fade .32s var(--ease) .06s both}
 .home.on #home-form{animation:rise .3s var(--ease) .08s both}
-.home.on .ask-chips{animation:fade .28s var(--ease) .14s both}
 .home.on .recent{animation:fade .28s var(--ease) .18s both}
 @keyframes fade{from{opacity:0}to{opacity:1}}
 
@@ -320,7 +319,6 @@ code,pre,.mono{font-family:var(--mono)}
 .start:active{transform:scale(.97)}
 .start:disabled{opacity:.5;cursor:default}
 
-.ask-chips{display:none}
 .chip-btn{
   border:1px solid var(--line-2);border-radius:999px;padding:5px 12px;
   font-size:12.5px;color:var(--ink-2);white-space:nowrap;background:var(--panel);
@@ -357,8 +355,6 @@ code,pre,.mono{font-family:var(--mono)}
 .rcard .rmeta{font-size:12.5px;color:var(--ink-2)}
 .rcard .rfoot{font-family:var(--mono);font-size:11.5px;color:#9d9d94;margin-top:3px}
 
-.home-foot{width:100%;max-width:920px;margin:0 auto;padding:0 26px 22px}
-.home-foot p{font-size:12.5px;color:var(--ink-3);line-height:1.75;text-align:center}
 
 /* ============================================================
    二 · 任务工作台（近白）
@@ -396,9 +392,6 @@ body.col-resizing *{cursor:col-resize !important}
   border:1px solid var(--line-2);border-radius:4px;padding:0 4px;background:var(--panel);
 }
 /* 自动化角标:有启用的规则就亮着,不显示数字 —— 它表示"这里在替你跑",不是待办数 */
-.act-badge{display:none;margin-left:auto;font:inherit;font-size:11.5px;font-weight:600;
-  color:#26603a;background:#f2f8f3;border:1px solid #cfe2d4;border-radius:999px;padding:0 6px}
-.act-badge.on{display:inline-block}
 
 .new{
   width:100%;display:flex;align-items:center;gap:8px;margin-top:10px;
@@ -800,7 +793,6 @@ body.row-resizing *{cursor:row-resize !important}
 .market-bar{display:flex;align-items:center;gap:12px;flex-wrap:wrap;font-size:12.5px;color:var(--ink-3);padding-bottom:12px;border-bottom:1px solid var(--line);margin-bottom:13px}
 .market-link{color:var(--accent);font-size:12.5px;text-decoration:none;border-bottom:1px solid #c5d6e6;padding-bottom:1px}
 .market-link:hover{border-color:var(--accent)}
-.config-grid{display:grid;grid-template-columns:242px minmax(0,1fr);gap:14px;align-items:start}
 
 /* 界面偏好：两列对齐，标签定宽，控件左对齐 */
 .ui-form{display:grid;grid-template-columns:repeat(2,minmax(280px,1fr));gap:10px 28px;margin-top:2px}
@@ -863,7 +855,6 @@ body.no-motion *{animation:none !important;transition:none !important}
 .set-foot #set-msg{font-size:11.5px;color:var(--ink-3)}
 .set-foot .set-msg{font-size:11.5px;color:var(--ink-3)}
 .set-panel .market-bar{margin:0 0 12px}
-.set-panel .config-grid{margin-top:0}
 
 /* 技能 / 工具：列表 + 就地编辑 */
 .cap-bar{display:flex;align-items:center;gap:8px;margin-bottom:10px;flex-wrap:wrap}
@@ -921,8 +912,6 @@ body.no-motion *{animation:none !important;transition:none !important}
   .set-tab{width:auto;white-space:nowrap}
   .ui-form{grid-template-columns:1fr}
 }
-.config-side{border:1px solid var(--line);border-radius:6px;background:var(--panel);overflow:hidden}
-.config-side-head{display:flex;justify-content:space-between;align-items:center;padding:8px 11px;border-bottom:1px solid var(--line);font-size:12.5px;color:var(--ink-3)}
 .filelist{max-height:520px;overflow:auto;padding:5px}
 .filegroup{font-size:11.5px;color:var(--ink-3);padding:8px 7px 3px;letter-spacing:.04em}
 .fileitem{display:flex;justify-content:space-between;gap:8px;width:100%;padding:5px 7px;border-radius:5px;text-align:left;font-size:12.5px}
@@ -1134,7 +1123,6 @@ button.primary + .ghost, .ghost + button.primary{padding-top:4px;padding-bottom:
 @media (max-width:1000px){
   .recent-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
   .report-cols{grid-template-columns:1fr}
-  .config-grid{grid-template-columns:1fr}
 }
 @media (max-width:820px){
   .work{grid-template-columns:1fr}
@@ -1183,8 +1171,6 @@ button.primary + .ghost, .ghost + button.primary{padding-top:4px;padding-bottom:
 
 /* 能力页只有一栏:清单占满宽度,编辑时就地换成文件编辑器。 */
 #cap-panel .config-main { max-width:none }
-#cap-panel .cap-back { margin:0 0 10px }
-#cap-panel .cap-back button { padding:5px 10px }
 
 /* ================= 排版基线 =================
    一组固定档位,避免出现 11 / 11.5 / 12 / 12.5 混用:
@@ -1252,7 +1238,6 @@ button.primary + .ghost, .ghost + button.primary{padding-top:4px;padding-bottom:
   正文里的"小字"统一到 12.5:表格注释、卡片副标题、步骤说明都不再出现 11/12。
   这里只补没被上面规则覆盖到的几处,避免再出现两套字号。
 */
-.side-empty,.side-foot,.recent-empty,.home-foot p{font-size:12.5px}
 .tool-note,.step,.step .sa,.step .sr{font-size:12.5px}
 
 /* 滚动区底部留一点呼吸:最后一行表格不再被底栏压住 */

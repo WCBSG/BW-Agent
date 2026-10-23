@@ -1,36 +1,4 @@
-/* ext.cpp —— 可扩展层实现:外部工具 / 技能包 / MCP 服务器。
- *
- * 设计取向(照 Claude Code 那套"用户目录里的配置就能加能力"的思路,但落地成 C):
- *
- * 1) 外部工具:tools\<名字>.json
- *    {
- *      "name": "whois_lookup",              // 工具名(模型看到的就是它)
- *      "description": "查域名注册信息",      // 说明书,模型据此决定用不用
- *      "schema": { ...JSON Schema... },      // 参数形状(可省)
- *      "command": "whois $target",           // 命令行;$参数名 会被替换进来
- *      "timeout_ms": 20000,
- *      "allow": true                         // 不开这个不执行,只登记
- *    }
- *
- * 2) 技能包:skills\<名字>.md —— 用 Markdown 写"什么时候用、怎么一步步做"。
- *    带 front-matter:
- *      ---
- *      name: 上线前自查
- *      title: 上线前自查
- *      when: 用户说"上线前帮我过一遍"时用
- *      tools: site_crawl,sensitive_file_probe
- *      command:                    (可选;留空就是纯方法论文本)
- *      allow: true                  (有 command 时才需要)
- *      ---
- *      (正文 = 步骤说明,会喂给模型)
- *
- * 3) MCP 服务器:mcp.json
- *    { "servers": [ { "name": "demo", "command": "...", "cwd": "...", "allow": true } ] }
- *    启动时握手 initialize → tools/list,把每个工具登记成 mcp__<server>__<tool>;
- *    调用时走 tools/call,结果(文本块)作为工具输出。
- *
- * 没有第三方依赖:进程用 CreateProcess + 匿名管道,JSON 用自己的解析器。
- */
+/* ext.cpp —— 外部能力:命令工具 / 技能包 / MCP 服务器,全部从数据目录装载。 */
 #include "ext.h"
 
 #include <ctype.h>
@@ -359,7 +327,7 @@ static void parse_front_matter(char *text, ext_skill_t *sk, char **body_out) {
   *body_out = xstrdup(body);
 }
 
-/* 读一个技能文件(SKILL.md 或旧的 <name>.md),登记或覆盖内置说明。
+/* 读一个技能文件 <名字>/SKILL.md,登记或覆盖内置说明。
    返回 1 = 作为新技能登记了;0 = 被内置技能吸收(改的是说明文字)或读不了。 */
 static int load_one_skill(const char *path, int *overridden) {
   char *text = read_file_utf8(path);
@@ -422,17 +390,6 @@ static int load_one_skill(const char *path, int *overridden) {
 static int load_skills_dir(const char *dir) {
   int n = 0;
   int overridden = 0;
-
-  /* 1) 顶层 <name>.md(旧形态,继续认) */
-  char **files = NULL;
-  int total = list_files(dir, ".md", &files);
-  for (int i = 0; i < total; i++) {
-    n += load_one_skill(files[i], &overridden);
-  }
-  str_free_list(files, total);
-
-  /* 2) 子目录 <名字>\SKILL.md —— 主流 agent 的技能包形态:
-       一个技能一个文件夹,可以连带脚本、模板、参考资料一起放。 */
   std::vector<std::string> subs = fs_list_dirs(dir);
   for (size_t i = 0; i < subs.size(); i++) {
     char p[MAX_PATH * 2];
@@ -440,10 +397,8 @@ static int load_skills_dir(const char *dir) {
     if (file_size(p) < 0) continue;
     n += load_one_skill(p, &overridden);
   }
-
   if (overridden > 0) {
-    log_info("[扩展] 数据目录里有 %d 个技能说明被采用(改的是说明文字,行为仍是内置实现)",
-             overridden);
+    log_info("[扩展] 数据目录里有 %d 个技能说明被采用", overridden);
   }
   return n;
 }
@@ -989,87 +944,12 @@ void ext_register_all(void) {
   }
 }
 
-/* ================= 首次运行:把内置技能落到数据目录,让人看得见、改得动 =================
-   不放"示例文件":能力清单里本来就有的技能,才是使用者真正要读、要改的东西。
-   每个内置技能导出一份 Markdown(名字=技能名),里面的说明文字改了之后会被采用
-   (实现仍在程序里,所以改文字不会把程序改坏)。想加工具或接 MCP,在界面「设置 → 工具」里填表单即可。 */
-static void write_skill_md(const char *file, skill_t *sk) {
-  buf_t b;
-  buf_init(&b);
-  buf_puts(&b, "\xEF\xBB\xBF");     /* 带 BOM:记事本能正确认出 UTF-8 */
-  buf_puts(&b, "---\r\n");
-  buf_printf(&b, "name: %s\r\n", sk->name);
-  buf_printf(&b, "title: %s\r\n", sk->title ? sk->title : sk->name);
-  buf_printf(&b, "purpose: %s\r\n", sk->purpose ? sk->purpose : "");
-  buf_printf(&b, "when: %s\r\n", sk->when ? sk->when : "");
-  buf_printf(&b, "tools: %s\r\n", sk->tools ? sk->tools : "");
-  buf_puts(&b, "---\r\n\r\n");
-  buf_printf(&b, "【%s】%s\r\n\r\n", sk->title ? sk->title : sk->name,
-             sk->purpose ? sk->purpose : "");
-  buf_printf(&b, "什么时候用:%s\r\n\r\n", sk->when ? sk->when : "");
-  buf_puts(&b,
-      "这个技能由程序内置实现,上面三段文字是决策时用的说明 ——\r\n"
-      "按本单位自己的叫法改就生效(改完重启程序),不会改变它的实际动作,\r\n"
-      "所以放心改:改坏了把本文件删掉,程序会回到出厂说明。\r\n"
-      "\r\n"
-      "想让它额外执行一条命令(例如调内部平台的接口):加上\r\n"
-      "    command: 你的命令\r\n"
-      "    allow: true\r\n"
-      "此时它变成\"命令型\"能力,上面的文字会连同命令输出一起作为结论。\r\n");
-  file_write_all(file, b.data, b.len);
-  buf_free(&b);
-}
-
-/* 内置技能改过名/被删掉时,数据目录里那份旧说明会作为"外部技能"继续被载入 ——
-   使用者看到的就是一个早就没有实现的技能。这里按名字清掉这些过时的导出文件。 */
-static void drop_deprecated_skills(const char *dir) {
-  static const char *GONE[] = {"skill_evaluate", NULL};   /* → skill_evidence */
-  for (int i = 0; GONE[i]; i++) {
-    char file[MAX_PATH * 2];
-    snprintf(file, sizeof(file), "%s\\%s.md", dir, GONE[i]);
-    if (file_size(file) < 0) continue;
-    wchar_t *w = u8_to_w(file);
-    if (w) {
-      DeleteFileW(w);
-      free(w);
-    }
-  }
-}
-
-/* 导出内置技能说明(已存在的文件不覆盖 —— 使用者改过的内容不能被程序冲掉) */
-static int export_builtin_skills(void) {
-  char dir[MAX_PATH * 2];
-  ext_dir(dir, sizeof(dir), "skills");
-  ensure_dir(dir);
-  drop_deprecated_skills(dir);
-  int written = 0;
-  int total = skills_count();
-  for (int i = 0; i < total; i++) {
-    skill_t *sk = skills_get(i);
-    if (!sk || !sk->name) continue;
-    char file[MAX_PATH * 2];
-    snprintf(file, sizeof(file), "%s\\%s.md", dir, sk->name);
-    if (file_size(file) >= 0) continue;
-    write_skill_md(file, sk);
-    written++;
-  }
-  return written;
-}
-
 void ext_bootstrap(void) {
   char path[MAX_PATH * 2];
-
-  /* 工具目录只建好、不放东西:要加就在界面里加(设置 → 工具),或直接放声明文件 */
   ext_dir(path, sizeof(path), "tools");
   ensure_dir(path);
-
-  /* 技能:打包的 data\skills 已由 res_bootstrap 铺成 <名字>\SKILL.md。
-     只有目录里一份技能都没有时(旧版本升级上来、或手工删光了)才导出内置说明兜底。 */
   ext_dir(path, sizeof(path), "skills");
   ensure_dir(path);
-  std::vector<std::string> subs = fs_list_dirs(path);
-  std::vector<std::string> mds = fs_list_files(path, ".md");
-  if (subs.empty() && mds.empty()) export_builtin_skills();
 }
 
 
@@ -1196,7 +1076,10 @@ int ext_save_skill(const char *name, const char *title, const char *purpose,
   char dir[MAX_PATH * 2], path[MAX_PATH * 4];
   ext_dir(dir, sizeof(dir), "skills");
   ensure_dir(dir);
-  snprintf(path, sizeof(path), "%s\\%s.md", dir, stem);
+  char sub[MAX_PATH * 2];
+  snprintf(sub, sizeof(sub), "%s\\%s", dir, stem);
+  ensure_dir(sub);
+  snprintf(path, sizeof(path), "%s\\SKILL.md", sub);
 
   buf_t b;
   buf_init(&b);
@@ -1293,7 +1176,7 @@ int ext_delete_skill(const char *name, char *err, size_t errcap) {
   }
   char dir[MAX_PATH * 2], path[MAX_PATH * 4];
   ext_dir(dir, sizeof(dir), "skills");
-  snprintf(path, sizeof(path), "%s\\%s.md", dir, name);
+  snprintf(path, sizeof(path), "%s\\%s\\SKILL.md", dir, name);
   if (delete_file_quiet(path) == 0) return 0;
   if (err) snprintf(err, errcap, "没找到这个技能的文件(内置技能本来就没有文件可删)");
   return -1;

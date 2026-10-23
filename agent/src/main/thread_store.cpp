@@ -1,10 +1,5 @@
-/* thread_store.cpp —— 对话存储 v2(结构见 thread_store.h)。
- *
- * 落盘原则只有两条:
- *   ① 消息与事件是"只追加"的流水,写坏了最多丢最后一行;
- *   ② meta 与 index 是可以从流水重建的派生数据 —— 所以放在最前面写,
- *      坏了大不了重建一次,不影响历史。
- */
+/* thread_store.cpp —— 对话存储(chat\<id>.jsonl,只追加)。
+   消息 / 事件 / 元数据同文件,用 type 区分;同文件最后一条 meta 就是最新状态。 */
 #include "thread_store.h"
 
 #include <algorithm>
@@ -55,10 +50,6 @@ void messages_path(const char *tid, char *out, size_t cap) { chat_file(tid, out,
 void events_path(const char *tid, char *out, size_t cap) { chat_file(tid, out, cap); }
 void meta_path(const char *tid, char *out, size_t cap) { chat_file(tid, out, cap); }
 
-void index_path(char *out, size_t cap) {
-  snprintf(out, cap, "%s\\chat\\index.jsonl", g_root);
-}
-
 /* 追加一行 JSON(带换行),失败返回 -1 */
 int append_line(const char *path, json_t *obj) {
   char *line = json_dump(obj);
@@ -93,44 +84,23 @@ void for_each_line(const char *path, Fn fn) {
   free(text);
 }
 
-/* index 是流水:同一 tid 后面的行覆盖前面的。读完得到 tid → 最新一行 */
-json_t *index_snapshot() {
-  json_t *map = j_obj();
-  char path[MAX_PATH * 4];
-  index_path(path, sizeof(path));
-  for_each_line(path, [&](json_t *o) {
-    const char *tid = j_s(o, "thread_id", "");
-    if (!tid[0]) return;
-    char *dump = json_dump(o);
-    json_t *copy = dump ? json_parse(dump) : NULL;
-    free(dump);
-    if (copy) j_set(map, tid, copy);   /* j_set 接管所有权 */
-  });
-  return map;
-}
-
 /* meta 不存在时用索引里的那一行兜底 —— 让列表页永远有东西可显示 */
-json_t *meta_or_index(const char *tid) {
+/* 一个对话的元数据 = 该文件里最后一条 type=meta 的记录 */
+json_t *read_meta(const char *tid) {
   char mp[MAX_PATH * 4];
   meta_path(tid, mp, sizeof(mp));
   json_t *last = NULL;
   for_each_line(mp, [&](json_t *o) {
-    const char *ty = j_s(o, "type", "meta");
-    if (strcmp(ty, "meta") != 0) return;
+    if (strcmp(j_s(o, "type", "meta"), "meta") != 0) return;
     if (last) json_free(last);
     char *d = json_dump(o);
     last = d ? json_parse(d) : NULL;
     free(d);
   });
-  if (last) return last;
-  json_t *map = index_snapshot();
-  json_t *row = j_get(map, tid);
-  json_t *copy = row ? json_parse(json_dump(row)) : NULL;
-  json_free(map);
-  return copy ? copy : j_obj();
+  return last ? last : j_obj();
 }
 
-/* meta 与 index 一起更新:meta 是权威快照,index 追加一行便于快速列表 */
+/* 元数据只追加:同文件里最后一条 meta 说了算 */
 void save_meta(json_t *meta) {
   if (!meta) return;
   const char *tid = j_s(meta, "id", "");
@@ -142,19 +112,6 @@ void save_meta(json_t *meta) {
   j_set_num(meta, "schema", THREAD_SCHEMA);
   j_set_str(meta, "type", "meta");
   append_line(mp, meta);
-  json_t *row = j_obj();
-  j_set_str(row, "thread_id", tid);
-  j_set_str(row, "title", j_s(meta, "title", ""));
-  j_set_str(row, "created_at", j_s(meta, "created_at", ""));
-  j_set_str(row, "updated_at", j_s(meta, "updated_at", ""));
-  j_set_num(row, "message_count", j_n(meta, "message_count", 0));
-  j_set_num(row, "last_seq", j_n(meta, "last_seq", 0));
-  j_set_bool(row, "archived", j_b(meta, "archived", 0));
-  j_set_bool(row, "pinned", j_b(meta, "pinned", 0));
-  char ip[MAX_PATH * 4];
-  index_path(ip, sizeof(ip));
-  append_line(ip, row);
-  json_free(row);
 }
 
 void touch_updated(json_t *meta) {
@@ -178,7 +135,7 @@ json_t *thread_ensure(const char *thread_id, const char *title) {
   if (!thread_id || !*thread_id || !g_root[0]) return j_obj();
   lock_init();
   EnterCriticalSection(&g_lock);
-  json_t *meta = meta_or_index(thread_id);
+  json_t *meta = read_meta(thread_id);
   if (!j_s(meta, "id", "")[0]) {
     char ts[40];
     now_iso(ts, sizeof(ts));
@@ -216,7 +173,7 @@ json_t *thread_append(const char *thread_id, const char *role, json_t *blocks,
   lock_init();
   EnterCriticalSection(&g_lock);
 
-  json_t *meta = meta_or_index(thread_id);
+  json_t *meta = read_meta(thread_id);
   int last_seq = (int)j_n(meta, "last_seq", 0);
   int seq = last_seq + 1;
 
@@ -309,43 +266,19 @@ json_t *thread_list() {
   lock_init();
   EnterCriticalSection(&g_lock);
 
-  /* 以目录为准(有 meta 就一定在列表里),再用索引补上没来得及写 meta 的 */
-  char root[MAX_PATH * 2];
-  snprintf(root, sizeof(root), "%s\\threads", g_root);
-  std::vector<std::string> ids;
-  {
-    std::vector<std::string> dirs = fs_list_dirs(root);
-    for (const std::string &d : dirs) ids.push_back(d);
-  }
-  {
-    size_t len = 0;    char ip[MAX_PATH * 4];
-    index_path(ip, sizeof(ip));
-    char *text = file_read_all(ip, &len);
-    if (text) {
-      char **lines = NULL;
-      int n = str_split(text, '\n', &lines, 0);
-      for (int i = 0; i < n; i++) {
-        char *ln = str_trim(lines[i]);
-        if (!ln[0]) continue;
-        json_t *o = json_parse(ln);
-        if (!o) continue;
-        const char *tid = j_s(o, "thread_id", "");
-        if (tid[0] && std::find(ids.begin(), ids.end(), tid) == ids.end()) ids.push_back(tid);
-        json_free(o);
-      }
-      str_free_list(lines, n);
-      free(text);
-    }
-  }
-
-  for (const std::string &tid : ids) {
-    json_t *meta = meta_or_index(tid.c_str());
+  /* 目录就是唯一的事实来源:chat\<id>.jsonl,读最后一条 meta */
+  char dir[MAX_PATH * 2];
+  chat_dir(dir, sizeof(dir));
+  std::vector<std::string> files = fs_list_files(dir, ".jsonl");
+  for (const std::string &fn : files) {
+    if (str_ieq(fn.c_str(), "index.jsonl")) continue;
+    std::string tid = fn.substr(0, fn.size() > 6 ? fn.size() - 6 : fn.size());
+    json_t *meta = read_meta(tid.c_str());
     if (!j_s(meta, "id", "")[0]) j_set_str(meta, "id", tid.c_str());
-    j_add(out, meta);      /* 所有权交给数组 */
+    j_add(out, meta);
   }
   LeaveCriticalSection(&g_lock);
 
-  /* 排序:置顶在前,其次按更新时间倒序 */
   int n = j_len(out);
   std::vector<json_t *> items;
   for (int i = 0; i < n; i++) items.push_back(j_at(out, i));
@@ -355,9 +288,7 @@ json_t *thread_list() {
     return std::string(j_s(a, "updated_at", "")) > std::string(j_s(b, "updated_at", ""));
   });
   json_t *sorted = j_arr();
-  for (json_t *it : items) {
-    j_add(sorted, json_parse(json_dump(it)));   /* 深拷贝,m 的所有权仍在 out */
-  }
+  for (json_t *it : items) j_add(sorted, json_parse(json_dump(it)));
   json_free(out);
   return sorted;
 }
@@ -391,7 +322,7 @@ json_t *thread_get(const char *thread_id) {
   if (!thread_id || !*thread_id || !g_root[0]) return j_obj();
   lock_init();
   EnterCriticalSection(&g_lock);
-  json_t *m = meta_or_index(thread_id);
+  json_t *m = read_meta(thread_id);
   LeaveCriticalSection(&g_lock);
   return m;
 }
@@ -436,124 +367,4 @@ int thread_delete(const char *thread_id) {
   snprintf(old, sizeof(old), "%s\\threads\\%s", g_root, safe);
   if (file_size(old) >= 0) fs_remove_tree(old);
   return 0;
-}
-
-
-/* 老结构(threads/<id>/{messages,events}.jsonl + meta.json)迁进 chat/<id>.jsonl。
-   幂等:迁完写一个 .migrated 标记,下次直接跳过。 */
-static int migrate_threads_dir(void) {
-  char dir[MAX_PATH * 2];
-  snprintf(dir, sizeof(dir), "%s\\threads", g_root);
-  std::vector<std::string> subs = fs_list_dirs(dir);
-  int moved = 0;
-  for (size_t i = 0; i < subs.size(); i++) {
-    char one[MAX_PATH * 2];
-    snprintf(one, sizeof(one), "%s\\%s", dir, subs[i].c_str());
-    char marker[MAX_PATH * 4];
-    snprintf(marker, sizeof(marker), "%s\\.migrated", one);
-    if (file_size(marker) >= 0) continue;
-
-    char dst[MAX_PATH * 4];
-    chat_file(subs[i].c_str(), dst, sizeof(dst));
-    if (file_size(dst) < 0) {
-      /* 消息、事件、meta 依次追加进同一个文件 */
-      const char *parts[2] = {"messages.jsonl", "events.jsonl"};
-      for (int k = 0; k < 2; k++) {
-        char src[MAX_PATH * 4];
-        snprintf(src, sizeof(src), "%s\\%s", one, parts[k]);
-        size_t len = 0;
-        char *text = file_read_all(src, &len);
-        if (!text) continue;
-        /* 老消息没有 type 字段:补一个,读的时候才不会漏 */
-        char **lines = NULL;
-        int n = str_split(text, '\n', &lines, 0);
-        for (int j = 0; j < n; j++) {
-          char *ln = str_trim(lines[j]);
-          if (!ln[0]) continue;
-          json_t *o = json_parse(ln);
-          if (!o) continue;
-          if (!j_s(o, "type", "")[0]) j_set_str(o, "type", k == 0 ? "message" : "event");
-          append_line(dst, o);
-          json_free(o);
-        }
-        str_free_list(lines, n);
-        free(text);
-      }
-      char msrc[MAX_PATH * 4];
-      snprintf(msrc, sizeof(msrc), "%s\\meta.json", one);
-      size_t len = 0;
-      char *text = file_read_all(msrc, &len);
-      if (text) {
-        json_t *o = json_parse(text);
-        free(text);
-        if (o) {
-          j_set_str(o, "type", "meta");
-          append_line(dst, o);
-          json_free(o);
-        }
-      }
-    }
-    wchar_t *w = u8_to_w(marker);
-    if (w) {
-      HANDLE h = CreateFileW(w, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, 0, NULL);
-      if (h != INVALID_HANDLE_VALUE) CloseHandle(h);
-      free(w);
-    }
-    moved++;
-  }
-  return moved;
-}
-
-int thread_migrate_legacy() {
-  if (!g_root[0]) return 0;
-  int from_threads = migrate_threads_dir();
-  if (from_threads > 0) log_info("[对话] 已把 %d 个旧会话迁到 chat/ 单文件结构", from_threads);
-  char legacy[MAX_PATH * 2];
-  snprintf(legacy, sizeof(legacy), "%s\\transcripts", g_root);
-  std::vector<std::string> files = fs_list_files(legacy, ".jsonl");
-  int migrated = 0;
-  for (const std::string &fn : files) {
-    std::string sid = fn.substr(0, fn.size() > 6 ? fn.size() - 6 : fn.size());
-    char path[MAX_PATH * 4];
-    snprintf(path, sizeof(path), "%s\\%s", legacy, fn.c_str());
-    json_t *meta = thread_ensure(sid.c_str(), NULL);
-    bool fresh = (j_n(meta, "message_count", 0) == 0 && j_n(meta, "last_seq", 0) == 0);
-    json_free(meta);
-    if (!fresh) continue;                    /* 已经迁过,别重复 */
-
-    int count = 0;
-    size_t len = 0;
-    char *text = file_read_all(path, &len);
-    if (!text) continue;
-    char **lines = NULL;
-    int n = str_split(text, '\n', &lines, 0);
-    for (int i = 0; i < n; i++) {
-      char *ln = str_trim(lines[i]);
-      if (!ln[0]) continue;
-      json_t *o = json_parse(ln);
-      if (!o) continue;
-      const char *role = j_s(o, "role", "user");
-      const char *body = j_s(o, "text", "");
-      json_t *blocks = thread_blocks_text(body);
-      json_t *msg = thread_append(sid.c_str(), role, blocks, NULL, NULL);
-      json_free(msg);
-      const char *ts = j_s(o, "time", "");
-      (void)ts;
-      json_free(o);
-      count++;
-    }
-    str_free_list(lines, n);
-    free(text);
-    if (count > 0) {
-      char done[MAX_PATH * 4];
-      snprintf(done, sizeof(done), "%s.migrated", path);
-      wchar_t *w1 = u8_to_w(path), *w2 = u8_to_w(done);
-      if (w1 && w2) MoveFileExW(w1, w2, MOVEFILE_REPLACE_EXISTING);
-      free(w1);
-      free(w2);
-      migrated++;
-      log_info("[对话] 已把 %s 迁到 threads/ 新结构(%d 条消息)", sid.c_str(), count);
-    }
-  }
-  return migrated;
 }

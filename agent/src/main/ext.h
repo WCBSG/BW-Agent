@@ -1,19 +1,8 @@
-/* ext.h —— 可扩展层:像 Claude Code 那样自己加能力,全部放在数据目录下。
- *
- * 三样东西,各一个目录(首次运行时自动生成带注释的示例):
- *
- *   ~\.bw_agent\tools\*.json    外部工具:声明式清单 + 一条命令
- *       智能体执行时会真的调用那条命令,把 stdout 当作工具结果。
- *
- *   ~\.bw_agent\skills\*.md     技能包:Markdown(带 front-matter 的"怎么做")。
- *       没有命令的技能 = 步骤说明(喂给模型当方法论);带命令的技能 = 真去执行。
- *
- *   ~\.bw_agent\mcp.json        外部 MCP 服务器(stdio, JSON-RPC 2.0):
- *       启动时握手 initialize → tools/list 把对方的工具挂进注册表,
- *       被调用时走 tools/call。
- *
- * 安全边界:外部能力必须显式 allow(清单里 "allow": true 或 mcp 项 "allow": true),
- * 否则只登记不执行 —— 免得从别处拷来一份配置就顺手执行了命令。
+/* ext.h —— 可扩展层(全部在数据目录下):
+ *   tools\<名字>\<名字>.json   外部命令工具(stdout 即结果)
+ *   skills\<名字>\SKILL.md      技能包;带 command 的技能会真执行
+ *   mcp.json                    外部 MCP 服务器(stdio JSON-RPC)
+ * 外部能力必须显式 allow,否则只登记不执行。
  */
 #ifndef AGENT_EXT_H
 #define AGENT_EXT_H

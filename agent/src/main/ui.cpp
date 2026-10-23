@@ -97,20 +97,6 @@ static void remove_tree(const char *dir) {
   if (wdir) { RemoveDirectoryW(wdir); free(wdir); }
 }
 
-/* 早期版本把浏览器用户目录建在程序旁边(程序目录可能是只读的,而且不该在那儿留垃圾),
-   现在挪到用户数据目录下;遇到遗留的那份顺手清掉。 */
-static void clean_legacy_profile(void) {
-  char legacy[MAX_PATH * 2];
-  snprintf(legacy, sizeof(legacy), "%sui-profile", app_dir());
-  wchar_t *w = u8_to_w(legacy);
-  if (!w) return;
-  DWORD attr = GetFileAttributesW(w);
-  free(w);
-  if (attr == INVALID_FILE_ATTRIBUTES || !(attr & FILE_ATTRIBUTE_DIRECTORY)) return;
-  remove_tree(legacy);
-  log_info("已清理程序旁边遗留的 ui-profile(浏览器数据现在放在用户数据目录下)");
-}
-
 /* 我们自己拉起来的那个界面窗口被关掉时,服务也跟着收摊 ——
    双击运行的程序不该在窗口关掉之后还在后台占着端口。
    (--debug 调试时除外:那时窗口只是看板,见 ui_set_stop_on_close) */
@@ -194,7 +180,6 @@ static int launch_app_window(const char *exe, int port) {
 
   /* 浏览器的用户数据目录放到用户数据目录下(默认 %USERPROFILE%\.bw_agent\ui-profile):
      程序目录可能不可写(U 盘只读、Program Files、网络共享),而且不该在程序旁边留垃圾。 */
-  clean_legacy_profile();
   char profile[MAX_PATH * 2];
   app_data_path(profile, sizeof(profile), "ui-profile");
   ensure_dir(profile);

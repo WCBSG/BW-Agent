@@ -102,15 +102,6 @@ static int load_report(store_t *s, const char *report_id, report_t *out) {
   return 0;
 }
 
-/* ================= 文本格式 ================= */
-
-static void md_escape(buf_t *b, const char *s) {
-  for (const char *p = s; *p; p++) {
-    if (*p == '|') buf_puts(b, "\\|");
-    else buf_putc_(b, *p);
-  }
-}
-
 static void render_md(report_t *r, buf_t *out) {
   buf_printf(out, "# %s\n\n", r->title);
   buf_printf(out, "- 报告编号:%s\n", r->id);

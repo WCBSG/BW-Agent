@@ -119,86 +119,56 @@ static int tool_push(const char *name, const char *desc, const char *kind, const
 }
 
 /* 解析一份声明。返回 1 = 收下了(或明确判定不属于这里),0 = 文件有问题。 */
+/* 登记一条声明:外置入口优先,其次是程序内实现(impl 命中 g_prims)。 */
 static int tool_load_spec_text(const char *text, const char *origin) {
   json_t *o = json_parse(text);
-  if (!o) {
-    log_warn("[工具] 声明不是合法 JSON,跳过: %s", origin);
-    return 0;
-  }
-  if (o->type != J_OBJ) { json_free(o); return 0; }
+  if (!o || o->type != J_OBJ) { json_free(o); return 0; }
 
   const char *name = j_s(o, "name", "");
   if (!name[0]) { json_free(o); return 0; }
 
   const char *impl = j_s(o, "impl", "");
   json_t *en = j_get(o, "entry");
-  const char *etype = (en && en->type == J_OBJ) ? j_s(en, "type", "") : "";
-  if (!impl[0] && str_ieq(etype, "builtin")) impl = j_s(en, "impl", "");
+  if (!impl[0] && en && en->type == J_OBJ && str_ieq(j_s(en, "type", ""), "builtin")) {
+    impl = j_s(en, "impl", "");
+  }
 
-  tool_fn fn = impl[0] ? prim_find(impl) : NULL;
+  const char *kind = j_s(o, "kind", "内置");
+  char fixed_kind[128];
+  tool_fn run = NULL;
 
-  /* 1) 先看外置入口:声明里写了 entry,或 source / 同目录里真有可执行文件。
-        这样"一个目录 = 一个工具"可以直接用,不必再改程序。 */
   if (j_b(o, "allow", 1) && tool_entry_parse(o, origin) == 1) {
-    json_t *sc = j_get(o, "schema");
-    char *schema_txt = sc ? json_dump(sc) : NULL;
-    /* 声明里的 kind 是作者写的用途说明(如「可选调 nuclei」);这里把「内置」换成「外置」,
-       因为这一条现在真的是独立进程 —— 界面与日志里不该再显示成内置实现。 */
-    char ext_kind[128];
-    snprintf(ext_kind, sizeof(ext_kind), "%s", j_s(o, "kind", "外置"));
-    if (str_startswith(ext_kind, "内置")) {
-      char rest[128];
-      snprintf(rest, sizeof(rest), "%s", ext_kind + strlen("内置"));
-      snprintf(ext_kind, sizeof(ext_kind), "外置%s", rest);
+    /* 有入口就是外置;声明里的 kind 只保留用途说明部分 */
+    snprintf(fixed_kind, sizeof(fixed_kind), "%s", kind);
+    if (str_startswith(fixed_kind, "内置")) {
+      snprintf(fixed_kind, sizeof(fixed_kind), "外置%s", kind + strlen("内置"));
     }
-    int rc = tool_push(name, j_s(o, "description", ""), ext_kind,
-                       j_s(o, "source", ""), (int)j_b(o, "readonly", 0), tool_entry_run);
-    if (rc == 0 && schema_txt) {
-      tool_t *t = tools_find(name);
-      if (t) {
-        free((void *)t->schema);
-        t->schema = schema_txt;
-        schema_txt = NULL;
-      }
-    }
-    free(schema_txt);
-    json_free(o);
-    return 1;
+    kind = fixed_kind;
+    run = tool_entry_run;
+  } else {
+    run = prim_find(impl);
+    if (!run) { json_free(o); return 1; }   /* 可能是 command 型声明,留给 ext.cpp */
   }
 
-  /* 2) 外置入口不可用(没打包 exe / 被删了)时回落到程序内实现:
-        声明里留着 impl,换台机器也不至于整个功能消失。 */
-  if (fn) {
+  if (tool_push(name, j_s(o, "description", ""), kind, j_s(o, "source", ""),
+                (int)j_b(o, "readonly", 0), run) == 0) {
     json_t *sc = j_get(o, "schema");
     char *schema_txt = sc ? json_dump(sc) : NULL;
-    int rc = tool_push(name, j_s(o, "description", ""), j_s(o, "kind", "内置"),
-                       j_s(o, "source", ""), (int)j_b(o, "readonly", 0), fn);
-    if (rc == 0 && schema_txt) {
-      tool_t *t = tools_find(name);
-      if (t) {
-        free((void *)t->schema);
-        t->schema = schema_txt;
-        schema_txt = NULL;
-      }
+    tool_t *tool = tools_find(name);
+    if (tool && schema_txt) {
+      free((void *)tool->schema);
+      tool->schema = schema_txt;
+    } else {
+      free(schema_txt);
     }
-    free(schema_txt);
-    json_free(o);
-    return 1;
   }
-
   json_free(o);
-  return 1;   /* 既不是入口也不是内置:可能是旧的 command 型声明,留给 ext.cpp */
+  return 1;
 }
 
-/* 从数据目录装载。两种放法都认:
-     <数据目录>\tools\<名字>.json          一个文件一个工具(老形态)
-     <数据目录>\tools\<名字>\<名字>.json   一个目录一个工具(声明与入口 exe 同目录)
-   目录形态是为了"工具可以是任何东西":声明旁边就是它的 exe,换掉 exe 就换了实现。 */
+/* 从 <数据目录>\tools\<目录>\<名字>.json 装载(一个目录一个工具) */
 static int load_specs_dir(const char *dir) {
   int n = 0;
-
-  /* 先认目录形态:一个目录一个工具,声明旁边就是它自己的 exe。
-     同名时目录优先 —— 老版本铺出来的平铺 <名字>.json 不该把新形态挤掉。 */
   std::vector<std::string> subs = fs_list_dirs(dir);
   for (const std::string &sub : subs) {
     char subdir[MAX_PATH * 2];
@@ -213,18 +183,6 @@ static int load_specs_dir(const char *dir) {
       n += tool_load_spec_text(text, full);
       free(text);
     }
-  }
-
-  /* 再认平铺形态:<数据目录>\tools\<名字>.json */
-  std::vector<std::string> files = fs_list_files(dir, ".json");
-  for (const std::string &f : files) {
-    char full[MAX_PATH * 2];
-    snprintf(full, sizeof(full), "%s\\%s", dir, f.c_str());
-    size_t len = 0;
-    char *text = file_read_all(full, &len);
-    if (!text) continue;
-    n += tool_load_spec_text(text, full);
-    free(text);
   }
   return n;
 }

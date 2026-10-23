@@ -19,57 +19,16 @@ static char g_source[512] = {0};
 static int g_from_file = 0;
 static char *g_default_text = NULL;      /* exe 内置规则文本(借出给 json_parse,退出时释放) */
 
-/* ---------- 内置默认规则(通用,不含任何具体站点信息) ---------- */
-/* 出厂规则不再写死在 C 里 —— 它就是 data\rules.json(构建时被 mkres 编进 exe)。
- * 这样做的好处:
- *   · 内置规则与外部规则**同一份文件、同一套 schema**,不存在两套逻辑;
- *   · 出厂值改一行 JSON 就行(改完 build.bat 重新编),不需要动 C 代码;
- *   · 生效规则里缺哪一项,就自动回落到出厂值(见 rules_lookup 的双层查找)。 */
-
-/* ---------- 载入 ---------- */
-/* 规则查找顺序(前面的优先):
-     ① 数据目录里的 rules.json   —— 用户在 ~\.bw_agent\rules.json 里改,最直观
-     ② exe 目录及其上级的 data\rules.json —— 源码仓库/绿色目录的放法
-     ③ exe 内置的那一份          —— 单文件交付时的兜底
-   另外,**出厂规则始终会被加载成第二层**(见 rules_lookup):
-   生效规则里缺哪一项,就自动用出厂值顶上 —— 用户只写自己关心的那几段也行,
-   不需要把整份规则抄一遍;代码里也就不必再写任何"默认值常量"。 */
-static const char *CANDIDATES_REL[] = {"data\\rules.json", "..\\data\\rules.json",
-                                       "..\\..\\data\\rules.json"};
-
+/* ---------- 载入 ----------
+   生效规则 = 数据目录 rules\ 的 6 个域文件;
+   某域缺失或写坏时,该域的键回落到 exe 内置的出厂规则(rules_lookup 双层查找)。 */
 static json_t *g_factory = NULL;        /* 出厂规则(内置数据,双层查找的第二层) */
 static char *g_factory_text = NULL;
-
-static json_t *try_parse_rules(const char *path, int *is_file) {
-  size_t len = 0;
-  char *text = file_read_all(path, &len);
-  if (!text) return NULL;
-  /* 记事本/PowerShell 存 UTF-8 会带 BOM,而 JSON 解析器不认它 ——
-     用户改完规则却被当成"文件坏了"是最气人的一种失败,这里统一剥掉。 */
-  char *body = text;
-  if (len >= 3 && (unsigned char)body[0] == 0xEF && (unsigned char)body[1] == 0xBB &&
-      (unsigned char)body[2] == 0xBF) {
-    body += 3;
-  }
-  json_t *j = json_parse(body);
-  free(text);
-  if (!j) {
-    log_warn("[规则] %s 不是合法 JSON,跳过", path);
-    return NULL;
-  }
-  if (!j_get(j, "signatures")) {
-    /* 允许"只写要覆盖的那几段":没有 signatures 也不再当成坏文件 */
-    log_info("[规则] %s 只覆盖了部分配置(没有 signatures 段,按增量规则处理)", path);
-  }
-  if (is_file) *is_file = 1;
-  return j;
-}
-
 void rules_init(const char *base_dir) {
+  (void)base_dir;
   if (g_root) return;
-  const char *base = (base_dir && *base_dir) ? base_dir : "";
 
-  /* 出厂规则:永远是内置数据(data/rules.json 由 mkres 编进 exe) */
+  /* 出厂规则 = exe 内置的 6 个域文件 */
   if (!g_factory && res_load_text("data/rules.json", &g_factory_text, NULL)) {
     g_factory = json_parse(g_factory_text);
     if (g_factory) {
@@ -77,9 +36,7 @@ void rules_init(const char *base_dir) {
     }
   }
 
-  /* ① 数据目录的 rules\ 分域文件(detect/sensitive/probe/alert/org/page)。
-     首次运行时按出厂规则生成,之后以这 6 个文件为准 —— 不再读旧的大文件 rules.json:
-     同一个键在两处各有一份值时,"到底哪份生效"是解释不清的。 */
+  /* 数据目录 rules\ 的 6 个域文件;缺的按出厂规则生成 */
   {
     char err[256] = {0};
     int made = rules_domains_generate(err, sizeof(err));
@@ -99,19 +56,7 @@ void rules_init(const char *base_dir) {
     }
     (void)merr;
   }
-  /* ② exe 目录附近 */
-  for (size_t i = 0; i < sizeof(CANDIDATES_REL) / sizeof(CANDIDATES_REL[0]) && !g_root; i++) {
-    char path[MAX_PATH * 2];
-    snprintf(path, sizeof(path), "%s%s", base, CANDIDATES_REL[i]);
-    g_root = try_parse_rules(path, &g_from_file);
-    if (g_root) {
-      snprintf(g_source, sizeof(g_source), "%s", path);
-      log_info("[规则] 已载入 %s", path);
-      return;
-    }
-  }
-
-  /* ③ 出厂规则作为生效规则(磁盘上没有可用的规则文件时) */
+  /* ② 没读到分域文件时用出厂规则 */
   if (g_factory) {
     g_root = json_parse(g_factory_text);     /* 生效的那份要是独立副本,免得被改动 */
     g_from_file = 0;

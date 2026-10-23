@@ -20,11 +20,6 @@
 #include "webutil.h"
 
 #include <ctype.h>
-
-static void print_cli_args_note(void) {
-  printf("  参数写法:agent.exe tool <工具名> <目标> [key=value ...] 或直接给一段 JSON\n");
-}
-
 /* 命令行对话模式的回调:把循环的每一步直接打在控制台上。
    界面走的是 SSE,这里走 stdout —— 同一套钩子,两种观众。 */
 static void cli_on_answer(void *ud, const char *text) {
@@ -669,7 +664,6 @@ int app_main(int argc, char **argv) {
     printf("  ────────────────────────────────────────────────────────────\n");
 
     const char *domain = getenv("DAS_TARGET");
-    int port = 8765;
     int ok = 0;
     printf("  数据目录 : %s\\\n\n", app_data_dir());
     for (int try_port = 8765; try_port <= 8775; try_port++) {

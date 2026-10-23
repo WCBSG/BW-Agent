@@ -303,17 +303,6 @@ static void probe_free(probe_t *p) {
   p->body = NULL;
   p->err = NULL;
 }
-
-static void join_url(char *out, size_t cap, const char *base, const char *path) {
-  size_t n = strlen(base);
-  while (n > 0 && base[n - 1] == '/') n--;
-  snprintf(out, cap, "%.*s%s", (int)n, base, path[0] == '/' ? path : "");
-  if (path[0] != '/') {
-    size_t m = strlen(out);
-    snprintf(out + m, cap - m, "/%s", path);
-  }
-}
-
 /* 站点根:https://host[:port][/子路径](保留原始端口 —— 本地靶站常跑在 8081 这类端口上)
    子路径必须保留:授权范围常常只是"本站的某个栏目"(靶场就是这样,每关挂在 /l1 … /l6 下),
    把它丢掉就等于从首页开始整站爬,既越界也查不到点上。 */
@@ -339,14 +328,6 @@ static void site_root(const char *url, char *out, size_t cap) {
     }
   }
   snprintf(out, cap, "https://%.*s%.*s", (int)n, p, (int)path_len, p + n);
-}
-
-/* 把完整 URL 拼出来(用原始端口,别丢) */
-static void build_url(char *out, size_t cap, const char *root, const char *path) {
-  size_t n = strlen(root);
-  while (n > 0 && root[n - 1] == '/') n--;
-  if (path && path[0] == '/') snprintf(out, cap, "%.*s%s", (int)n, root, path);
-  else snprintf(out, cap, "%.*s/%s", (int)n, root, path ? path : "");
 }
 
 /* ================= 技能:资产与页面发现 ================= */

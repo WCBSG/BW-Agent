@@ -2236,13 +2236,8 @@ int serve_run(const char *domain, int port, int open_ui) {
   res_bootstrap_data_dir();          /* 首次运行:把可改的规则与说明落一份到数据目录 */
   snprintf(g_data_dir, sizeof(g_data_dir), "%s", ddir);
   g_store = store_open(g_data_dir);
-  /* 对话存储:新结构(threads/<id>/{meta,messages,events})。
-     启动时把旧的 transcripts/*.jsonl 迁进来,只迁一次(迁过的改名 .migrated)。 */
+  /* 对话存储:<数据目录>\chat\<对话id>.jsonl */
   thread_store_init(g_data_dir);
-  {
-    int migrated = thread_migrate_legacy();
-    if (migrated > 0) log_info("[对话] 已迁移 %d 个旧会话到 threads/ 结构", migrated);
-  }
   /* 授权池先load:边界必须在任何请求之前就位。
      首次升级时池子是空的 —— 把启动参数里的域名当作第一条授权收进去,
      否则老用户一升级就"什么都不能查",会以为程序坏了。 */

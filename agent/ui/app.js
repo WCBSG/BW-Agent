@@ -1524,20 +1524,6 @@ async function renderEvalView() {
 /* ============ 起手式与工作台的列表 ============
    两个列表都只画后端真的落过盘的东西：没有运行记录就写"还没有"，不摆假数据。 */
 
-function runChip(status) {
-  return RUN_STATUS_LABEL[status] || status || '未知';
-}
-
-async function recentData() {
-  const [runs, tasks] = await Promise.all([
-    fetchCollection('runs', 12).catch(() => ({ items: [] })),
-    fetchCollection('tasks', 20).catch(() => ({ items: [] })),
-  ]);
-  const taskMap = {};
-  for (const t of tasks.items || []) taskMap[t.id] = t;
-  return { list: (runs.items || []).slice().reverse(), taskMap };
-}
-
 /* 首屏「最近」= 每个对话一张卡片(不是每次运行)。
    运行记录是另一个维度(一轮巡检跑了什么),对话才是"我们聊过什么";
    把两者混在同一排卡片里,点进去的行为也不一样,读起来会乱。
