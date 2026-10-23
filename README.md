@@ -11,6 +11,7 @@
 > 想先看「做了哪些验证、怎么复现」？见 [测试报告.md](./docs/测试报告.md)。
 > 想跑一遍演示？见 [演示环境.md](./docs/演示环境.md)（配套分级靶场，含未授权禁区）。
 > 想看内部怎么搭的？见 [系统架构.md](./docs/系统架构.md)、[工具清单.md](./docs/工具清单.md)。
+> 想加一个自己的工具？见 [工具协议.md](./docs/工具协议.md)：声明 + 入口 + 协议，不用改代码。
 >
 > 多人一起改？先看 [CONTRIBUTING.md](./docs/CONTRIBUTING.md)：分支模型、构建与自检、以及"改代码时不能破的四条线"。
 > CI 在 `.github/workflows/build.yml`，每次 push / PR 都会编译并跑 `agent.exe selftest`。

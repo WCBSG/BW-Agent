@@ -1,5 +1,4 @@
 {
-  "comment": "MCP 服务器(stdio, JSON-RPC 2.0)。allow=true 才会真的拉起进程。github 需要先在本机环境变量里设置 GITHUB_PERSONAL_ACCESS_TOKEN(不写进这里的文件,免得配置被拷走时把令牌一起带走)。",
   "servers": [
     {
       "name": "github",
