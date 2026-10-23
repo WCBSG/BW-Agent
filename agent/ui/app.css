@@ -954,15 +954,6 @@ body.no-motion *{animation:none !important;transition:none !important}
 }
 .config-foot .note.err{color:var(--bad)}
 
-/* 技能页顶部:技能清单 + 说明文件的横排导航 */
-.cap-nav{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:12px}
-.cap-nav-tab{
-  padding:4px 10px;border:1px solid var(--line-2);border-radius:999px;
-  font-size:12px;color:var(--ink-2);background:var(--panel);
-  transition:background .12s var(--ease),color .12s var(--ease),border-color .12s var(--ease);
-}
-.cap-nav-tab:hover{background:#f4f4f1;border-color:var(--ink-3)}
-.cap-nav-tab.active{background:var(--ink);color:#fdfcf9;border-color:var(--ink)}
 .cap-files{display:none}
 
 /* ============================================================

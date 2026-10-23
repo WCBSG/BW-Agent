@@ -7,6 +7,10 @@ rem  网站安全巡检智能体 (C++ 版) · 一键构建
 rem  依赖:只用 g++(MinGW, C++20) + Windows 自带 DLL
 rem  产物:build\网站安全巡检智能体.exe(单文件,双击即用)与 build\agent.exe(命令行形态)
 rem
+rem  本脚本在 agent\ 下,所有相对路径都以它为准(源码 src\、界面 ui\、
+rem  出厂规则 data\、WebView2 加载器 third_party\、产物 build\)。
+rem  根目录的 启动.bat 会转调它,所以从哪儿跑都一样。
+rem
 rem  为什么用 -static:libstdc++ / libgcc / winpthread 全部静态链进来,
 rem  否则目标机器缺 DLL 就打不开 —— 单文件交付的底线。
 rem ============================================================
@@ -35,13 +39,20 @@ set "MKRES=build\mkres.exe"
 "%GXX%" -std=c++20 -O2 -o "%MKRES%" tools\mkres.cpp
 if errorlevel 1 ( echo [失败] mkres 编译失败 & exit /b 1 )
 
+rem WebView2 加载器也编进去:运行时会释放到 <数据目录>\bin\,
+rem 这样交付仍然是一个 exe(缺这份 DLL 时程序仍能用系统 Edge 的 --app 窗口)
+set "WV2LOADER=third_party\webview2\x64\WebView2Loader.dll"
+set "WV2RES="
+if exist "%WV2LOADER%" set "WV2RES="webview2/WebView2Loader.dll=%WV2LOADER%""
+if not defined WV2RES echo [提示] 没有 %WV2LOADER%,界面将只能用系统 Edge 的 --app 窗口
+
 "%MKRES%" build\resources.cpp ^
     "ui/index.html=ui\index.html" ^
     "ui/app.css=ui\app.css" ^
     "ui/app.js=ui\app.js" ^
     "ui/logo.png=ui\logo.png" ^
     "ui/favicon.ico=ui\favicon.ico" ^
-    "data/rules.json=data\rules.json"
+    "data/rules.json=data\rules.json" %WV2RES%
 if errorlevel 1 ( echo [失败] 内置资源生成失败 & exit /b 1 )
 if not exist "build\resources.cpp" ( echo [失败] 没有生成 build\resources.cpp & exit /b 1 )
 
@@ -70,7 +81,7 @@ echo.
     -DAGENT_GUI_BUILD -mwindows -static -s ^
     -I src ^
     -o build\agent.exe !SRC! !EXTRA! ^
-    -lws2_32 -lwinhttp -lbcrypt -lcrypt32 -lole32 -loleaut32 -luuid -luser32 -lgdi32 -lgdiplus -lshell32 -ladvapi32
+    -lws2_32 -lwinhttp -lbcrypt -lcrypt32 -lole32 -loleaut32 -luuid -luser32 -lgdi32 -lshell32 -ladvapi32
 
 if errorlevel 1 (
     echo.

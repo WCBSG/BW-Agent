@@ -15,8 +15,8 @@
 
 #include "common.h"
 #include "http.h"
-#include "native_ui.h"
 #include "ui.h"
+#include "webview.h"
 
 #define TRAY_WM   (WM_APP + 7)
 #define ID_OPEN   1001
@@ -30,10 +30,14 @@ static HICON g_icon = NULL;
 static volatile LONG g_ready = 0;
 
 static void reopen_ui(void) {
-  /* 原生窗口在自己进程里:直接叫回前台;
-     网页形态只能重新拉起一个应用窗口。 */
-  if (native_ui_active()) { native_ui_show(); return; }
-  if (g_port > 0) ui_open_url_async(g_port);
+  /* 窗口还在就直接叫回前台;已经关掉了(收进托盘、或 --debug 时手动关的)
+     就先试着重建 WebView2 窗口,再不行才退回系统浏览器 ——
+     托盘菜单里点了「打开界面」,就必须给出一个能用的窗口。 */
+  if (webview_active()) { webview_show(); return; }
+  if (g_port > 0) {
+    if (webview_start(g_port, "网站安全巡检智能体") == 0) { webview_show(); return; }
+    ui_open_url_async(g_port);
+  }
 }
 
 /* 右键菜单:打开界面 / 彻底退出。只有两项 —— 托盘菜单越短越不容易点错。 */

@@ -117,6 +117,7 @@ static void clean_legacy_profile(void) {
 static int g_stop_on_close = 1;
 
 void ui_set_stop_on_close(int on) { g_stop_on_close = on ? 1 : 0; }
+int  ui_stop_on_close(void) { return g_stop_on_close; }
 
 static DWORD WINAPI watch_thread(LPVOID param) {
   HANDLE h = (HANDLE)param;
@@ -207,7 +208,28 @@ static int launch_app_window(const char *exe, int port) {
   buf_puts(&cmd, " --user-data-dir=\"");
   buf_puts(&cmd, profile);
   buf_puts(&cmd, "\" --no-first-run --no-default-browser-check");
-  buf_puts(&cmd, " --disable-features=msEdgeSidebarV2 --window-size=1280,860");
+  buf_puts(&cmd, " --disable-features=msEdgeSidebarV2 ");
+  /* 窗口尺寸也按 DPI 换算:150% 的屏上 1280x860 物理像素只有 853x573 逻辑,
+     窗口会明显偏小。与 WebView2 那条路同一套算法(工作区 92% 封顶)。 */
+  {
+    int dpi = 96;
+    HMODULE u = GetModuleHandleW(L"user32.dll");
+    typedef UINT(WINAPI * get_dpi_fn)(void);
+    get_dpi_fn get_dpi = u ? (get_dpi_fn)GetProcAddress(u, "GetDpiForSystem") : nullptr;
+    if (get_dpi) dpi = (int)get_dpi();
+    RECT work;
+    if (!SystemParametersInfoW(SPI_GETWORKAREA, 0, &work, 0)) {
+      work.left = 0; work.top = 0;
+      work.right = GetSystemMetrics(SM_CXSCREEN);
+      work.bottom = GetSystemMetrics(SM_CYSCREEN);
+    }
+    int maxW = (int)((work.right - work.left) * 0.92f);
+    int maxH = (int)((work.bottom - work.top) * 0.92f);
+    int w = MulDiv(1280, dpi, 96), h = MulDiv(860, dpi, 96);
+    if (w > maxW) w = maxW;
+    if (h > maxH) h = maxH;
+    buf_printf(&cmd, "--window-size=%d,%d", w, h);
+  }
 
   wchar_t *wcmd = u8_to_w(cmd.data);
   buf_free(&cmd);
@@ -302,8 +324,10 @@ static BOOL CALLBACK find_ours_proc(HWND h, LPARAM lp) {
 }
 
 static HWND find_app_window(int port) {
-  HWND h = FindWindowW(L"BwAgentNativeWnd", NULL);   /* 原生窗口(UI_MODE=native) */
-  if (h) return h;                                   /* 隐藏时也该叫出来,所以不看可见性 */
+  HWND h = FindWindowW(L"BwAgentWebViewWnd", NULL);   /* 本进程的 WebView2 窗口 */
+  if (h) return h;
+  h = FindWindowW(L"BwAgentNativeWnd", NULL);          /* 老版本(原生窗口)还在跑时也认 */
+  if (h) return h;
 
   /* 页面加载后 app.js 会把标题改成「网站安全巡检智能体 · <端口>」。
      先按端口精确找:多实例时各自的窗口标题不同,不会拎错。

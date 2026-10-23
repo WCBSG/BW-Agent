@@ -28,16 +28,16 @@ jobs:
         run: |
           where g++
           g++ --version
-          call build.bat
+          call agent\build.bat
 
       - name: 自检(技能/工具/规则/审批/授权池/决策循环)
         shell: cmd
-        run: build\agent.exe selftest
+        run: agent\build\agent.exe selftest
 
       - name: 冒烟:起服务、查健康、取首页
         shell: pwsh
         run: |
-          $p = Start-Process -FilePath "build\agent.exe" -ArgumentList "serve","example.com","8799","--no-ui" -PassThru
+          $p = Start-Process -FilePath "agent\build\agent.exe" -ArgumentList "serve","example.com","8799","--no-ui" -PassThru
           Start-Sleep -Seconds 4
           try {
             $h = @{ Host = "127.0.0.1:8799" }
@@ -55,5 +55,5 @@ jobs:
         with:
           name: agent-exe
           path: |
-            build/网站安全巡检智能体.exe
-            build/agent.exe
+            agent/build/网站安全巡检智能体.exe
+            agent/build/agent.exe

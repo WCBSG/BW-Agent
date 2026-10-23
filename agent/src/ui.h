@@ -28,6 +28,7 @@ void ui_close(void);
 /* 界面窗口被关掉时,要不要顺手把服务也停掉。
    有托盘时常驻;--debug 或托盘不可用时按原样退出。 */
 void ui_set_stop_on_close(int on);
+int  ui_stop_on_close(void);
 
 /* 当前实际生效的显示方式,用于日志/启动横幅 */
 const char *ui_mode_name(void);

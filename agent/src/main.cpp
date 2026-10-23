@@ -124,7 +124,25 @@ static json_t *args_from_argv(int argc, char **argv, int start, const char *targ
   return args;
 }
 
+/* 高 DPI:必须在任何窗口创建之前声明。
+   不声明时 Windows 会把整个窗口当位图拉伸(App 里看到的"字有点糊"就是这个),
+   声明了才是按物理像素画。
+   优先 per-monitor v2(拖到另一块缩放比不同的屏也不糊),老系统退回系统级。
+   清单文件里已经声明过一次,这里是第二道保险(清单被工具链吞掉时仍然生效)。 */
+static void set_dpi_aware(void) {
+  HMODULE u = GetModuleHandleW(L"user32.dll");
+  typedef BOOL(WINAPI * set_ctx_fn)(HANDLE);
+  set_ctx_fn set_ctx =
+      u ? (set_ctx_fn)GetProcAddress(u, "SetProcessDpiAwarenessContext") : nullptr;
+  if (set_ctx) {
+    if (set_ctx((HANDLE)-4)) return;   /* DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2 */
+    if (set_ctx((HANDLE)-3)) return;   /* DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE */
+  }
+  SetProcessDPIAware();               /* Vista 起就有 */
+}
+
 int app_main(int argc, char **argv) {
+  set_dpi_aware();
   /* 有没有可用的控制台:双击运行没有(cmd / PowerShell 里有),
      所以 --debug 之外的场合一律不弹黑框,日志改走数据目录里的 agent.log。 */
   int want_console = 0;
@@ -722,7 +740,7 @@ int app_main(int argc, char **argv) {
       "\n"
       "环境变量(或程序目录下的 .env):\n"
       "  TARGET_BASE_URL          巡检起点对齐到指定站点(如 http://127.0.0.1:8081)\n"
-      "  UI_MODE                  界面形态: auto(默认) / app / browser / off\n"
+      "  UI_MODE                  界面形态: auto(默认,WebView2 窗口) / browser(强制用系统浏览器) / off(不开窗口)\n"
       "  BW_AGENT_DEBUG=1         等同于 --debug\n"
       "  BW_AGENT_HOME            改数据目录(默认 C:\\Users\\<用户名>\\.bw_agent)\n");
   net_shutdown();

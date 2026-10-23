@@ -18,22 +18,26 @@ if not defined GXX (
 
 if not exist build mkdir build
 
-rem 内置资源(与 build.bat 同一套:界面 + 出厂规则)
+rem 内置资源(与 build.bat 同一套:界面 + 出厂规则 + WebView2 加载器)
 "%GXX%" -std=c++20 -O2 -o build\mkres.exe tools\mkres.cpp
 if errorlevel 1 ( echo [失败] mkres 编译失败 & exit /b 1 )
+set "WV2LOADER=third_party\webview2\x64\WebView2Loader.dll"
+set "WV2RES="
+if exist "%WV2LOADER%" set "WV2RES="webview2/WebView2Loader.dll=%WV2LOADER%""
 build\mkres.exe build\resources.cpp ^
     "ui/index.html=ui\index.html" ^
     "ui/app.css=ui\app.css" ^
     "ui/app.js=ui\app.js" ^
-    "ui/logo.ico=ui\logo.ico" ^
     "ui/logo.png=ui\logo.png" ^
-    "data/rules.json=data\rules.json"
+    "ui/favicon.ico=ui\favicon.ico" ^
+    "data/rules.json=data\rules.json" %WV2RES%
 if errorlevel 1 ( echo [失败] 内置资源生成失败 & exit /b 1 )
 
 if exist "third_party\windres.exe" set "WINDRES=third_party\windres.exe"
 if not defined WINDRES for %%d in ("%GXX%") do if exist "%%~dpdwindres.exe" set "WINDRES=%%~dpdwindres.exe"
 if not defined WINDRES where windres >nul 2>nul && set "WINDRES=windres"
-if defined WINDRES "%WINDRES%" -I . -I src -i src\app.rc -o build\app_res.o
+rem --codepage=65001:app.rc 是 UTF-8 存的;不加这一条中文版本信息会乱码
+if defined WINDRES "%WINDRES%" --codepage=65001 -I . -I src -i src\app.rc -o build\app_res.o
 
 set "SRC="
 for %%f in (src\*.cpp) do set "SRC=!SRC! %%f"

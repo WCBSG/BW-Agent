@@ -3,8 +3,8 @@
 **一个 exe，双击就能用。** 它自己决定下一步查什么、什么时候该停，
 并且**不知道答案时会说"没结论"**，而不是硬报一个"未发现问题"。
 
-- 交付物：`build\网站安全巡检智能体.exe`（单文件，界面与默认规则都在里面）
-- 后端：C++20（`src/` 约 1.3 万行），**零第三方依赖** —— 不要 Python、不要 Node、不要额外运行库；libstdc++/libgcc 已静态链入，目标机器只要有系统 DLL 即可
+- 交付物：`agent\build\网站安全巡检智能体.exe`（单文件，界面与默认规则都在里面）
+- 后端：C++20（`agent/src/` 约 1.3 万行），**零第三方依赖** —— 不要 Python、不要 Node、不要额外运行库；libstdc++/libgcc 已静态链入，目标机器只要有系统 DLL 即可
 - 界面：自建网页界面（起手式 → 任务工作台 → 数据视图，一套纸白），由程序内置
 - 数据：默认放 `C:\Users\<用户名>\.bw_agent`
 
@@ -19,7 +19,7 @@
 
 ## 一、怎么跑起来
 
-**最省事**：双击 `build\网站安全巡检智能体.exe`（或仓库里的 `启动.bat`）。
+**最省事**：双击 `agent\build\网站安全巡检智能体.exe`（或仓库里的 `启动.bat`）。
 它是界面程序：**双击不会弹命令行窗口**，一两秒后界面窗口自动打开，然后：
 
 1. 点右上角「设置授权」→ 把目标主机加进**授权池**（`exp.com` 或 `exp.com:8443`；
@@ -48,10 +48,21 @@
 会额外开一个命令行窗口，实时日志就显示在那里。不带 `--debug` 时日志写到
 `C:\Users\<用户名>\.bw_agent\agent.log`（UTF-8，超过 2MB 自动轮转一份 `agent.log.1`）。
 
-**第一次会看到界面窗口弹出**（Edge 应用窗口）。这是设计选择：内嵌浏览器控件这条路
-本机实测走不通（只能建出环境对象却起不来渲染进程，相关代码已删），而 Edge 的 `--app`
-应用窗口渲染正常、外观几乎一样 —— 所以默认走这条更可靠的路。
-另有原生窗口（`UI_MODE=native`，Win32 + GDI+，不依赖浏览器）在逐步接管界面。
+**第一次会看到界面窗口弹出**：那是本进程自己的 WebView2 窗口（标题栏是
+「网站安全巡检智能体 · 端口」，任务栏里是一个独立窗口）。
+
+- **为什么用 WebView2**：界面就是内置网页，但窗口、图标、关闭行为都该归程序自己管。
+  早期版本用系统 Edge 的 `--app` 窗口，观感差不多，可那是**别人的进程** ——
+  托盘"重新打开"得靠标题去猜是哪个窗口，关窗口也不完全受控。
+- **单文件交付不变**：`WebView2Loader.dll`（195KB）以资源形式编进 exe，首次运行时释放到
+  数据目录 `bin\` 再动态加载，exe 旁边仍然不需要任何文件。
+- **运行时是自己找的**：这台机器上 WebView2 运行时只登记在 32 位注册表视图里，
+  64 位加载器按自己的规则会判定"没装"（返回 `0x80070002`），所以程序会直接把
+  `C:\Program Files (x86)\Microsoft\EdgeWebView\Application\<版本>` 作为
+  `browserExecutableFolder` 传过去。
+- **装不了也能用**：运行时缺失或启动失败时自动退回系统 Edge 的 `--app` 窗口，
+  界面照样能开（日志里会写明"退回系统 Edge 的 --app 窗口"）。
+- 原生窗口（Win32 + GDI+）那条路**已整体移除** —— 一套界面维护两份实现，代价比收益大。
 
 ### 数据放哪
 
@@ -67,17 +78,20 @@ exe 放桌面、放 U 盘、放下载目录都能跑（数据始终在用户目�
 ### 命令行（可选，给懂的人）
 
 ```
-build\网站安全巡检智能体.exe            零参数 = 启动服务并打开界面
-build\agent.exe selftest                自检（当前 116 项，应全过）
-build\agent.exe run skill_full_inspection 127.0.0.1:8081    单跑一个技能，结论可复核
-build\agent.exe tool dir_probe 127.0.0.1:8081               单跑一个工具
-build\agent.exe chat 127.0.0.1:8081     在终端里对话
-build\agent.exe rules                   导出当前生效规则
-build\build.bat                          重新编译（需要 g++ / MinGW-w64）
+agent\build\网站安全巡检智能体.exe            零参数 = 启动服务并打开界面
+agent\build\agent.exe selftest                自检（当前 116 项，应全过）
+agent\build\agent.exe run skill_full_inspection 127.0.0.1:8081    单跑一个技能，结论可复核
+agent\build\agent.exe tool dir_probe 127.0.0.1:8081               单跑一个工具
+agent\build\agent.exe chat 127.0.0.1:8081     在终端里对话
+agent\build\agent.exe rules                   导出当前生效规则
+agent\build.bat                          重新编译（需要 g++ / MinGW-w64）
 ```
 
-> `UI_MODE=off` 只起服务不开窗口（定时任务/自动化用）；`UI_MODE=native` 用原生窗口。
-> 依赖只有 Windows 自带 DLL：`WINHTTP / bcrypt / WS2_32 / SHELL32 / ADVAPI32 / GDIPLUS` + 系统 UCRT。
+> `UI_MODE=off` 只起服务不开窗口（定时任务/自动化用）；`UI_MODE=browser` 强制用系统浏览器
+> 打开（排查 WebView2 问题时用）。`BW_WEBVIEW2_ARGS` 可以追加 Chromium 参数，
+> 例如显卡/远程桌面环境白屏时加 `--disable-gpu`。
+> 依赖只有 Windows 自带 DLL（`WINHTTP / bcrypt / WS2_32 / SHELL32 / ADVAPI32 / GDI32` + 系统 UCRT）
+> 加上系统里的 WebView2 运行时（Win10/11 随 Edge 自带）。
 
 ### 大模型（可接多家，可在界面里配）
 
@@ -126,7 +140,7 @@ DAS_USER_APP_KEY=...
 
 ### 0) 规则本身就是数据：**内置但不硬编码**（并且能在界面里直接改）
 
-代码里只留"判定手法"，"判定什么"全在 `data\rules.json`（构建时编进 exe，作为出厂值）。
+代码里只留"判定手法"，"判定什么"全在 `agent\data\rules.json`（构建时编进 exe，作为出厂值）。
 运行时以**数据目录 `rules\` 下的 6 个域文件**为准：某个文件缺了或某个键没写，就回落到出厂值；
 整个 `rules\` 删掉，下次启动会重新按出厂规则生成。
 
@@ -159,9 +173,9 @@ DAS_USER_APP_KEY=...
 自己写正则不用猜 —— 有验枪口：
 
 ```bat
-build\agent.exe regextest "EMP[0-9]{8}" "工号 EMP2024001234"
+agent\build\agent.exe regextest "EMP[0-9]{8}" "工号 EMP2024001234"
 ::  命中: 位置 7,长度 11 → "EMP20240012"
-build\agent.exe rules  my-rules.json     :: 导出出厂规则,照着改
+agent\build\agent.exe rules  my-rules.json     :: 导出出厂规则,照着改
 ```
 
 > 想找现成的能力：界面「配置编辑」页顶部有两个市场入口 ——
@@ -235,14 +249,14 @@ tools: site_crawl
 
 ```bat
 :: 列出能力(外部工具会以 [外部工具] / [MCP] 标出来)
-build\agent.exe tools
+agent\build\agent.exe tools
 
 :: 单独试一个工具(支持 key=value,也支持直接给一段 JSON)
-build\agent.exe tool url_probe example.com
-build\agent.exe tool mcp__demo__echo_note hello
+agent\build\agent.exe tool url_probe example.com
+agent\build\agent.exe tool mcp__demo__echo_note hello
 
 :: 单独试一个技能(中文名也行)
-build\agent.exe run skill_我的技能
+agent\build\agent.exe run skill_我的技能
 
 :: 界面上也会自动出现:能力清单页 + 模型决策时可用
 ```
@@ -290,7 +304,7 @@ build\agent.exe run skill_我的技能
 | 说不清时 | 报"未发现"（其实是没查成） | 明确说"这次没得出结论"，并说明卡在哪一步 |
 | 收尾 | 无 | 复测推进闭环状态 → 报告分级统计 → 证据与闭环核对 |
 
-几个具体手法（都在 `src/` 里，可对着代码看）：
+几个具体手法（都在 `agent/src/` 里，可对着代码看）：
 
 - **软 404 校准**：很多站点对不存在的路径返回 `200 + 自定义错误页`，不校准必然大面积误报
 - **同形比较**：比对正文时先把数字串抹平，否则带时间戳/计数器的页面会被判成"变了"
@@ -303,9 +317,9 @@ build\agent.exe run skill_我的技能
 ## 四、三层结构(为什么它是「智能体」)
 
 ```
-循环(loop)  ─ 大脑：感知 → 决策 → 行动 → 观察 → 反思 → 收敛      src/agent.cpp
-技能(skill) ─ 能力：一件事的完整做法与判定                        src/skills.cpp  src/skills_closure.cpp
-工具(tool)  ─ 手：一次原子动作，只做只读取数与客观判断(本机类见下)    src/tools.cpp
+循环(loop)  ─ 大脑：感知 → 决策 → 行动 → 观察 → 反思 → 收敛      agent/src/agent.cpp
+技能(skill) ─ 能力：一件事的完整做法与判定                        agent/src/skills.cpp  agent/src/skills_closure.cpp
+工具(tool)  ─ 手：一次原子动作，只做只读取数与客观判断(本机类见下)    agent/src/tools.cpp
 ```
 
 **工具（12 个）**：8 个侦察类 —— `site_crawl` 资产发现 / `sensitive_file_probe` 落点探测 /
@@ -358,7 +372,7 @@ build\agent.exe run skill_我的技能
 
 ## 五、规则是数据,不是代码
 
-`data\rules.json` 里放的是"这个单位关心什么"：
+`agent\data\rules.json` 里放的是"这个单位关心什么"（构建时编进 exe 作为出厂值）：
 
 - `sensitive_paths` 要试的落点清单（默认 36 个）
 - `dir_candidates` 要试的目录清单（默认 29 个）
@@ -368,7 +382,7 @@ build\agent.exe run skill_我的技能
 - `probing` 探测上限与超时
 
 换目标、换单位只要改这个文件，**不用改代码、不用重编译**。报告与界面"生效规则"页都会写明本次用的是哪套规则。
-`data\rules.json` 缺失时使用内置的同结构默认规则（保证零配置也能跑）。
+`agent\data\rules.json` 缺失时使用内置的同结构默认规则（保证零配置也能跑）。
 
 ---
 
@@ -559,41 +573,47 @@ build\agent.exe run skill_我的技能
 
 ## 十、目录结构
 
-整个作品就在仓库根目录下（源码、界面、构建脚本、数据目录）：
+程序全部在 `agent\` 下（源码、界面、构建脚本、构建产物），仓库根目录只留文档与入口：
 
 ```
 (仓库根)/
-├─ build/
-│   ├─ 网站安全巡检智能体.exe      ★ 交付物:单文件,双击即用(界面与规则都在里面)
-│   └─ agent.exe                  同源产物,命令行工具形态
-├─ build.bat                      一键编译:生成内置资源 → 编译 → 输出单文件 exe
-├─ 启动.bat / start.bat            启动入口(可选;exe 本身也能直接双击)
-├─ tools/mkres.cpp                构建期小工具:把界面与规则转成 C++ 数组编进 exe
+├─ 启动.bat / start.bat            启动入口(转发到 agent\build\...;没有产物会先调 agent\build.bat)
+├─ README.md 交付说明.md 系统架构.md 测试报告.md 工具清单.md 演示环境.md
 ├─ .env.example                   大模型凭证样例(复制成 .env 填自己的密钥)
-├─ src/                           后端源码(约 1.3 万行, C++20, 零第三方依赖)
-│   ├─ main.cpp                   入口:零参数启动 / selftest / run / tool / chat / serve / rules
-│   ├─ selftest.cpp               自检套件(基础件/JSON/决策/技能/循环),`agent.exe selftest` 跑的就是它
-│   ├─ agent.cpp                  循环:决策、执行、观察、反思、收敛
-│   ├─ ext.cpp ext.h                扩展层:外部工具、技能包、MCP 客户端(都在数据目录里读)
-│   ├─ skills.cpp skills_closure.cpp 技能:检查类 + 收尾类(复测/报告/证据核对)
-│   ├─ tools.cpp                  工具:12 个(8 个面向被检目标 + 4 个本机读/受限写)
-│   ├─ rules.cpp                  规则层:数据目录/磁盘/内置三级查找
-│   ├─ res.cpp embed.h              资源层:磁盘优先、exe 内置兜底
-│   ├─ webutil.cpp                通用网页处理:指纹、归一、响应头、链接、URL 参数
-│   ├─ net.cpp                    取数通道:WinHTTP + 授权/限速/审计
-│   ├─ llm_provider.cpp           模型接入层:三类协议(OpenAI 兼容 / Anthropic / 恒脑)、models.json、当前通道
-│   ├─ llm.cpp                    决策与提问:调 provider、解析动作、本地规则降级
-│   ├─ thread_store.cpp           对话存储:threads/<id>/{meta,messages,events} + 索引流水
-│   ├─ native_ui.cpp tray.cpp     原生窗口(Win32 + GDI+)与托盘
-│   ├─ store.cpp                  落盘层:业务对象、去重、状态机、快照
-│   ├─ http.cpp serve.cpp          自写 HTTP/1.1 + SSE + 路由;serve.cpp 只做开端口/门禁/分派
-│   ├─ instance.cpp               单实例:命名互斥量 + 端口共享内存/instance.json + 唤前台
-│   ├─ api_config.cpp api_models.cpp 接口分域实现:规则与配置文件、多厂商模型(serve_ctx.h 借出存储与状态刷新)
-│   ├─ json.cpp common.c            自写 JSON、缓冲、编码、时间、路径、数据目录解析
-│   ├─ app.rc ui.cpp              图标/版本信息、界面宿主(三级降级)
-│   └─ ui/                        界面源码(编译时被打进 exe)
-├─ ui/                            界面源码(index.html / app.css / app.js / logo.ico)
-├─ data/                          开发目录里的规则与测试集(rules.json / testcases.jsonl)
+└─ agent/                         ★ 程序本体
+    ├─ build.bat                  一键编译:生成内置资源 → 编译 → 输出单文件 exe
+    ├─ build_dbg.bat              调试版构建(-O0 -g)
+    ├─ build/                     构建产物(每次 build.bat 重新生成)
+    │   ├─ 网站安全巡检智能体.exe   ★ 交付物:单文件,双击即用(界面与规则都在里面)
+    │   └─ agent.exe              同源产物,命令行工具形态
+    ├─ src/                       后端源码(约 1.3 万行, C++20, 零第三方依赖)
+    │   ├─ main.cpp               入口:零参数启动 / selftest / run / tool / chat / serve / rules
+    │   ├─ selftest.cpp           自检套件(基础件/JSON/决策/技能/循环),`agent.exe selftest` 跑的就是它
+    │   ├─ agent.cpp              循环:决策、执行、观察、反思、收敛
+    │   ├─ ext.cpp ext.h          扩展层:外部工具、技能包、MCP 客户端(都在数据目录里读)
+    │   ├─ skills.cpp skills_closure.cpp 技能:检查类 + 收尾类(复测/报告/证据核对)
+    │   ├─ tools.cpp              工具:12 个(8 个面向被检目标 + 4 个本机读/受限写)
+    │   ├─ rules.cpp rules_domains.cpp 规则层:按域读写 + 三级查找
+    │   ├─ res.cpp embed.h        资源层:磁盘优先、exe 内置兜底
+    │   ├─ webutil.cpp            通用网页处理:指纹、归一、响应头、链接、URL 参数
+    │   ├─ net.cpp                取数通道:WinHTTP + 授权/限速/审计
+    │   ├─ llm_provider.cpp       模型接入层:三类协议(OpenAI 兼容 / Anthropic / 恒脑)、models.json
+    │   ├─ llm.cpp                决策与提问:调 provider、解析动作、本地规则降级
+    │   ├─ thread_store.cpp       对话存储:threads/<id>/{meta,messages,events} + 索引流水
+    │   ├─ webview.cpp webview2_min.h 界面宿主:WebView2 窗口(加载器内嵌、运行时自找、失败退回 Edge)
+    │   ├─ ui.cpp tray.cpp        退回系统 Edge 的 --app 窗口 + 托盘常驻
+    │   ├─ store.cpp              落盘层:业务对象、去重、状态机、快照
+    │   ├─ http.cpp serve.cpp     自写 HTTP/1.1 + SSE + 路由;serve.cpp 只做开端口/门禁/分派
+    │   ├─ instance.cpp           单实例:命名互斥量 + 端口共享内存/instance.json + 唤前台
+    │   ├─ api_config.cpp api_models.cpp api_caps.cpp 接口分域实现(serve_ctx.h 借出存储与状态刷新)
+    │   ├─ json.cpp common.cpp    自写 JSON、缓冲、编码、时间、路径、数据目录解析
+    │   └─ app.rc                 图标与版本信息(UTF-8,windres 用 --codepage=65001)
+    ├─ ui/                        界面源码(index.html / app.css / app.js / logo.ico),编译时打进 exe
+    ├─ data/                      出厂规则与测试集(rules.json / testcases.jsonl),构建时打进 exe
+    ├─ tools/                     构建期小工具
+    │   ├─ mkres.cpp              把界面、规则与 WebView2 加载器转成 C++ 数组编进 exe
+    │   └─ gen_webview2_min.js    从官方 SDK 头里抽出用到的那几个接口(生成 src\webview2_min.h)
+    └─ third_party/webview2/x64/  WebView2Loader.dll(微软官方加载器,构建时编进 exe)
 ```
 
 ### 运行时数据目录（`C:\Users\<用户名>\.bw_agent`）
@@ -620,27 +640,34 @@ build\agent.exe run skill_我的技能
 
 ### 关于界面窗口
 
-默认宿主是 Edge `--app` 应用窗口（找不到 Chromium 才退回默认浏览器），观感与桌面程序一致。
-另外有一条原生窗口的路（`UI_MODE=native`：Win32 + GDI+，不依赖任何浏览器），
-目前是骨架（三栏布局、可拖拽分隔、托盘常驻），功能正往里搬；**默认仍是 `--app`，保证界面随时可用**。
+宿主是本进程自己的 **WebView2** 窗口（Chromium 内核，随系统 Edge 提供）：
 
-内嵌浏览器控件这条路已放弃：本机实测只能创建环境对象却起不来渲染进程（~1.1 秒后整棵树退出，无崩溃转储；
-而系统 Edge 以 `--app` 方式同样渲染正常，说明不是沙箱/HVCI 层面的问题），相关代码已全部删除。
+- 窗口、图标、关闭行为都归程序自己管；托盘"打开界面"就是把这个窗口叫回来，
+  窗口关掉了还能就地重建一个
+- `WebView2Loader.dll` 编进 exe，启动时释放到 `<数据目录>\bin\`；用户数据目录在
+  `<数据目录>\webview2\`，不往程序旁边丢缓存
+- 运行时目录是程序自己找的（见上），找不到/起不来时退回系统 Edge 的 `--app` 窗口，
+  再退到默认浏览器 —— 三级兜底，任何一台机器上双击都得有东西出来
+- 页面只能导航到 `127.0.0.1`；`window.open` 被拦下（不在界面里再开窗），
+  开发者工具、右键菜单、状态栏、缩放控件都关掉（本机工具不该给这些口子）
 
-应用窗口的**浏览器数据目录放在用户数据目录下**（`%USERPROFILE%\.bw_agent\ui-profile`）：
+原生窗口（Win32 + GDI+）那条路**已整体移除**：一套界面维护两份实现，
+样式、交互、快捷键都要对齐两遍，代价远大于收益。
+
+WebView2 的**浏览器数据目录放在用户数据目录下**（`%USERPROFILE%\.bw_agent\webview2`）：
 程序目录可能不可写（U 盘只读、Program Files、网络共享），也不该在程序旁边留垃圾；
-程序启动时会顺手清掉早期版本遗留在 exe 旁边的那份 `ui-profile`。
+退回 `--app` 窗口时用的是 `.bw_agent\ui-profile`，早期版本遗留在 exe 旁边的那份会被顺手清掉。
 
-**窗口关闭 → 服务停止**：界面窗口是本程序自己拉起来的（有进程句柄），它一退出就调
-`http_stop()` 收摊，所以双击运行不会出现"窗口关了但端口还被占着"的僵尸进程。
-`--debug` 调试时这条规则关掉（`ui_set_stop_on_close(0)`）：窗口关掉服务继续跑，
-方便反复打开界面看结果，结束时关命令行窗口或 `Ctrl+C`。
-降级到"默认浏览器打开"时拿不到句柄，这种模式下不做自动停止（用 `serve` 命令运行的情况也照旧）。
+**窗口关闭 → 服务停止**：界面窗口是本程序自己开的，关掉就调 `http_stop()` 收摊，
+所以双击运行不会出现"窗口关了但端口还被占着"的僵尸进程。
+有托盘时常驻（关窗只是收起来，右键托盘图标可重新打开或彻底退出）；
+`--debug` 调试时同样只收起窗口，服务继续跑。
+降级到"默认浏览器打开"时拿不到窗口句柄，这种模式下不做自动停止（用 `serve` 命令运行的情况也照旧）。
 
 ### 单文件是怎么做到的
 
-`tools/mkres.cpp` 在构建期把 `ui/` 三件套 + 图标 + 出厂规则转成一个 C++ 数组
-（`build/resources.cpp`），与源码一起编译链接，所以 exe 自己就能提供界面与规则。
+`agent/tools/mkres.cpp` 在构建期把 `agent/ui/` 三件套 + 图标 + 出厂规则转成一个 C++ 数组
+（`agent/build/resources.cpp`），与源码一起编译链接，所以 exe 自己就能提供界面与规则。
 运行时**磁盘优先、内置兜底**：放一份 `ui\index.html` 或 `rules.json` 在旁边就能覆盖内置版本，
 方便换界面、换检测范围，而不需要改代码。
 

@@ -28,7 +28,6 @@
 #include "http.h"
 #include "instance.h"
 #include "llm.h"
-#include "native_ui.h"
 #include "net.h"
 #include "profile.h"
 #include "res.h"
@@ -40,6 +39,7 @@
 #include "thread_store.h"
 #include "tray.h"
 #include "ui.h"
+#include "webview.h"
 
 static store_t *g_store = NULL;
 static CRITICAL_SECTION g_lock;
@@ -2253,16 +2253,17 @@ int serve_run(const char *domain, int port, int open_ui) {
     /* 先挂托盘,再开窗口 —— 顺序反了的话,窗口一关就找不到"留在托盘"这条路,
        程序会当场退出(托盘还没建好)。 */
     tray_start(port, "网站安全巡检智能体");
-    /* UI_MODE=native:本进程内的原生窗口(正在逐块搭建,尚未到达功能对等)。
-       默认仍开系统的 --app 应用窗口,保证任何时候都有一个能用的界面。 */
+    /* 界面宿主:优先用本进程自己的 WebView2 窗口(观感与"应用窗口"一致,
+       但窗口归我们管);这台机器没装运行时/启动失败时,退回系统 Edge 的
+       --app 窗口 —— 宁可外观差一点,也不能让人双击没反应。 */
     const char *ui_mode = getenv("UI_MODE");
-    int want_native = ui_mode && str_ieq(ui_mode, "native");
-    int native_ok = 0;
-    if (want_native) {
-      native_ok = (native_ui_start(port, "网站安全巡检") == 0);
-      if (!native_ok) log_warn("原生窗口起不来,回退到 --app 应用窗口");
+    int force_browser = ui_mode && str_ieq(ui_mode, "browser");
+    int ok = 0;
+    if (!force_browser) {
+      ok = (webview_start(port, "网站安全巡检智能体") == 0);
+      if (!ok) log_warn("WebView2 窗口起不来,退回系统 Edge 的 --app 窗口");
     }
-    if (!native_ok) ui_open_url_async(port);
+    if (!ok) ui_open_url_async(port);
   }
 
   int serve_rc = http_serve(NULL, port, router, NULL);
@@ -2270,7 +2271,7 @@ int serve_run(const char *domain, int port, int open_ui) {
 
   sched_stop();
   printf("服务已停止。\n");
-  native_ui_stop();
+  webview_stop();
   ui_close();
   tray_stop();
   int port_busy = (serve_rc != 0) && str_icontains(http_last_error(), "占用");

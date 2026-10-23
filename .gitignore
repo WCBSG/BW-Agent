@@ -7,7 +7,7 @@
 .cache/
 
 # ---------- 构建产物(每次 build.bat 都会重新生成) ----------
-build/*
+agent/build/*
 
 # ---------- 排障程序的产物(源码在 exp\/ 里,留源码) ----------
 exp/*.exe
@@ -16,8 +16,8 @@ exp/*.txt
 
 # ---------- 数据目录:入库出厂规则,运行结果不入库 ----------
 # 运行数据默认在 C:\Users\<用户名>\.bw_agent,这里只放"出厂规则 + 测试集"
-data/*
-!data/rules.json
+agent/data/*
+!agent/data/rules.json
 
 # ---------- 编辑器/系统噪声 ----------
 Thumbs.db
