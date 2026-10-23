@@ -655,8 +655,18 @@ body.row-resizing *{cursor:row-resize !important}
 .export-list button:hover{background:#eeeee8}
 
 /* ============ 周期巡检 ============ */
+/* 和设置、规则同一套两栏骨架:左分类 / 右这一类的内容 + 固定底栏。
+   三块内容(周期规则 / 权限审批 / 敏感信息定义)以前竖着摞在一页里,
+   越往下滚越不知道自己在改哪一类。 */
+.set-panel.on{display:flex;flex-direction:column;min-height:0}
+.set-pane{flex:1 1 auto;min-height:0;overflow:auto;padding:3px 4px 0 0}
+.set-panel > .set-foot{margin-top:12px}
+.auto-list{display:flex;flex-direction:column;gap:8px;margin-top:12px}
 .auto-form{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:13px 18px;
-  max-width:900px;margin-top:4px}
+  max-width:none;margin-top:16px;padding-top:14px;border-top:1px solid var(--line)}
+.auto-form-head{grid-column:1/-1;display:flex;align-items:baseline;gap:10px}
+.auto-form-head h3{font-size:13px;font-weight:600}
+.auto-form-note{font-size:11.5px;color:var(--ink-3)}
 .fld{display:flex;flex-direction:column;gap:5px;font-size:12.5px;color:var(--ink-2)}
 .fld[hidden]{display:none}
 .fld > span{color:var(--ink-3);font-size:12px}
@@ -679,12 +689,6 @@ body.row-resizing *{cursor:row-resize !important}
 .fld-row input{width:64px}
 .fld-row span{color:var(--ink-3);font-size:12px}
 .fld-help{font-style:normal;font-size:11.5px;color:var(--ink-3)}
-.auto-form-foot{grid-column:1/-1;display:flex;align-items:center;gap:9px;
-  border-top:1px solid var(--line);padding-top:12px;margin-top:2px}
-.auto-form-foot #auto-save{background:var(--ink);color:#fdfcf9;border-radius:7px;
-  padding:6px 15px;font-size:13px;font-weight:600}
-.auto-form-foot #auto-save:hover{background:#000}
-.auto-form-foot .grow{flex:1}
 
 /* 规则卡:一行说清「对谁、多久一次、下次什么时候、跑过几次」 */
 .rule{border:1px solid var(--line);border-radius:var(--r);background:var(--panel);padding:12px 14px}
@@ -1123,6 +1127,9 @@ button.primary:focus-visible{outline:2px solid #c3c3ba;outline-offset:2px}
 button.primary:disabled{opacity:.55;cursor:default}
 /* 同一行里的次要按钮跟主按钮等高:一高一矮看着像没对齐 */
 button.primary + .ghost, .ghost + button.primary{padding-top:4px;padding-bottom:4px}
+
+/* 周期巡检：和设置、规则同一套两栏骨架(左分类 / 右这一类的内容 + 固定底栏)。
+   三块内容以前竖着摞在一页里,越往下滚越不知道在改哪一类。 */
 
 /* ============================================================
    五 · 窄屏

@@ -1822,7 +1822,7 @@ async function renderProfiles() {
   if (!box) return;
   const r = await api('/api/profiles');
   PROF.items = r.items || [];
-  $('prof-hint').textContent = PROF.items.length ? `${PROF.items.length} 套定义` : '还没有自定义定义';
+  autoSetCount('profile', PROF.items.length ? `${PROF.items.length} 套定义` : '还没有自定义定义');
   box.innerHTML = '';
 
   const sel = $('auto-profile');
@@ -1931,10 +1931,59 @@ async function saveProfile() {
   }
 }
 
-/* ============ 周期巡检 ============ */
-/* 数据来自 /api/automations:后端算好 next_at 与 next_run_at,前端只负责摆放。
-   所有时间都用「还有多久」而不是裸时间戳 —— 巡检员关心的是"什么时候跑",不是绝对值。 */
+/* ============ 周期巡检 ============
+   和数据视图里的「设置」「规则」同一套两栏骨架:左边是分类,右边只显示这一类。
+   以前三块(周期规则 / 权限审批 / 敏感信息定义)竖着摞在一页里,
+   越往下滚越不知道自己在改哪一类;而且它们的保存按钮还各自散在页面中间。 */
 const AUTO = { items: [], editing: '' };
+
+const AUTO_TABS = [
+  { id: 'rules', title: '周期规则', desc: '到点自动跑一轮，并与上一轮比对' },
+  { id: 'approval', title: '权限审批', desc: '工具调用前先过这道闸' },
+  { id: 'profile', title: '敏感信息定义', desc: '本单位口径：关键词 / 正则 / 落点' },
+];
+const AUTO_VIEW = { tab: 'rules', counts: { rules: '', approval: '', profile: '' } };
+
+function autoSetCount(id, text) {
+  AUTO_VIEW.counts[id] = text || '';
+  autoRenderNav();
+  /* 头顶那行读数跟着当前分类走:切过去要立刻看到这一类有多少条 */
+  if (AUTO_VIEW.tab === id && $('auto-hint')) $('auto-hint').textContent = AUTO_VIEW.counts[id];
+}
+
+function autoRenderNav() {
+  const nav = $('auto-nav');
+  if (!nav) return;
+  nav.innerHTML = '';
+  for (const t of AUTO_TABS) {
+    const b = el('button', 'set-tab' + (AUTO_VIEW.tab === t.id ? ' active' : ''), t.title);
+    b.type = 'button';
+    b.title = t.desc;
+    b.addEventListener('click', () => autoShow(t.id));
+    nav.appendChild(b);
+  }
+}
+
+/* 切分类:只换右边那一块,标题跟着换 —— 与设置/规则页的手感一致 */
+function autoShow(id) {
+  const tab = AUTO_TABS.find((t) => t.id === id) || AUTO_TABS[0];
+  AUTO_VIEW.tab = tab.id;
+  for (const t of AUTO_TABS) {
+    const p = $('auto-panel-' + t.id);
+    if (!p) continue;
+    const on = t.id === tab.id;
+    p.classList.toggle('on', on);
+    /* 切回来时停在顶部:上一次滚到一半的位置对这个分类没有意义 */
+    if (on) {
+      const pane = p.querySelector('.set-pane');
+      if (pane) pane.scrollTop = 0;
+    }
+  }
+  if ($('auto-title')) $('auto-title').textContent = tab.title;
+  autoRenderNav();
+  if ($('auto-hint')) $('auto-hint').textContent = AUTO_VIEW.counts[tab.id] || '';
+  refreshHBars();
+}
 
 function fmtIn(iso) {
   if (!iso) return '—';
@@ -1949,28 +1998,28 @@ function fmtIn(iso) {
 }
 
 async function renderAutomationView() {
-  const box = $('auto-list');
-  if (!box) return;
   const r = await api('/api/automations');
   AUTO.items = r.items || [];
-  box.innerHTML = '';
   const enabled = AUTO.items.filter((x) => x.enabled).length;
-  $('auto-hint').textContent = AUTO.items.length
-    ? `${AUTO.items.length} 条规则 · ${enabled} 条在跑`
-    : '还没有规则';
+  autoSetCount('rules', AUTO.items.length ? `${AUTO.items.length} 条规则 · ${enabled} 条在跑` : '还没有规则');
+
+  const box = $('auto-list');
+  if (box) {
+    box.innerHTML = '';
+    if (!AUTO.items.length) {
+      const e = el('div', 'auto-empty');
+      e.appendChild(el('b', null, '还没有周期规则'));
+      e.appendChild(el('span', null, '在下面填一个目标和周期，它能自己跑；跑完会与上一轮比对，变了才告警。'));
+      box.appendChild(e);
+    } else {
+      for (const a of AUTO.items) box.appendChild(ruleCard(a));
+    }
+  }
+
   const badge = $('auto-badge');
   if (badge) { badge.textContent = enabled ? enabled + ' 条在跑' : ''; badge.classList.toggle('on', enabled > 0); }
-
-  if (!AUTO.items.length) {
-    const e = el('div', 'auto-empty');
-    e.appendChild(el('b', null, '还没有周期规则'));
-    e.appendChild(el('span', null, '在下面填一个目标和周期，它能自己跑；跑完会与上一轮比对，变了才告警。'));
-    box.appendChild(e);
-    renderProfiles().catch(() => {});
-    return;
-  }
-  for (const a of AUTO.items) box.appendChild(ruleCard(a));
-  renderProfiles().catch(() => {});
+  await renderProfiles().catch(() => {});
+  refreshHBars();
 }
 
 function ruleCard(a) {
@@ -2158,8 +2207,8 @@ async function renderApprovals() {
   if (box) {
     box.innerHTML = '';
     for (const p of APPR.items) box.appendChild(apprCard(p));
-    $('appr-hint').textContent = APPR.items.length + ' 条策略 · 当前：' + (r.modeText || '');
   }
+  autoSetCount('approval', APPR.items.length + ' 条策略 · 当前：' + (r.modeText || ''));
 }
 
 function apprCard(p) {
@@ -2186,7 +2235,16 @@ function apprCard(p) {
   const act = el('div', 'ract');
   if (!p.active) {
     const bUse = el('button', 'ghost', '启用');
-    bUse.addEventListener('click', () => applyApproval(p.id));
+    bUse.addEventListener('click', () => {
+      /* 和顶栏下拉走同一条路:选到"全部允许"必须先看警告。
+         以前卡片上的「启用」是直接生效的 —— 同一个动作换个入口就绕过确认,不该这样。 */
+      if (p.mode === 'allow_all') {
+        APPR.pendingWarn = p.id;
+        $('warn-modal').classList.add('on');
+        return;
+      }
+      applyApproval(p.id);
+    });
     act.appendChild(bUse);
   }
   if (!p.builtin) {
@@ -4613,6 +4671,7 @@ document.addEventListener('keydown', (e) => {
 (async () => {
   initTheme();
   enhanceSelects();          /* 静态下拉先接管;之后动态插入的由 MutationObserver 接管 */
+  autoShow('rules');         /* 周期巡检默认停在第一类(周期规则) */
   try {
     renderStatus(await api('/api/status'));
   } catch (e) {

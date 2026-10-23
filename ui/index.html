@@ -161,7 +161,6 @@
            不属于页面顶部的全局设置 -->
       <div class="compose-foot">
         <select class="target-select policy-select" id="approval-select" title="工具调用的审批策略"></select>
-        <span class="foot-note">工具调用审批策略 · 执行中也能切</span>
       </div>
     </form>
   </div>
@@ -319,171 +318,182 @@
       </div>
     </section>
 
-    <!-- 周期巡检 -->
+    <!-- 周期巡检:和「设置」「规则」同一套两栏骨架
+         左边是分类(周期规则 / 权限审批 / 敏感信息定义),右边只显示这一分类。
+         以前是三块竖着摞在一页里,越往下滚越不知道自己在改哪一类。 -->
     <section class="view" id="view-automation">
-      <section class="panel">
-        <div class="panel-head">
-          <div><h2>周期巡检</h2></div>
-          <span class="hint" id="auto-hint"></span>
-        </div>
-        <p class="note">
-          到点自动跑一轮，并与同一目标上一轮比对：新增、升高、本轮未再出现，各记一类。
-          关掉浏览器也会继续；服务没开时错过的周期不补跑。
-        </p>
-        <div class="cards" id="auto-list"></div>
-      </section>
+      <div class="set-shell">
+        <nav class="set-nav" id="auto-nav" aria-label="周期巡检分类"></nav>
+        <div class="set-main">
+          <div class="set-head">
+            <h2 id="auto-title">周期规则</h2>
+            <span id="auto-hint"></span>
+          </div>
 
-      <section class="panel">
-        <div class="panel-head">
-          <div><h2 id="auto-form-title">新建周期规则</h2></div>
-          <span class="hint">授权域名 + 范围 + 周期</span>
-        </div>
-        <div class="auto-form">
-          <label class="fld">
-            <span>目标（授权域名，可带端口）</span>
-            <input id="auto-domain" type="text" autocomplete="off" placeholder="www.example-gov.cn">
-          </label>
-          <label class="fld">
-            <span>巡检范围</span>
-            <select id="auto-scope">
-              <option value="full">完整巡检（摸家底 + 完整性 + 敏感信息 + 配置与漏洞）</option>
-              <option value="leak">只查敏感信息泄露</option>
-              <option value="integrity">只查内容完整性（篡改/挂马）</option>
-              <option value="recon">只做资产与页面发现</option>
-              <option value="retest">只复测未修复项</option>
-            </select>
-            <em class="fld-help">要更细的组合用下面的检查项</em>
-          </label>
-          <div class="fld fld-wide">
-            <span>检查项（可多选；勾了就按勾的跑，基线只和"同样勾法"的上一轮比）</span>
-            <div class="checks-row">
-              <label class="check"><input type="checkbox" class="auto-check" value="recon"><span>资产与页面</span></label>
-              <label class="check"><input type="checkbox" class="auto-check" value="integrity"><span>内容完整性</span></label>
-              <label class="check"><input type="checkbox" class="auto-check" value="leak"><span>敏感信息</span></label>
-              <label class="check"><input type="checkbox" class="auto-check" value="retest"><span>复测</span></label>
-              <label class="check"><input type="checkbox" class="auto-check" value="full"><span>完整巡检（含配置与漏洞探测）</span></label>
+          <!-- 一 · 周期规则 -->
+          <div class="set-panel" id="auto-panel-rules">
+            <div class="set-pane">
+              <div class="auto-list" id="auto-list"></div>
+
+              <div class="auto-form">
+                <div class="auto-form-head">
+                  <h3 id="auto-form-title">新建周期规则</h3>
+                  <span class="auto-form-note">授权域名 + 范围 + 周期</span>
+                </div>
+                <label class="fld">
+                  <span>目标（授权域名，可带端口）</span>
+                  <input id="auto-domain" type="text" autocomplete="off" placeholder="www.example-gov.cn">
+                </label>
+                <label class="fld">
+                  <span>巡检范围</span>
+                  <select id="auto-scope">
+                    <option value="full">完整巡检（摸家底 + 完整性 + 敏感信息 + 配置与漏洞）</option>
+                    <option value="leak">只查敏感信息泄露</option>
+                    <option value="integrity">只查内容完整性（篡改/挂马）</option>
+                    <option value="recon">只做资产与页面发现</option>
+                    <option value="retest">只复测未修复项</option>
+                  </select>
+                  <em class="fld-help">要更细的组合用下面的检查项</em>
+                </label>
+                <div class="fld fld-wide">
+                  <span>检查项（可多选；勾了就按勾的跑，基线只和"同样勾法"的上一轮比）</span>
+                  <div class="checks-row">
+                    <label class="check"><input type="checkbox" class="auto-check" value="recon"><span>资产与页面</span></label>
+                    <label class="check"><input type="checkbox" class="auto-check" value="integrity"><span>内容完整性</span></label>
+                    <label class="check"><input type="checkbox" class="auto-check" value="leak"><span>敏感信息</span></label>
+                    <label class="check"><input type="checkbox" class="auto-check" value="retest"><span>复测</span></label>
+                    <label class="check"><input type="checkbox" class="auto-check" value="full"><span>完整巡检（含配置与漏洞探测）</span></label>
+                  </div>
+                </div>
+                <label class="fld">
+                  <span>敏感信息定义（本单位口径）</span>
+                  <select id="auto-profile"></select>
+                  <em class="fld-help">选「出厂口径」就是只按 rules.json 的规则查</em>
+                </label>
+                <label class="fld">
+                  <span>周期类型</span>
+                  <select id="auto-kind">
+                    <option value="interval">固定间隔</option>
+                    <option value="daily">每天定点</option>
+                    <option value="weekly">每周定点</option>
+                  </select>
+                </label>
+                <label class="fld" id="auto-every-wrap">
+                  <span>间隔（分钟）</span>
+                  <input id="auto-every" type="number" min="1" max="43200" step="1" value="360">
+                  <em class="fld-help">360 = 每 6 小时；演示时可填 1</em>
+                </label>
+                <label class="fld" id="auto-at-wrap" hidden>
+                  <span>定点时间</span>
+                  <div class="fld-row">
+                    <input id="auto-hour" type="number" min="0" max="23" value="3"><span>时</span>
+                    <input id="auto-min" type="number" min="0" max="59" value="0"><span>分</span>
+                  </div>
+                </label>
+                <label class="fld" id="auto-wd-wrap" hidden>
+                  <span>星期几</span>
+                  <select id="auto-weekday">
+                    <option value="1">周一</option><option value="2">周二</option><option value="3">周三</option>
+                    <option value="4">周四</option><option value="5">周五</option><option value="6">周六</option>
+                    <option value="0">周日</option>
+                  </select>
+                </label>
+                <label class="fld">
+                  <span>备注名（可空）</span>
+                  <input id="auto-name" type="text" autocomplete="off" placeholder="例如 门户站每日体检">
+                </label>
+              </div>
+            </div>
+            <div class="set-foot">
+              <label class="check"><input type="checkbox" id="auto-enabled" checked><span>启用</span></label>
+              <span class="grow"></span>
+              <button class="ghost" id="auto-reset" type="button">清空</button>
+              <button class="primary" id="auto-save" type="button">保存规则</button>
+              <span class="note" id="auto-msg"></span>
             </div>
           </div>
-          <label class="fld">
-            <span>敏感信息定义（本单位口径）</span>
-            <select id="auto-profile"></select>
-            <em class="fld-help">选「出厂口径」就是只按 rules.json 的规则查</em>
-          </label>
-          <label class="fld">
-            <span>周期类型</span>
-            <select id="auto-kind">
-              <option value="interval">固定间隔</option>
-              <option value="daily">每天定点</option>
-              <option value="weekly">每周定点</option>
-            </select>
-          </label>
-          <label class="fld" id="auto-every-wrap">
-            <span>间隔（分钟）</span>
-            <input id="auto-every" type="number" min="1" max="43200" step="1" value="360">
-            <em class="fld-help">360 = 每 6 小时；演示时可填 1</em>
-          </label>
-          <label class="fld" id="auto-at-wrap" hidden>
-            <span>定点时间</span>
-            <div class="fld-row">
-              <input id="auto-hour" type="number" min="0" max="23" value="3"><span>时</span>
-              <input id="auto-min" type="number" min="0" max="59" value="0"><span>分</span>
+
+          <!-- 二 · 权限审批 -->
+          <div class="set-panel" id="auto-panel-approval">
+            <div class="set-pane">
+              <p class="note">
+                工具调用前先过这道闸：<code>询问</code> 停下来等你点，<code>全部允许</code> 直接放行；
+                自定义策略按工具名逐条指定允许 / 询问 / 拒绝，自上而下第一条命中生效。
+              </p>
+              <div class="auto-list" id="appr-list"></div>
+
+              <div class="auto-form">
+                <div class="auto-form-head">
+                  <h3>新建自定义策略</h3>
+                  <span class="auto-form-note">按工具名逐条指定</span>
+                </div>
+                <label class="fld">
+                  <span>策略名称</span>
+                  <input id="appr-name" type="text" autocomplete="off" placeholder="例如 只读放行，探测前问我">
+                </label>
+                <label class="fld fld-wide">
+                  <span>规则（一行一条：工具名=允许/询问/拒绝，支持 * 通配）</span>
+                  <textarea id="appr-rules" rows="5" spellcheck="false" placeholder="page_diff=允许&#10;sensitive_scan=允许&#10;sensitive_file_probe=询问&#10;dir_probe=询问&#10;nuclei_scan=拒绝&#10;*_probe=询问"></textarea>
+                </label>
+              </div>
             </div>
-          </label>
-          <label class="fld" id="auto-wd-wrap" hidden>
-            <span>星期几</span>
-            <select id="auto-weekday">
-              <option value="1">周一</option><option value="2">周二</option><option value="3">周三</option>
-              <option value="4">周四</option><option value="5">周五</option><option value="6">周六</option>
-              <option value="0">周日</option>
-            </select>
-          </label>
-          <label class="fld">
-            <span>备注名（可空）</span>
-            <input id="auto-name" type="text" autocomplete="off" placeholder="例如 门户站每日体检">
-          </label>
-          <div class="auto-form-foot">
-            <label class="check"><input type="checkbox" id="auto-enabled" checked><span>启用</span></label>
-            <span class="grow"></span>
-            <button class="ghost" id="auto-reset" type="button">清空</button>
-            <button class="primary" id="auto-save" type="button">保存规则</button>
+            <div class="set-foot">
+              <span class="grow"></span>
+              <button class="ghost" id="appr-reset" type="button">清空</button>
+              <button class="primary" id="appr-save" type="button">保存为自定义策略</button>
+              <span class="note" id="appr-msg"></span>
+            </div>
           </div>
-          <div class="note" id="auto-msg"></div>
-        </div>
-      </section>
 
-      <section class="panel">
-        <div class="panel-head">
-          <div><h2>权限审批</h2></div>
-          <span class="hint" id="appr-hint"></span>
-        </div>
-        <p class="note">
-          工具调用前先过这道闸：<code>询问</code> 停下来等你点，<code>全部允许</code> 直接放行；
-          自定义策略按工具名逐条指定允许 / 询问 / 拒绝，自上而下第一条命中生效。
-        </p>
-        <div class="cards" id="appr-list"></div>
+          <!-- 三 · 本单位敏感信息定义 -->
+          <div class="set-panel" id="auto-panel-profile">
+            <div class="set-pane">
+              <p class="note">
+                关键词 / 样例按正文命中，正则保存前会试编译；落点会并入敏感文件探测，文件类型用于定级。
+                一条定义是一套口径，周期规则可各选一套。
+              </p>
+              <div class="auto-list" id="prof-list"></div>
 
-        <div class="auto-form" style="margin-top:14px">
-          <label class="fld">
-            <span>策略名称</span>
-            <input id="appr-name" type="text" autocomplete="off" placeholder="例如 只读放行，探测前问我">
-          </label>
-          <label class="fld fld-wide">
-            <span>规则（一行一条：工具名=允许/询问/拒绝，支持 * 通配）</span>
-            <textarea id="appr-rules" rows="5" spellcheck="false" placeholder="page_diff=允许&#10;sensitive_scan=允许&#10;sensitive_file_probe=询问&#10;dir_probe=询问&#10;nuclei_scan=拒绝&#10;*_probe=询问"></textarea>
-          </label>
-          <div class="auto-form-foot">
-            <span class="grow"></span>
-            <button class="ghost" id="appr-reset" type="button">清空</button>
-            <button class="primary" id="appr-save" type="button">保存为自定义策略</button>
+              <div class="auto-form">
+                <div class="auto-form-head">
+                  <h3>新建定义</h3>
+                  <span class="auto-form-note">只有这家站点才会出现的口径</span>
+                </div>
+                <label class="fld">
+                  <span>名称</span>
+                  <input id="prof-name" type="text" autocomplete="off" placeholder="例如 门户站口径（2026 版）">
+                </label>
+                <div class="fld fld-wide">
+                  <span>关键词（一行一个）</span>
+                  <textarea id="prof-keywords" rows="3" spellcheck="false" placeholder="内部项目代号&#10;某某系统"></textarea>
+                </div>
+                <div class="fld fld-wide">
+                  <span>正则（一行一条）</span>
+                  <textarea id="prof-regex" rows="3" spellcheck="false" placeholder="工号 GD-[0-9]{6}&#10;(?i)internal[-_]token"></textarea>
+                </div>
+                <div class="fld fld-wide">
+                  <span>样例片段（一行一条，正文里出现即命中）</span>
+                  <textarea id="prof-samples" rows="2" spellcheck="false" placeholder="例如某段固定配置：spring.datasource.url=jdbc:mysql://10."></textarea>
+                </div>
+                <label class="fld">
+                  <span>自定义落点（一行一个，以 / 开头）</span>
+                  <textarea id="prof-paths" rows="3" spellcheck="false" placeholder="/backup/db.sql&#10;/.svn/entries"></textarea>
+                </label>
+                <label class="fld">
+                  <span>文件类型（一行一个）</span>
+                  <textarea id="prof-types" rows="3" spellcheck="false" placeholder="sql&#10;env&#10;bak"></textarea>
+                </label>
+              </div>
+            </div>
+            <div class="set-foot">
+              <span class="grow"></span>
+              <button class="ghost" id="prof-reset" type="button">清空</button>
+              <button class="primary" id="prof-save" type="button">保存定义</button>
+              <span class="note" id="prof-msg"></span>
+            </div>
           </div>
-          <div class="note" id="appr-msg"></div>
         </div>
-      </section>
-
-      <section class="panel">
-        <div class="panel-head">
-          <div><h2>本单位敏感信息定义</h2></div>
-          <span class="hint" id="prof-hint"></span>
-        </div>
-        <p class="note">
-          关键词 / 样例按正文命中，正则保存前会试编译；落点会并入敏感文件探测，文件类型用于定级。
-          一条定义是一套口径，周期规则可各选一套。
-        </p>
-        <div class="cards" id="prof-list"></div>
-
-        <div class="auto-form" style="margin-top:14px">
-          <label class="fld">
-            <span>名称</span>
-            <input id="prof-name" type="text" autocomplete="off" placeholder="例如 门户站口径（2026 版）">
-          </label>
-          <div class="fld fld-wide">
-            <span>关键词（一行一个）</span>
-            <textarea id="prof-keywords" rows="3" spellcheck="false" placeholder="内部项目代号&#10;某某系统"></textarea>
-          </div>
-          <div class="fld fld-wide">
-            <span>正则（一行一条）</span>
-            <textarea id="prof-regex" rows="3" spellcheck="false" placeholder="工号 GD-[0-9]{6}&#10;(?i)internal[-_]token"></textarea>
-          </div>
-          <div class="fld fld-wide">
-            <span>样例片段（一行一条，正文里出现即命中）</span>
-            <textarea id="prof-samples" rows="2" spellcheck="false" placeholder="例如某段固定配置：spring.datasource.url=jdbc:mysql://10."></textarea>
-          </div>
-          <label class="fld">
-            <span>自定义落点（一行一个，以 / 开头）</span>
-            <textarea id="prof-paths" rows="3" spellcheck="false" placeholder="/backup/db.sql&#10;/.svn/entries"></textarea>
-          </label>
-          <label class="fld">
-            <span>文件类型（一行一个）</span>
-            <textarea id="prof-types" rows="3" spellcheck="false" placeholder="sql&#10;env&#10;bak"></textarea>
-          </label>
-          <div class="auto-form-foot">
-            <span class="grow"></span>
-            <button class="ghost" id="prof-reset" type="button">清空</button>
-            <button class="primary" id="prof-save" type="button">保存定义</button>
-          </div>
-          <div class="note" id="prof-msg"></div>
-        </div>
-      </section>
+      </div>
     </section>
 
     <section class="view" id="view-config">
