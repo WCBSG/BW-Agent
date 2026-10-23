@@ -859,6 +859,8 @@ function noteActivity() {
   stopIdle();
   idleSince = Date.now();
   if (!current) return;
+  /* 审批条还立着的时候,人被问的不是"模型想得怎么样",等待提示别出来抢戏 */
+  if (approvalWaitFrom) return;
   clearTimeout(idleTimer);
   idleTimer = setTimeout(showIdle, IDLE_MS);
 }
@@ -874,6 +876,7 @@ function restoreIdle() {
 
 function showIdle() {
   if (!current || !current.body) return;
+  if (approvalWaitFrom) return;          /* 正等用户点头,不是模型在想 */
   if (!idleEl) {
     idleEl = el('div', 'waiting');
     idleEl.appendChild(el('span', 'pulse'));
@@ -1125,8 +1128,11 @@ function onMessageStop(e) {
      不然那条消息永远停在"执行中",耗时也一起丢了。 */
   const msg = current || live;
   if (!msg) return;
-  clearWaiting();
   msg.stopReason = e.stopReason;
+  /* 先结审批计时(它会重新起"等待提示"的钟),再清等待提示 —— 顺序反了,
+     收尾后还会冒出一条"模型还在想"。 */
+  endApprovalWait(msg);
+  clearWaiting();
   /* 人在审批条上停的那几秒不是模型在算 —— 把它从耗时里扣掉,
      否则"光速跑完但被人耽误了 40 秒"会被记成模型慢。 */
   endApprovalWait(msg);
@@ -1226,8 +1232,10 @@ function send(text) {
   es.onmessage = (ev) => {
     let e;
     try { e = JSON.parse(ev.data); } catch { return; }
-    /* 只要后端又有动静,就说明审批这件事过去了 —— 从这一刻起重新算模型响应时间 */
-    if (e.type !== 'approval_request') endApprovalWait();
+    /* 后端又有动静了,说明审批这件事过去了 —— 从这一刻起重新算模型响应时间。
+       但"等你确认"那条工具状态是审批本身的一部分,不能拿它当"过去了"。 */
+    const isWaitStatus = e.type === 'tool_status' && e.status === 'waiting_approval';
+    if (e.type !== 'approval_request' && !isWaitStatus) endApprovalWait();
     switch (e.type) {
       case 'message_start': beginMessage(e.messageId); break;
       case 'block_start':   onBlockStart(e); break;
@@ -2625,12 +2633,16 @@ function endApprovalWait(msg) {
      不夹一下就出现"扣掉的比整轮还长",界面最后显示 0.0s。 */
   if (m) m.waitMs += Math.max(0, Date.now() - Math.max(approvalWaitFrom, m.startedAt));
   approvalWaitFrom = 0;
+  /* 审批过去了:从这一刻重新算"多久没动静" */
+  if (m) noteActivity();
 }
 
 function showApprovalBar(e) {
   AB.id = e.id;
   AB.queue += 1;
   beginApprovalWait();
+  /* 等人点按钮的这段时间不是"模型在想",提示要先撤掉 */
+  stopIdle();
   $('ab-tool').textContent = e.tool || '';
   $('ab-policy').textContent = e.policy ? '策略：' + e.policy : '';
   $('ab-count').textContent = AB.queue > 1 ? `还有 ${AB.queue} 个动作在等` : '';

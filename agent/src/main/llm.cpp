@@ -257,26 +257,30 @@ static void put_clipped(buf_t *out, const char *s, size_t cap) {
 
 static void build_prompt(buf_t *out, agent_t *a, const char *user_text,
                          json_t *observations, const char *scope_note) {
+  int used_steps = observations ? j_len(observations) : 0;
   buf_puts(out,
-      "你是「网站安全巡检智能体」的决策内核。你的职责是自主判断下一步该做什么,"
-      "而不是机械地跑一遍固定流程。\n\n");
-  buf_puts(out,
-      "## 你的工作方式(重要)\n"
-      "1. 先判断用户到底想要什么结果(巡检?复测?出报告?只是问个问题?)\n"
-      "2. 再看已有的观察结果够不够支撑结论:够就直接回答,不要为了「多跑一步」而跑\n"
-      "3. 观察结果里若出现「目标不可达」「未授权」这类否定信息,不要自行编造结论\n"
-      "4. 若同一件事已经做过且结果没变化,不要重复做 —— 应当收尾并说明\n"
-      "5. 一次只决定一个动作;拿到观察结果后系统会再问你一次\n\n");
+      "你是「网站安全巡检智能体」的决策内核:自主判断下一步,不跑固定流程。\n\n"
+      "## 判断(一步一动作,拿到结果我会再问你一次)\n"
+      "1. 先定意图:巡检 / 复测 / 出报告 / 只是提问。\n"
+      "2. 观察结果够下结论就直接 final,不为凑步数再跑。\n"
+      "3. 否定结果(不可达/未授权/被排除/超时/被拒)只能如实说明,不得推成「安全」。\n"
+      "4. 同一动作已有结果且无变化,不再重复,直接收尾。\n\n"
+      "## 选择\n"
+      "优先技能(一次调用即跑完、直接给结论);技能覆盖不到才单独用工具。\n"
+      "非只读工具会弹审批、可能被拒:被拒按否定结果处理,不要换个说法再试。\n"
+      "args 只填必需参数,不要枚举长列表。\n");
+  buf_printf(out, "\n## 本轮预算\n最多 %d 步,已用 %d 步,还剩 %d 步。\n", MAX_STEPS_DEFAULT,
+             used_steps, MAX_STEPS_DEFAULT - used_steps > 0 ? MAX_STEPS_DEFAULT - used_steps : 0);
 
-  buf_puts(out, "## 可用技能(推荐优先选技能,它包含完整做法)\n");
+  buf_puts(out, "\n## 可用技能\n");
   skills_manifest(out);
-  buf_puts(out, "\n## 可用原子工具(技能覆盖不到时才单独用)\n");
+  buf_puts(out, "\n## 可用工具\n");
   tools_manifest(out);
 
   if (scope_note && *scope_note) {
-    buf_puts(out, "\n## 授权范围(合规硬约束)\n");
+    buf_puts(out, "\n## 授权范围(硬约束)\n");
     buf_puts(out, scope_note);
-    buf_puts(out, "\n目标不在授权范围内的,不要动手,直接说明。\n");
+    buf_puts(out, "\n池外不动手,直接说明。\n");
   }
 
   /* 多轮上下文:没有这一段,"继续""那个站也一样查一下"就没法消解 ——
@@ -321,12 +325,11 @@ static void build_prompt(buf_t *out, agent_t *a, const char *user_text,
   buf_puts(out, "\n## 用户本轮输入\n");
   buf_puts(out, user_text);
   buf_puts(out,
-      "\n\n## 输出要求(只输出这一个 JSON 对象,不要解释、不要代码块)\n"
-      "调技能/工具: {\"skill\":\"技能名\",\"args\":{…}} 或 {\"tool\":\"工具名\",\"args\":{…}}\n"
-      "直接回答:     {\"final\":\"给用户的中文回答\"}\n"
-      "需要补充:     {\"ask\":\"需要用户确认或补充什么\"}\n"
-      "可选加 \"reason\":\"一句话说明你为什么这么决定\"。\n"
-      "args 只填必需参数,不要枚举长列表。\n");
+      "\n\n## 输出:只输出一个 JSON,无解释、无代码块\n"
+      "{\"skill\":\"技能名\",\"args\":{…}} 或 {\"tool\":\"工具名\",\"args\":{…}}\n"
+      "或 {\"final\":\"中文回答\"} 或 {\"ask\":\"需用户补充什么\"}\n"
+      "可加 \"reason\":\"一句话理由\"。\n"
+      "final 写法:结论 → 证据 → 影响 → 下一步;不要把结论甩给「见上面的结果」,自己说清。\n");
 }
 
 /* 一次补全:按"当前厂商优先,其余就绪的顺延"依次尝试。
@@ -390,6 +393,9 @@ int llm_decide(agent_t *a, const char *user_text, json_t *observations,
   buf_t prompt;
   buf_init(&prompt);
   build_prompt(&prompt, a, user_text, observations, scope_note);
+  /* 提示词体积直接换算成首字节延迟,留个读数方便以后继续压 */
+  log_info("[模型] 提示词 %d 字节(观察 %d 条)", (int)prompt.len,
+           observations ? j_len(observations) : 0);
 
   buf_t answer;
   buf_init(&answer);
