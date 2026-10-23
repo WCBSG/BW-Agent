@@ -43,8 +43,6 @@
         placeholder="看看www.example-gov.cn有没有敏感文件泄露"></textarea>
       <div class="composer-bar">
         <span class="tag" id="home-scope">未设置授权目标</span>
-        <span class="tag">只读 · GET/HEAD/OPTIONS</span>
-        <span class="tag">2 请求/秒</span>
         <button class="start" type="submit" id="btn-start">开始</button>
       </div>
     </form>
@@ -58,10 +56,6 @@
       <div class="recent-grid" id="recent"><div class="recent-empty">跑完第一轮，这里会按时间排出历史。</div></div>
     </section>
   </main>
-
-  <footer class="home-foot">
-    <p>只读检查（GET / HEAD / OPTIONS），每一次请求都写进审计。</p>
-  </footer>
 </div>
 
 <!-- ============================================================
@@ -587,6 +581,22 @@
 </div>
 
 <!-- 授权池：能检查谁由这张表说了算，而不是"当前目标" -->
+<!-- 就地输入框:WebView2 里 window.prompt 不弹窗(直接返回 null),所以自己做一个。
+     只用于"起个名字"这种单行输入;需要多行/复杂表单的地方别用它。 -->
+<div class="ask-modal" id="ask" role="dialog" aria-modal="true" aria-hidden="true">
+  <div class="ask-backdrop" id="ask-backdrop"></div>
+  <form class="ask-box" id="ask-form">
+    <h3 id="ask-title">输入</h3>
+    <p class="ask-desc" id="ask-desc"></p>
+    <input id="ask-input" type="text" autocomplete="off" spellcheck="false">
+    <div class="ask-foot">
+      <span class="ask-msg" id="ask-msg"></span>
+      <button class="ghost" type="button" id="ask-cancel">取消</button>
+      <button class="primary" type="submit" id="ask-ok">确定</button>
+    </div>
+  </form>
+</div>
+
 <div class="modal" id="modal" role="dialog" aria-modal="true" aria-labelledby="scope-title">
   <div class="modal-backdrop"></div>
   <div class="modal-box">

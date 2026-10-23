@@ -1538,30 +1538,45 @@ async function recentData() {
   return { list: (runs.items || []).slice().reverse(), taskMap };
 }
 
+/* 首屏「最近」= 每个对话一张卡片(不是每次运行)。
+   运行记录是另一个维度(一轮巡检跑了什么),对话才是"我们聊过什么";
+   把两者混在同一排卡片里,点进去的行为也不一样,读起来会乱。
+   存储:每个对话一个文件 <数据目录>\chat\<对话id>.jsonl。 */
 async function renderRecent() {
   const box = $('recent');
   if (!box) return;
-  const { list, taskMap } = await recentData();
+  let items = [];
+  try {
+    const r = await api('/api/chats');
+    items = (r.items || []).filter((c) => !c.archived);
+  } catch (e) {
+    items = [];
+  }
+  items.sort((a, b) => String(b.updated_at || '').localeCompare(String(a.updated_at || '')));
+
   box.innerHTML = '';
-  $('recent-meta').textContent = list.length ? `${list.length} 次 · 共 ${list.reduce((a, r) => a + (Number(r.findings_new) || 0), 0)} 条新发现` : '还没有记录';
-  if (!list.length) {
-    box.appendChild(el('div', 'recent-empty', '跑完第一轮，这里会按时间排出历史。'));
+  const meta = $('recent-meta');
+  if (meta) {
+    const total = items.reduce((a, c) => a + (Number(c.message_count) || 0), 0);
+    meta.textContent = items.length ? `${items.length} 个对话 · ${total} 条消息` : '还没有记录';
+  }
+  if (!items.length) {
+    box.appendChild(el('div', 'recent-empty', '聊过第一轮，这里会按时间排出对话；每个对话存成一个文件。'));
     return;
   }
-  for (const r of list.slice(0, 6)) {
-    const t = taskMap[r.task_id] || {};
-    const target = (t.authorized_domains || [])[0] || (state.status && state.status.domain) || r.task_id || '—';
+  for (const c of items.slice(0, 6)) {
     const card = el('button', 'rcard');
     card.type = 'button';
     const top = el('span', 'rtop');
-    top.appendChild(el('span', 'tg', target));
-    top.appendChild(el('span', 'rst', runChip(r.status)));
+    top.appendChild(el('span', 'tg', c.id || '—'));
+    top.appendChild(el('span', 'rst', `${Number(c.message_count) || 0} 条`));
     card.appendChild(top);
-    card.appendChild(el('span', 'nm', r.id || '—'));
-    card.appendChild(el('span', 'rmeta', `${r.pages_found || 0} 页 · ${r.tools_called || 0} 次调用 · ${r.findings_new || 0} 条新发现`));
-    card.appendChild(el('span', 'rfoot', fmtTime(r.started_at)));
-    card.addEventListener('click', () => { showWork(); switchView('history'); loadView('history'); });
-    void t;
+    card.appendChild(el('span', 'nm', c.title || '未命名对话'));
+    card.appendChild(el('span', 'rmeta', (c.updated_at || '').slice(0, 10) === new Date().toISOString().slice(0, 10)
+      ? '今天'
+      : fmtTime(c.updated_at)));
+    card.appendChild(el('span', 'rfoot', `chat\\${c.id}.jsonl`));
+    card.addEventListener('click', () => openChat(c.id));
     box.appendChild(card);
   }
 }
@@ -2957,6 +2972,52 @@ function renderRulePage() {
 /* ================= 规则预设 =================
    一个预设 = 一整套 6 个域。切换预设就是整套换掉,不是逐字段合并 ——
    合并会让"我现在到底在用哪套口径"变得说不清。 */
+
+/* 单行输入弹窗:WebView2 不支持 window.prompt(直接返回 null),
+   所以"起个名字"这类交互必须自己做。返回 Promise<string|null>。 */
+function askText(opts) {
+  const o = opts || {};
+  return new Promise((resolve) => {
+    const box = $('ask');
+    const form = $('ask-form');
+    const inp = $('ask-input');
+    const msg = $('ask-msg');
+    if (!box || !form || !inp) { resolve(null); return; }
+    $('ask-title').textContent = o.title || '输入';
+    const desc = $('ask-desc');
+    desc.textContent = o.desc || '';
+    desc.style.display = o.desc ? '' : 'none';
+    inp.value = o.value || '';
+    inp.placeholder = o.placeholder || '';
+    msg.textContent = '';
+    box.classList.add('on');
+    box.setAttribute('aria-hidden', 'false');
+    setTimeout(() => { inp.focus(); inp.select(); }, 30);
+
+    const done = (val) => {
+      box.classList.remove('on');
+      box.setAttribute('aria-hidden', 'true');
+      form.removeEventListener('submit', onSubmit);
+      $('ask-cancel').removeEventListener('click', onCancel);
+      $('ask-backdrop').removeEventListener('click', onCancel);
+      document.removeEventListener('keydown', onKey, true);
+      resolve(val);
+    };
+    const onSubmit = (e) => {
+      e.preventDefault();
+      const v = (inp.value || '').trim();
+      if (!v) { msg.textContent = o.empty || '不能为空'; return; }
+      done(v);
+    };
+    const onCancel = () => done(null);
+    const onKey = (e) => { if (e.key === 'Escape') { e.stopPropagation(); done(null); } };
+    form.addEventListener('submit', onSubmit);
+    $('ask-cancel').addEventListener('click', onCancel);
+    $('ask-backdrop').addEventListener('click', onCancel);
+    document.addEventListener('keydown', onKey, true);
+  });
+}
+
 const PRESET = { list: [], current: '' };
 
 async function renderPresets() {
@@ -3016,10 +3077,22 @@ if (presetApply) presetApply.addEventListener('click', async () => {
 
 const presetSave = $('preset-save');
 if (presetSave) presetSave.addEventListener('click', async () => {
-  const name = window.prompt('把当前规则另存为预设，起个名字：', '');
+  const name = await askText({
+    title: '另存为规则预设',
+    desc: '把当前 6 个规则域整套存成一个预设，之后可以一键切回来。',
+    placeholder: '例如 门户站口径（2026）',
+    empty: '预设名不能为空',
+  });
   if (!name) return;
-  const r = await presetAct('save', name.trim());
-  if (r) { const n = $('preset-note'); if (n) n.textContent = `已保存为「${name.trim()}」`; }
+  const r = await presetAct('save', name);
+  const n = $('preset-note');
+  if (r && r.ok) {
+    if (n) n.textContent = `已保存为「${name}」`;
+    const sel = $('preset-select');
+    if (sel) sel.value = name;
+  } else if (n) {
+    n.textContent = (r && r.error) || '保存失败';
+  }
 });
 
 const presetDel = $('preset-del');

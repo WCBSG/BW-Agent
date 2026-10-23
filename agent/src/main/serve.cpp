@@ -1113,6 +1113,61 @@ static DWORD WINAPI sched_thread(LPVOID param) {
     /* 越界中止的一轮不参与差分:它本来就没跑完,拿它当基线会把"没查到"
        误读成"问题消失了"。 */
     if (rc == 0 && run_id && !violated) changed = auto_after_run(g_store, &rule, run_id);
+    /* 定时任务的每一次执行单开一份流水:<数据目录>\time\<任务id>\<时间>.jsonl
+       为什么按任务分目录、按时间分文件:同一个任务的历次结果可以按时间对比,
+       也不会因为"只留最新一份"而丢掉上一轮到底看到了什么。 */
+    {
+      char dir[MAX_PATH * 2];
+      app_data_path(dir, sizeof(dir), "time");
+      char sub[MAX_PATH * 2];
+      snprintf(sub, sizeof(sub), "%s\\%s", dir, rule.id);
+      ensure_dir(sub);
+      char stamp[32];
+      {
+        char iso[40];
+        now_iso(iso, sizeof(iso));            /* 2026-10-23T18:45:38.123Z */
+        size_t k = 0;
+        for (const char *s = iso; *s && k + 1 < sizeof(stamp); s++) {
+          char c = *s;
+          if (c == ':' || c == '.' || c == 'T' || c == 'Z') continue;
+          if (c == '-') c = '-';
+          stamp[k++] = c;
+        }
+        stamp[k] = 0;
+      }
+      char file[MAX_PATH * 4];
+      snprintf(file, sizeof(file), "%s\\%s.jsonl", sub, stamp);
+
+      json_t *rec = j_obj();
+      j_set_str(rec, "rule", rule.id);
+      j_set_str(rec, "name", rule.name);
+      j_set_str(rec, "domain", rule.domain);
+      j_set_str(rec, "scope", rule.scope);
+      j_set_str(rec, "checks", sig);
+      j_set_str(rec, "profile", rule.profile_id);
+      j_set_str(rec, "run_id", run_id ? run_id : "");
+      j_set_str(rec, "status", rc == 0 ? "done" : "failed");
+      j_set_str(rec, "stop_reason", st.stop_reason);
+      j_set_num(rec, "steps", st.steps ? j_len(st.steps) : 0);
+      j_set_num(rec, "http_calls", net_http_calls() - calls_before);
+      j_set_bool(rec, "changed", changed > 0);
+      j_set_bool(rec, "violated", violated);
+      char ts[40];
+      now_iso(ts, sizeof(ts));
+      j_set_str(rec, "at", ts);
+      char *line = json_dump(rec);
+      if (line) {
+        buf_t b;
+        buf_init(&b);
+        buf_puts(&b, line);
+        buf_putc_(&b, '\n');
+        file_append(file, b.data, b.len);
+        buf_free(&b);
+        free(line);
+      }
+      json_free(rec);
+    }
+
     log_info("周期巡检: %s %s,停止原因 %s%s", rule.id,
              rc == 0 ? "完成" : "失败", st.stop_reason[0] ? st.stop_reason : "—",
              violated ? " · 有请求越出授权池,本轮中止且不做差分"

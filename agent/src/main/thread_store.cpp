@@ -36,32 +36,27 @@ void safe_id(const char *in, char *out, size_t cap) {
   if (!n) snprintf(out, cap, "default");
 }
 
-void thread_dir(const char *tid, char *out, size_t cap) {
+/* 对话目录:一个对话一个 jsonl 文件 —— <数据目录>\chat\<对话id>.jsonl
+   为什么是"一个文件"而不是"一个目录":对话是给人翻的,能直接双击打开、
+   能整份拷走、也能被 fs_read 按行读。事件与元数据同文件不同 type,靠 type 区分。 */
+void chat_dir(char *out, size_t cap) {
+  snprintf(out, cap, "%s\\chat", g_root);
+}
+
+void chat_file(const char *tid, char *out, size_t cap) {
   char safe[128];
   safe_id(tid, safe, sizeof(safe));
-  snprintf(out, cap, "%s\\threads\\%s", g_root, safe);
+  char d[MAX_PATH * 2];
+  chat_dir(d, sizeof(d));
+  snprintf(out, cap, "%s\\%s.jsonl", d, safe);
 }
 
-void messages_path(const char *tid, char *out, size_t cap) {
-  char d[MAX_PATH * 2];
-  thread_dir(tid, d, sizeof(d));
-  snprintf(out, cap, "%s\\messages.jsonl", d);
-}
-
-void events_path(const char *tid, char *out, size_t cap) {
-  char d[MAX_PATH * 2];
-  thread_dir(tid, d, sizeof(d));
-  snprintf(out, cap, "%s\\events.jsonl", d);
-}
-
-void meta_path(const char *tid, char *out, size_t cap) {
-  char d[MAX_PATH * 2];
-  thread_dir(tid, d, sizeof(d));
-  snprintf(out, cap, "%s\\meta.json", d);
-}
+void messages_path(const char *tid, char *out, size_t cap) { chat_file(tid, out, cap); }
+void events_path(const char *tid, char *out, size_t cap) { chat_file(tid, out, cap); }
+void meta_path(const char *tid, char *out, size_t cap) { chat_file(tid, out, cap); }
 
 void index_path(char *out, size_t cap) {
-  snprintf(out, cap, "%s\\threads\\index.jsonl", g_root);
+  snprintf(out, cap, "%s\\chat\\index.jsonl", g_root);
 }
 
 /* 追加一行 JSON(带换行),失败返回 -1 */
@@ -118,13 +113,16 @@ json_t *index_snapshot() {
 json_t *meta_or_index(const char *tid) {
   char mp[MAX_PATH * 4];
   meta_path(tid, mp, sizeof(mp));
-  size_t len = 0;
-  char *text = file_read_all(mp, &len);
-  if (text) {
-    json_t *o = json_parse(text);
-    free(text);
-    if (o) return o;
-  }
+  json_t *last = NULL;
+  for_each_line(mp, [&](json_t *o) {
+    const char *ty = j_s(o, "type", "meta");
+    if (strcmp(ty, "meta") != 0) return;
+    if (last) json_free(last);
+    char *d = json_dump(o);
+    last = d ? json_parse(d) : NULL;
+    free(d);
+  });
+  if (last) return last;
   json_t *map = index_snapshot();
   json_t *row = j_get(map, tid);
   json_t *copy = row ? json_parse(json_dump(row)) : NULL;
@@ -138,15 +136,12 @@ void save_meta(json_t *meta) {
   const char *tid = j_s(meta, "id", "");
   if (!tid[0]) return;
   char d[MAX_PATH * 2], mp[MAX_PATH * 4];
-  thread_dir(tid, d, sizeof(d));
+  chat_dir(d, sizeof(d));
   ensure_dir(d);
   meta_path(tid, mp, sizeof(mp));
   j_set_num(meta, "schema", THREAD_SCHEMA);
-  char *text = json_dump_pretty(meta);
-  if (text) {
-    file_write_all(mp, text, strlen(text));
-    free(text);
-  }
+  j_set_str(meta, "type", "meta");
+  append_line(mp, meta);
   json_t *row = j_obj();
   j_set_str(row, "thread_id", tid);
   j_set_str(row, "title", j_s(meta, "title", ""));
@@ -175,7 +170,7 @@ void thread_store_init(const char *data_dir) {
   snprintf(g_root, sizeof(g_root), "%s", data_dir ? data_dir : "");
   if (!g_root[0]) return;
   char d[MAX_PATH * 2];
-  snprintf(d, sizeof(d), "%s\\threads", g_root);
+  snprintf(d, sizeof(d), "%s\\chat", g_root);
   ensure_dir(d);
 }
 
@@ -250,10 +245,11 @@ json_t *thread_append(const char *thread_id, const char *role, json_t *blocks,
   }
   if (usage) j_set(msg, "usage", usage);
 
+  j_set_str(msg, "type", "message");
   char mp[MAX_PATH * 4];
   messages_path(thread_id, mp, sizeof(mp));
   char d[MAX_PATH * 2];
-  thread_dir(thread_id, d, sizeof(d));
+  chat_dir(d, sizeof(d));
   ensure_dir(d);
   append_line(mp, msg);
 
@@ -294,7 +290,7 @@ void thread_append_event(const char *thread_id, json_t *event) {
   lock_init();
   EnterCriticalSection(&g_lock);
   char d[MAX_PATH * 2], p[MAX_PATH * 4];
-  thread_dir(thread_id, d, sizeof(d));
+  chat_dir(d, sizeof(d));
   ensure_dir(d);
   events_path(thread_id, p, sizeof(p));
   if (!j_s(event, "at", "")[0]) {
@@ -373,7 +369,11 @@ json_t *thread_messages(const char *thread_id, int limit) {
   EnterCriticalSection(&g_lock);
   char p[MAX_PATH * 4];
   messages_path(thread_id, p, sizeof(p));
-  for_each_line(p, [&](json_t *o) { j_add(arr, json_parse(json_dump(o))); });
+  for_each_line(p, [&](json_t *o) {
+    const char *ty = j_s(o, "type", "message");
+    if (strcmp(ty, "message") != 0) return;      /* meta / event 不混进消息列表 */
+    j_add(arr, json_parse(json_dump(o)));
+  });
   LeaveCriticalSection(&g_lock);
 
   int n = j_len(arr);
@@ -425,17 +425,89 @@ int thread_set_flags(const char *thread_id, int archived, int pinned) {
 
 int thread_delete(const char *thread_id) {
   if (!thread_id || !*thread_id || !g_root[0]) return -1;
-  char d[MAX_PATH * 2];
-  thread_dir(thread_id, d, sizeof(d));
-  if (file_size(d) < 0) {
-    /* 目录本身也算"存在";用 RemoveDirectory 兜底判断 */
-  }
-  fs_remove_tree(d);
+  char f[MAX_PATH * 4];
+  chat_file(thread_id, f, sizeof(f));
+  wchar_t *w = u8_to_w(f);
+  if (w) { DeleteFileW(w); free(w); }
+  /* 老版本是 threads/<id>/ 目录,一并清掉 */
+  char safe[128];
+  safe_id(thread_id, safe, sizeof(safe));
+  char old[MAX_PATH * 2];
+  snprintf(old, sizeof(old), "%s\\threads\\%s", g_root, safe);
+  if (file_size(old) >= 0) fs_remove_tree(old);
   return 0;
+}
+
+
+/* 老结构(threads/<id>/{messages,events}.jsonl + meta.json)迁进 chat/<id>.jsonl。
+   幂等:迁完写一个 .migrated 标记,下次直接跳过。 */
+static int migrate_threads_dir(void) {
+  char dir[MAX_PATH * 2];
+  snprintf(dir, sizeof(dir), "%s\\threads", g_root);
+  std::vector<std::string> subs = fs_list_dirs(dir);
+  int moved = 0;
+  for (size_t i = 0; i < subs.size(); i++) {
+    char one[MAX_PATH * 2];
+    snprintf(one, sizeof(one), "%s\\%s", dir, subs[i].c_str());
+    char marker[MAX_PATH * 4];
+    snprintf(marker, sizeof(marker), "%s\\.migrated", one);
+    if (file_size(marker) >= 0) continue;
+
+    char dst[MAX_PATH * 4];
+    chat_file(subs[i].c_str(), dst, sizeof(dst));
+    if (file_size(dst) < 0) {
+      /* 消息、事件、meta 依次追加进同一个文件 */
+      const char *parts[2] = {"messages.jsonl", "events.jsonl"};
+      for (int k = 0; k < 2; k++) {
+        char src[MAX_PATH * 4];
+        snprintf(src, sizeof(src), "%s\\%s", one, parts[k]);
+        size_t len = 0;
+        char *text = file_read_all(src, &len);
+        if (!text) continue;
+        /* 老消息没有 type 字段:补一个,读的时候才不会漏 */
+        char **lines = NULL;
+        int n = str_split(text, '\n', &lines, 0);
+        for (int j = 0; j < n; j++) {
+          char *ln = str_trim(lines[j]);
+          if (!ln[0]) continue;
+          json_t *o = json_parse(ln);
+          if (!o) continue;
+          if (!j_s(o, "type", "")[0]) j_set_str(o, "type", k == 0 ? "message" : "event");
+          append_line(dst, o);
+          json_free(o);
+        }
+        str_free_list(lines, n);
+        free(text);
+      }
+      char msrc[MAX_PATH * 4];
+      snprintf(msrc, sizeof(msrc), "%s\\meta.json", one);
+      size_t len = 0;
+      char *text = file_read_all(msrc, &len);
+      if (text) {
+        json_t *o = json_parse(text);
+        free(text);
+        if (o) {
+          j_set_str(o, "type", "meta");
+          append_line(dst, o);
+          json_free(o);
+        }
+      }
+    }
+    wchar_t *w = u8_to_w(marker);
+    if (w) {
+      HANDLE h = CreateFileW(w, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, 0, NULL);
+      if (h != INVALID_HANDLE_VALUE) CloseHandle(h);
+      free(w);
+    }
+    moved++;
+  }
+  return moved;
 }
 
 int thread_migrate_legacy() {
   if (!g_root[0]) return 0;
+  int from_threads = migrate_threads_dir();
+  if (from_threads > 0) log_info("[对话] 已把 %d 个旧会话迁到 chat/ 单文件结构", from_threads);
   char legacy[MAX_PATH * 2];
   snprintf(legacy, sizeof(legacy), "%s\\transcripts", g_root);
   std::vector<std::string> files = fs_list_files(legacy, ".jsonl");
