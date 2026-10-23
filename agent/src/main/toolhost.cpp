@@ -112,6 +112,13 @@ int toolhost_run(const char *tool_arg) {
   tools_init();
   store_t *store = store_open(app_data_dir());
   net_init();
+  /* 授权池必须在这里也载入:工具进程空着池子跑,`!路径` 排除和跨站边界就全失效了,
+     pool_list 也只会看到"空池"。 */
+  {
+    char pool_path[MAX_PATH * 2];
+    app_data_path(pool_path, sizeof(pool_path), "pool.json");
+    net_pool_load_file(pool_path);
+  }
 
   tool_ctx_t ctx;
   memset(&ctx, 0, sizeof(ctx));

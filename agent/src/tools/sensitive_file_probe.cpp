@@ -40,12 +40,13 @@ int t_sensitive_file_probe(tool_ctx_t *ctx, json_t *args, tool_result_t *out) {
     const char *path = j_at(paths, i)->str;
     char url[1024];
     join_path(url, sizeof(url), root, path);
+    /* 先看这道门开不开:被 ! 规则排除的落点不该发请求,
+       也不该让一条候选把整轮巡检判成越权 */
+    if (!scope_ok(ctx, url)) { out_of_scope++; continue; }
     fetch_t f;
     t_fetch(ctx, url, &f);
     tested++;
     if (f.err && !f.status) {
-      /* 被授权池拦下 ≠ 站点连不上:前者是合规闸门生效,必须如实区分 */
-      if (strstr(f.err, "授权")) out_of_scope++;
       unreachable++;
       fetch_free2(&f);
       continue;
@@ -122,6 +123,8 @@ int t_sensitive_file_probe(tool_ctx_t *ctx, json_t *args, tool_result_t *out) {
   buf_printf(&t, "落点探测 %s:试了 %d 个路径,命中 %d 个已知特征,"
                  "因与站点默认页一致而排除 %d 个(疑似不存在),%d 个受限,%d 个连不上。",
              root, tested, j_len(hits), suppressed, blocked, unreachable);
+  if (out_of_scope)
+    buf_printf(&t, "\n另有 %d 个候选落点被授权池排除,未发起请求。", out_of_scope);
   for (int i = 0; i < j_len(hits); i++) {
     buf_printf(&t, "\n- [%s] %s → %s(证据:%s)", j_s(j_at(hits, i), "severity", ""),
                j_s(j_at(hits, i), "path", ""), j_s(j_at(hits, i), "signature", ""),
@@ -131,10 +134,10 @@ int t_sensitive_file_probe(tool_ctx_t *ctx, json_t *args, tool_result_t *out) {
 
   buf_t s;
   buf_init(&s);
-  if (tested > 0 && out_of_scope == tested) {
-    buf_printf(&s, "%s 不在授权池内:%d 个请求全部被合规通道拦下(一个包都没发出去)。"
-                   "这不是站点故障,也不产生任何结论 —— 要查它,先把主机加进授权池。",
-               root, tested);
+  if (tested == 0 && out_of_scope > 0) {
+    buf_printf(&s, "%s 的 %d 个候选落点全部被授权池排除,一个包都没发出去。"
+                   "要查这些路径,先检查池子里的 ! 规则。",
+               root, out_of_scope);
     out->is_error = 1;
   } else if (tested > 0 && unreachable == tested) {
     buf_printf(&s, "这次没法给结论:%s 的 %d 个落点全部请求失败。"

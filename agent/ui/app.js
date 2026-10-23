@@ -39,7 +39,9 @@ let state = {
   cache: {},          // 视图数据缓存
 };
 
-let current = null;   // 当前正在播的消息
+let current = null;   // 当前正在播的消息(可能因为切了对话而暂时不在屏幕上)
+let live = null;      // 这一轮还在跑的那条消息:切走再切回来要能接上,不能被清屏顺手丢掉
+let turnSid = '';     // 这一轮属于哪个会话:发出去那一刻就定下来,不受中途切换影响
 let busy = false;
 
 /* ============ 通用 ============ */
@@ -824,13 +826,18 @@ function beginMessage(messageId) {
 
   current = {
     id: messageId,
+    sid: turnSid || BW_SID,
+    wrap,
     body,
     blocks: {},
     tools: {},
     steps: 0,
     stopReason: '',
     startedAt: Date.now(),
+    waitMs: 0,          /* 其中"等用户点允许/拒绝"的时间,不算模型响应 */
   };
+  live = current;
+  approvalWaitFrom = 0;   /* 上一轮遗留的审批计时不算到这一轮头上 */
   /* 真正的空等不在"消息刚建好"这一刻,而在"上一段说完、模型还没给下一段"中间
      (恒脑的 agent 接口常常要想 5–10 秒)。所以等待提示跟着"有多久没动静"走。 */
   noteActivity();
@@ -844,12 +851,25 @@ let idleTimer = null;
 let idleEl = null;
 let idleT0 = 0;
 let idleTick = null;
+/* 最近一次"有动静"的时刻。等待多久按它算,不按提示元素出生的时刻算 ——
+   否则切一次对话就归零重数,看起来像模型又重新想了一遍。 */
+let idleSince = 0;
 
 function noteActivity() {
   stopIdle();
+  idleSince = Date.now();
   if (!current) return;
   clearTimeout(idleTimer);
   idleTimer = setTimeout(showIdle, IDLE_MS);
+}
+
+/* 切回一条还在跑的对话:提示接着原来的秒数走 */
+function restoreIdle() {
+  if (!current || !idleSince) return;
+  clearTimeout(idleTimer);
+  const waited = Date.now() - idleSince;
+  if (waited >= IDLE_MS) showIdle();
+  else idleTimer = setTimeout(showIdle, IDLE_MS - waited);
 }
 
 function showIdle() {
@@ -859,7 +879,7 @@ function showIdle() {
     idleEl.appendChild(el('span', 'pulse'));
     idleEl.appendChild(el('span', 'wtxt', '模型还在想'));
     current.body.appendChild(idleEl);
-    idleT0 = Date.now();
+    idleT0 = idleSince || Date.now();
     idleTick = setInterval(() => {
       const s = Math.floor((Date.now() - idleT0) / 1000);
       if (idleEl) {
@@ -876,7 +896,10 @@ function stopIdle() {
   idleTimer = null;
   if (idleTick) { clearInterval(idleTick); idleTick = null; }
   if (idleEl) {
-    if (idleEl.isConnected) idleEl.remove();
+    /* 用 parentNode 判断,不用 isConnected:切走对话时消息整块被摘下来,
+       它已经不在文档里了,但还在那条消息里 —— 不摘掉的话,
+       每切一次就多一条"模型还在想",切四次就叠四行。 */
+    if (idleEl.parentNode) idleEl.remove();
     idleEl = null;
   }
 }
@@ -940,7 +963,9 @@ function flushStream() {
   flushPending = false;
   let more = false;
   for (const b of dirtyBlocks) {
-    if (!b.node || !b.node.isConnected) continue;
+    /* 不判 isConnected:人切到别的对话时这条消息的节点是脱离文档的,
+       但这一轮还在跑 —— 继续把字写进去,切回来的那一刻才是完整的。 */
+    if (!b.node) continue;
     const target = b.text.length;
     if (b.shown === undefined) b.shown = 0;
     if (b.shown >= target) {
@@ -1096,11 +1121,21 @@ function renderStepCard(e, block) {
 }
 
 function onMessageStop(e) {
-  if (!current) return;
+  /* 人可能已经切到别的对话去了:消息对象还活着,收尾照样得做完 —— 
+     不然那条消息永远停在"执行中",耗时也一起丢了。 */
+  const msg = current || live;
+  if (!msg) return;
   clearWaiting();
-  const msg = current;                 /* 收尾可能延后到下几帧:先抓住这一条 */
   msg.stopReason = e.stopReason;
-  const seconds = ((Date.now() - msg.startedAt) / 1000).toFixed(1);
+  /* 人在审批条上停的那几秒不是模型在算 —— 把它从耗时里扣掉,
+     否则"光速跑完但被人耽误了 40 秒"会被记成模型慢。 */
+  endApprovalWait(msg);
+  /* 以后端给的为准:换会话、刷新、重开都能读到同一个数;
+     没有(老版本/连接异常)才退回本地计时。 */
+  let ms = Number(e.durationMs);
+  if (!isFinite(ms) || ms <= 0) ms = Math.max(0, Date.now() - msg.startedAt - msg.waitMs);
+  else ms = Math.max(0, ms - (Number(e.waitMs) || 0));
+  const seconds = (ms / 1000).toFixed(1);
   const back = () => {
     for (const k of Object.keys(msg.blocks || {})) renderMdBlock(msg.blocks[k]);
     const line = el('div', 'stopline');
@@ -1108,6 +1143,7 @@ function onMessageStop(e) {
     msg.body.appendChild(line);
     if ($('trace-hint')) $('trace-hint').textContent = `${msg.steps} 步 / ${seconds}s / ${e.stopReason}`;
     if (current === msg) current = null;
+    if (live === msg) live = null;
     endTurn();
     scrollBottom(true);
   };
@@ -1132,6 +1168,7 @@ function setBusy(on) {
 }
 
 function endTurn() {
+  approvalWaitFrom = 0;
   setBusy(false);
   state.cache = {};                    // 一轮结束：闭环数据可能变了,下次进视图重新取
   /* 状态缓存是后端在这一轮收尾时才重算的,message_stop 会先到一步:
@@ -1148,6 +1185,7 @@ function send(text) {
   if (busy) return;
 
   showWork();
+  turnSid = BW_SID;          /* 这一轮归谁,发出这一刻就定下 */
   const title = q || (pendingAtt.length ? '（附件）' + pendingAtt[0].name : '巡检');
   if ($('task-title')) $('task-title').textContent = title.length > 26 ? title.slice(0, 26) + '…' : title;
   if ($('stream-empty')) $('stream-empty').remove();
@@ -1188,6 +1226,8 @@ function send(text) {
   es.onmessage = (ev) => {
     let e;
     try { e = JSON.parse(ev.data); } catch { return; }
+    /* 只要后端又有动静,就说明审批这件事过去了 —— 从这一刻起重新算模型响应时间 */
+    if (e.type !== 'approval_request') endApprovalWait();
     switch (e.type) {
       case 'message_start': beginMessage(e.messageId); break;
       case 'block_start':   onBlockStart(e); break;
@@ -1201,11 +1241,13 @@ function send(text) {
   es.onerror = () => {
     es.close();
     if (closed) return;
-    if (current) {
-      clearWaiting();
-      current.body.appendChild(el('div', 'stopline', '连接中断，请确认服务仍在运行。'));
-      current = null;
-    }
+    /* 断流只说明这一路没了,消息本身要按"中断"收尾 —— 不留一个永远转圈的占位 */
+    const msg = current || live;
+    endApprovalWait(msg);
+    clearWaiting();
+    if (msg) msg.body.appendChild(el('div', 'stopline', '连接中断，请确认服务仍在运行。'));
+    if (current === msg) current = null;
+    if (live === msg) live = null;
     endTurn();
   };
 }
@@ -1759,11 +1801,31 @@ function resetStream(title, text) {
   empty.appendChild(el('p', null, text || '输入要查什么，过程和证据会显示在这里。'));
   stream.appendChild(empty);
   clearWaiting();                    /* 上一轮的"正在思考"计时器要停掉,别让它空转 */
-  finishPending = null;              /* 上一轮没吐完的字也不必再吐:这一屏已经清了 */
-  current = null;
+  /* 有一条还在跑:它的消息对象和图都留着(只是暂时不在屏幕上),
+     切回来时接得上;没有才真的清干净。 */
+  if (!live) {
+    finishPending = null;            /* 上一轮没吐完的字也不必再吐:这一屏已经清了 */
+    current = null;
+  }
   if (stepsBox) stepsBox.innerHTML = '<div class="muted">执行后按步列出。</div>';
   if (trace) trace.textContent = '';
   if ($('task-title')) $('task-title').textContent = '巡检会话';
+}
+
+/* 正在跑的那一轮如果就是这条对话:把它接回屏幕上,接着往下画。
+   界面切走的是"看哪一屏",不是"这一轮还跑不跑"。 */
+function attachLive(sid) {
+  if (!live || live.sid !== sid) return;
+  if (live.wrap.parentNode !== stream) {
+    if ($('stream-empty')) $('stream-empty').remove();
+    stream.appendChild(live.wrap);       /* 接在历史转录后面 */
+  }
+  current = live;          /* 后续事件继续往这一条里画 */
+  /* 摘掉这条消息里残留的等待提示(切走时留下的),但计时起点不动:
+     还在等的话,秒数接着往下数,而不是从 0 重来。 */
+  stopIdle();
+  restoreIdle();
+  scrollBottom(true);
 }
 
 /* 新建对话:换一个会话 id、清空中间那一片。
@@ -1771,7 +1833,7 @@ function resetStream(title, text) {
 function newChat() {
   BW_SID = newChatId();
   try { sessionStorage.setItem('bw-sid', BW_SID); } catch (e) { /* 隐私模式下也能用 */ }
-  setBusy(false);
+  setBusy(!!live);            /* 别的对话还在跑:输入框先别放开,免得两条流抢同一个位置 */
   closeSheet();
   clearAttachments();
   resetStream();
@@ -1787,7 +1849,7 @@ async function openRun(runId) {
   if (!runId) return;
   closeSheet();
   showWork();
-  setBusy(false);
+  setBusy(!!live);
   resetStream('正在打开…', '读取这次运行的记录。');
   let r;
   try {
@@ -1844,7 +1906,7 @@ async function openChat(sid) {
   if (!sid) { switchView('history'); loadView('history'); return; }
   closeSheet();
   showWork();
-  setBusy(false);
+  setBusy(!!live);
   BW_SID = sid;
   try { sessionStorage.setItem('bw-sid', sid); } catch (e) { /* 忽略 */ }
   resetStream('正在打开对话…', '从数据目录里读这次对话的转录。');
@@ -1858,6 +1920,7 @@ async function openChat(sid) {
   const msgs = r.messages || [];
   if (!msgs.length) {
     resetStream('这条对话没有留下转录', '可能这一轮当时还没跑完，或者是旧版本产生的运行记录。');
+    attachLive(sid);
     return;
   }
   stream.innerHTML = '';
@@ -1879,6 +1942,10 @@ async function openChat(sid) {
     const usage = m.usage || {};
     const stop = m.stop || usage.stop_reason || '';
     const steps = m.steps || usage.steps || 0;
+    /* 耗时也存在转录里:重开这条对话,读数和当时看到的是同一个 */
+    const dur = Number(usage.duration_ms) || 0;
+    const waited = Number(usage.wait_ms) || 0;
+    const secs = dur > 0 ? ((Math.max(0, dur - waited)) / 1000).toFixed(1) + 's' : '';
 
     if (m.role === 'user') {
       const utext = textOf(m);
@@ -1903,13 +1970,14 @@ async function openChat(sid) {
       body.appendChild(mdBody);
       if (stop) {
         body.appendChild(el('div', 'stopline',
-          '停止原因 ' + stop + (steps ? ' · ' + steps + ' 步' : '')));
+          '停止原因 ' + stop + (steps ? ' · ' + steps + ' 步' : '') + (secs ? ' · 耗时 ' + secs : '')));
       }
       wrap.appendChild(body);
       stream.appendChild(wrap);
     }
   }
   if ($('task-title')) $('task-title').textContent = (title || '巡检会话').slice(0, 30);
+  attachLive(sid);            /* 这一轮还没结束就把它接上,别让"正在执行"看丢 */
   scrollBottom(true);
 }
 
@@ -2543,9 +2611,26 @@ $('appr-reset').addEventListener('click', () => {
    连续多个动作被拦时用计数表示"还有 N 个在排队"。 */
 const AB = { id: '', queue: 0, busy: false };
 
+/* 等待审批的起止时刻:从弹出审批条算起,到人给了答复(或模型重新有动作)为止 */
+let approvalWaitFrom = 0;
+
+function beginApprovalWait() {
+  if (!approvalWaitFrom) approvalWaitFrom = Date.now();
+}
+
+function endApprovalWait(msg) {
+  const m = msg || live || current;
+  if (!approvalWaitFrom) return;
+  /* 只算"本条消息里"的那一段:审批条有可能上一轮就弹着、这一轮才收尾,
+     不夹一下就出现"扣掉的比整轮还长",界面最后显示 0.0s。 */
+  if (m) m.waitMs += Math.max(0, Date.now() - Math.max(approvalWaitFrom, m.startedAt));
+  approvalWaitFrom = 0;
+}
+
 function showApprovalBar(e) {
   AB.id = e.id;
   AB.queue += 1;
+  beginApprovalWait();
   $('ab-tool').textContent = e.tool || '';
   $('ab-policy').textContent = e.policy ? '策略：' + e.policy : '';
   $('ab-count').textContent = AB.queue > 1 ? `还有 ${AB.queue} 个动作在等` : '';
@@ -2569,6 +2654,9 @@ function hideApprovalBar(delay) {
 
 async function decideApproval(ok) {
   if (!AB.id || AB.busy) return;
+  /* 人点下按钮的这一瞬间,等待就结束了 —— 至于后端把这一轮捡起来用了多久,
+     那才是模型/工具的时间。 */
+  endApprovalWait();
   AB.busy = true;
   $('ab-yes').disabled = true;
   $('ab-no').disabled = true;
@@ -4499,7 +4587,7 @@ if (stopBtn) {
     stopBtn.textContent = '正在停…';
     api('/api/cancel', {
       method: 'POST',
-      body: JSON.stringify({ sid: BW_SID })
+      body: JSON.stringify({ sid: live ? live.sid : BW_SID })
     }).catch(() => {}).finally(() => {
       stopBtn.disabled = false;
       stopBtn.textContent = '停止';

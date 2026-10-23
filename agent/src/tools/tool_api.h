@@ -42,6 +42,8 @@
 /* 取数小包装:统一处理"授权 + 错误 + 限速" */
 int  do_fetch(tool_ctx_t *ctx, const char *url, const char *method, int *status, char **body,
               char **err);
+/* 这个地址现在能不能取:用于"先筛候选再取"的预检查(不产生请求与审计) */
+int  scope_ok(tool_ctx_t *ctx, const char *url);
 
 /* 一次取数(带响应头;拿不到头也照样返回内容,只是不做头相关的判断) */
 typedef struct {

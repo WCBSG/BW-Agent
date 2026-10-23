@@ -85,6 +85,8 @@ typedef struct {
   int aborted;
   char session[128];         /* 这一条流属于哪个会话(事件的 sessionId 用它) */
   buf_t answer;              /* 本轮说给用户的最终话(要落进会话转录) */
+  long long t_start;         /* 这一轮开始的毫秒时刻 —— 耗时由后端算,界面只负责显示 */
+  long long wait_ms;         /* 其中"等用户点允许/拒绝"的毫秒数,不算模型响应 */
 } sse_ctx_t;
 
 /* 每个连接线程各有一份直播上下文:一个会话在跑的时候,别的会话照样能开自己的流。
@@ -193,6 +195,9 @@ static void ev_message_stop(sse_ctx_t *c, const char *stop_reason) {
   buf_json_str(&b, c->message_id);
   buf_puts(&b, ",\"stopReason\":");
   buf_json_str(&b, stop_reason);
+  /* 耗时以这里为准:界面切走、刷新、换会话之后还能从转录里读回同一个数 */
+  buf_printf(&b, ",\"durationMs\":%lld,\"waitMs\":%lld",
+             c->t_start ? now_ms() - c->t_start : 0, c->wait_ms);
   buf_puts(&b, "}");
   sse_send(c, b.data);
   buf_free(&b);
@@ -443,7 +448,10 @@ static int hook_approval(void *ud, const char *tool, json_t *args, char **reason
   ev_tool_status(c, c->tool_use_id, "waiting_approval", "等你确认:允许还是拒绝?");
 
   DWORD wait_ms = 15 * 60 * 1000;      /* 15 分钟没人理就当拒绝 */
+  long long w0 = now_ms();
   DWORD got = WaitForSingleObject(slot->event, wait_ms);
+  /* 人思考的那段时间不算模型响应:记在流上,收尾时从耗时里扣掉 */
+  if (c) c->wait_ms += now_ms() - w0;
 
   EnterCriticalSection(&g_appr_lock);
   int decision = slot->decision;
@@ -1687,6 +1695,7 @@ static void h_chat(const http_req_t *req, http_res_t *res) {
   sse_ctx_t ctx;
   memset(&ctx, 0, sizeof(ctx));
   ctx.res = res;
+  ctx.t_start = now_ms();
   snprintf(ctx.session, sizeof(ctx.session), "%s", sid[0] ? sid : g_session);
   buf_init(&ctx.answer);
   EnterCriticalSection(&g_lock);
@@ -1919,6 +1928,9 @@ static void h_chat(const http_req_t *req, http_res_t *res) {
     j_set_num(usage, "steps", st.step_count);
     j_set_num(usage, "http_calls", net_http_calls() - calls_before_chat);
     j_set_str(usage, "stop_reason", reason);
+    /* 耗时一并落盘:换会话/关掉再打开,读数还是同一个 */
+    j_set_num(usage, "duration_ms", ctx.t_start ? now_ms() - ctx.t_start : 0);
+    j_set_num(usage, "wait_ms", ctx.wait_ms);
 
     json_t *msg = thread_append(sid, "assistant", blocks, usage, NULL);
     json_free(msg);

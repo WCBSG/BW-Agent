@@ -32,12 +32,13 @@ int t_dir_probe(tool_ctx_t *ctx, json_t *args, tool_result_t *out) {
   json_t *entries = j_arr();      /* 疑似管理入口 */
   json_t *exposed = j_arr();      /* 命中内容特征的落点 */
   json_t *restricted = j_arr();   /* 存在但受限(401/403):是有价值的信息 */
-  int tested = 0, unreachable = 0, suppressed = 0, reachable = 0;
+  int tested = 0, unreachable = 0, suppressed = 0, reachable = 0, skipped = 0;
 
   for (int i = 0; i < j_len(dirs); i++) {
     const char *dir = j_at(dirs, i)->str;
     char url[1024];
     join_path(url, sizeof(url), root, dir);
+    if (!scope_ok(ctx, url)) { skipped++; continue; }
     fetch_t f;
     t_fetch(ctx, url, &f);
     tested++;
@@ -98,6 +99,7 @@ int t_dir_probe(tool_ctx_t *ctx, json_t *args, tool_result_t *out) {
   j_set_num(data, "reachable", reachable);
   j_set_num(data, "suppressed_as_default_page", suppressed);
   j_set_num(data, "unreachable", unreachable);
+  j_set_num(data, "skipped_out_of_pool", skipped);
   j_set_bool(data, "calibrated", calib.valid);
   j_set(data, "directory_listing", listings);
   j_set(data, "entry_points", entries);
@@ -113,6 +115,7 @@ int t_dir_probe(tool_ctx_t *ctx, json_t *args, tool_result_t *out) {
                  "疑似入口 %d 个,受限 %d 个,排除默认页 %d 个。",
              root, tested, reachable, j_len(listings), j_len(entries), j_len(restricted),
              suppressed);
+  if (skipped) buf_printf(&t, "\n另有 %d 个候选目录被授权池排除,未发起请求。", skipped);
   for (int i = 0; i < j_len(listings); i++) {
     buf_printf(&t, "\n- 目录索引:%s(%d 个条目)", j_s(j_at(listings, i), "path", ""),
                j_len(j_get(j_at(listings, i), "entries")));
@@ -131,6 +134,7 @@ int t_dir_probe(tool_ctx_t *ctx, json_t *args, tool_result_t *out) {
   } else if (j_len(listings) == 0 && j_len(entries) == 0 && j_len(exposed) == 0) {
     buf_printf(&s, "目录探测完成:试了 %d 个常见目录,没有发现目录索引、暴露文件或可访问入口", tested);
     if (j_len(restricted) > 0) buf_printf(&s, "(%d 个目录存在但返回 401/403)", j_len(restricted));
+    if (skipped) buf_printf(&s, "(%d 个候选被授权池排除)", skipped);
     buf_puts(&s, "。");
   } else {
     buf_printf(&s, "目录探测发现 %d 处目录索引、%d 处疑似管理入口、%d 处暴露文件。",

@@ -42,6 +42,10 @@ int  net_pool_has(const char *host, int port, const char *path);
 /* 最近一次请求是否因越权被拒(决策循环据此立刻收束) */
 int  net_scope_violation(void);
 void net_scope_violation_clear(void);
+/* 这个 URL 现在能不能发:只判断,不发请求、不置越权标记。
+   给"手上有一批候选地址,先筛掉越界的再取"用 —— 否则站内一条被 ! 规则
+   排除的链接就能把整轮巡检打断,那不是合规,是误伤。 */
+int  net_url_allowed(const char *url);
 void net_set_audit_path(const char *path);
 void net_set_rate_limit(double qps);
 /* 叫停信号:请求发出之前检查一次,让"停止"能立刻生效 */

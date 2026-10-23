@@ -19,6 +19,9 @@ typedef struct {
                int *status, char **body, size_t *body_len, char **err);
   int (*fetch_ex)(void *ud, const char *url, const char *method, int *status,
                   char **headers, char **body, size_t *body_len, char **err);
+  /* 这个 URL 现在能不能取:给"先筛候选、再逐个取"的工具有个不产生副作用的问法。
+     实现方必须与 fetch 用同一套边界;没有边界的实现(自检替身)返回 1。 */
+  int (*in_scope)(void *ud, const char *url);
   void *userdata;
 } tools_io_t;
 

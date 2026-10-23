@@ -53,7 +53,7 @@ int t_site_crawl(tool_ctx_t *ctx, json_t *args, tool_result_t *out) {
   qtail++;
 
   json_t *assets = j_arr();
-  int fetched = 0;
+  int fetched = 0, skipped = 0;
   while (qhead < qtail && fetched < max_pages) {
     item_t cur = queue[qhead++];
     /* 去过重的跳过 */
@@ -97,6 +97,8 @@ int t_site_crawl(tool_ctx_t *ctx, json_t *args, tool_result_t *out) {
         char lpq[2048];
         url_path_query(abs, lpq, sizeof(lpq));
         if (!path_in_scope(lpq, scope)) continue;   /* 不往巡检范围外爬 */
+        /* 授权池里的 ! 条目也是边界:主动跳过,不去踩那道闸门 */
+        if (!scope_ok(ctx, abs)) { skipped++; continue; }
         if (qtail < qcap) {
           queue[qtail].url = xstrdup(abs);
           queue[qtail].depth = cur.depth + 1;
@@ -132,12 +134,14 @@ int t_site_crawl(tool_ctx_t *ctx, json_t *args, tool_result_t *out) {
   j_set_num(data, "resources", res);
   j_set_num(data, "requests", fetched);
   j_set_num(data, "unreachable", failed);
+  j_set_num(data, "skipped_out_of_pool", skipped);
   out->data = data;
 
   buf_t t;
   buf_init(&t);
   buf_printf(&t, "起始:%s\n实际访问 %d 个地址,共记录 %d 个资产(页面 %d、资源/接口 %d)\n",
              target, fetched, j_len(assets), pages, res);
+  if (skipped) buf_printf(&t, "另有 %d 个站内链接被授权池的排除规则拦下,未发起请求\n", skipped);
   for (int i = 0; i < j_len(assets) && i < 30; i++) {
     json_t *a = j_at(assets, i);
     buf_printf(&t, "- [%s] %s (HTTP %d, 深度 %d)\n", j_s(a, "kind", ""),
@@ -156,6 +160,7 @@ int t_site_crawl(tool_ctx_t *ctx, json_t *args, tool_result_t *out) {
     buf_printf(&s, "资产发现完成:访问 %d 个地址,记录 %d 个资产(页面 %d、资源与接口 %d)。",
                fetched, j_len(assets), pages, res);
     if (failed) buf_printf(&s, "其中 %d 个地址取不到内容。", failed);
+    if (skipped) buf_printf(&s, "另有 %d 个站内链接被授权池排除,已跳过。", skipped);
   }
   out->say = buf_take(&s);
   return seed_ok ? 0 : -1;

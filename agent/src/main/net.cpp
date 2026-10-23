@@ -477,6 +477,43 @@ static void parse_url(const char *url, wchar_t *host, size_t host_cap,
   free(wurl);
 }
 
+/* 授权判定要的三个量:主机、端口、路径。抽出来是为了让"先筛后取"和
+   "取的时候再判"两处走同一套逻辑,不会一处认一处不认。 */
+typedef struct {
+  char host[256];
+  int port;
+  char path[1024];
+} url_scope_t;
+
+static void url_scope_of(const char *url, url_scope_t *s) {
+  net_host_of(url, s->host, sizeof(s->host));
+  char host_only[256];
+  s->port = net_host_port_of(url, host_only, sizeof(host_only));
+  snprintf(s->path, sizeof(s->path), "/");
+  const char *scheme = strstr(url, "://");
+  const char *p = scheme ? strchr(scheme + 3, '/') : strchr(url, '/');
+  if (!p || !p[0]) return;
+  size_t n = strlen(p);
+  if (n >= sizeof(s->path)) n = sizeof(s->path) - 1;
+  memcpy(s->path, p, n);
+  s->path[n] = 0;
+  char *q = strpbrk(s->path, "?#");
+  if (q) *q = 0;
+}
+
+int net_url_allowed(const char *url) {
+  if (!url || !*url) return 0;
+  char aligned[2048];
+  net_align_url(url, aligned, sizeof(aligned));
+  url_scope_t sc;
+  url_scope_of(aligned, &sc);
+  if (!sc.host[0]) return 0;
+  /* 一个边界都没配时不在这里拦:让 net_request 用自己的说法拒绝,
+     免得工具拿到一个"被排除"的错判 */
+  if (net_pool_count() == 0 && g_scope.count == 0) return 1;
+  return host_allowed(sc.host, sc.port, sc.path);
+}
+
 void net_request(const char *url, const char *method, const char *content_type,
                  const char *body, size_t body_len, http_resp_t *resp) {
   memset(resp, 0, sizeof(*resp));
@@ -505,24 +542,9 @@ void net_request(const char *url, const char *method, const char *content_type,
 
   /* —— 合规第 1 道:授权校验。不在池内,连请求都不发 ——
      池子非空时以池子为唯一边界;"本轮目标"只是焦点,越界也照样拒。 */
-  char host_u8[256];
-  net_host_of(url, host_u8, sizeof(host_u8));
-  char host_only[256];
-  int url_port = net_host_port_of(url, host_only, sizeof(host_only));
-  /* 路径也要参与判定:池子里的 !host/admin/ 只拦那个前缀,不拦整站 */
-  char url_path[1024] = "/";
-  {
-    const char *scheme = strstr(url, "://");
-    const char *p = scheme ? strchr(scheme + 3, '/') : strchr(url, '/');
-    if (p && p[0]) {
-      size_t n = strlen(p);
-      if (n >= sizeof(url_path)) n = sizeof(url_path) - 1;
-      memcpy(url_path, p, n);
-      url_path[n] = 0;
-      char *q = strpbrk(url_path, "?#");
-      if (q) *q = 0;
-    }
-  }
+  url_scope_t sc;
+  url_scope_of(url, &sc);
+  const char *host_u8 = sc.host;
   int pooled = net_pool_count() > 0;
   /* 池子空、本轮也没有授权范围 ⇒ 没有任何边界可言,一律不发。
      "什么都没配"绝不能等价于"什么都能访问"。 */  if (!pooled && g_scope.count == 0) {
@@ -531,10 +553,12 @@ void net_request(const char *url, const char *method, const char *content_type,
     net_audit("authorize", url, 0, resp->error, NULL);
     return;
   }
-  if (!host_allowed(host_u8, url_port, url_path)) {
+  if (!host_allowed(sc.host, sc.port, sc.path)) {
     buf_t e;
     buf_init(&e);
-    if (pooled) buf_printf(&e, "目标 %s 不在授权池内", host_u8);
+    if (pooled && host_allowed(sc.host, sc.port, "/"))
+      buf_printf(&e, "路径 %s 被授权池的排除规则拦下(主机本身在池内)", sc.path);
+    else if (pooled) buf_printf(&e, "目标 %s 不在授权池内", host_u8);
     else buf_printf(&e, "目标 %s 不在授权域名内", host_u8);
     resp->error = buf_take(&e);
     /* 越权就是越权:置标记,让决策循环下一步立刻收束,而不是继续试别的路径 */
@@ -742,7 +766,10 @@ static void post_json_ex(const char *url, const char *headers, int timeout_ms,
          收到头之后的每一片读故意切成 800ms:这样"停止"不必等到整段超时才生效,
          总时长仍由 deadline 兜住。 */
       DWORD conn_to = 8000, send_to = 15000;
-      DWORD hdr_to = timeout < 20000 ? timeout : 20000;
+      /* 等响应头就用调用方给的超时:模型服务首字节经常十几秒才来,
+         这里再砍到 20 秒会把"慢"误判成"断"(实测恒脑就卡在 20 秒整)。
+         总时长仍由下面的 deadline 兜住。 */
+      DWORD hdr_to = timeout;
       WinHttpSetOption(req, WINHTTP_OPTION_CONNECT_TIMEOUT, &conn_to, sizeof(conn_to));
       WinHttpSetOption(req, WINHTTP_OPTION_SEND_TIMEOUT, &send_to, sizeof(send_to));
       WinHttpSetOption(req, WINHTTP_OPTION_RECEIVE_TIMEOUT, &hdr_to, sizeof(hdr_to));
@@ -1002,10 +1029,16 @@ static int io_fetch_ex(void *ud, const char *url, const char *method, int *statu
   return 0;
 }
 
+static int io_in_scope(void *ud, const char *url) {
+  (void)ud;
+  return net_url_allowed(url);
+}
+
 tools_io_t *net_io_impl(void) {
   static tools_io_t io;
   io.fetch = io_fetch;
   io.fetch_ex = io_fetch_ex;
+  io.in_scope = io_in_scope;
   io.userdata = NULL;
   return &io;
 }

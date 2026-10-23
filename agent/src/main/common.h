@@ -64,6 +64,9 @@ char *xstrndup(const char *s, size_t n);
 wchar_t *u8_to_w(const char *s);
 char *w_to_u8(const wchar_t *w);
 char *w_to_u8_alloc(const wchar_t *w, int chars);   /* 释放用 free */
+/* 最多保留 max_bytes 字节,但不切断多字节字符。返回实际字节数(<= max_bytes)。
+   按字节截中文会截出半个字,界面上就是乱码 —— 凡是"摘要/标题"都必须走这里。 */
+size_t u8_prefix(const char *s, size_t max_bytes);
 
 /* ---------- 时间 ---------- */
 /* 2026-10-15T09:30:00.000Z —— 与三册合同里的 ISO 格式完全一致 */

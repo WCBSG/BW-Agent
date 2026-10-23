@@ -196,6 +196,19 @@ char *w_to_u8(const wchar_t *w) {
   return w ? w_to_u8_alloc(w, -1) : NULL;
 }
 
+size_t u8_prefix(const char *s, size_t max_bytes) {
+  if (!s || max_bytes == 0) return 0;
+  size_t n = 0;
+  while (s[n] && n < max_bytes) {
+    unsigned char c = (unsigned char)s[n];
+    size_t clen = c < 0x80 ? 1 : (c & 0xE0) == 0xC0 ? 2 : (c & 0xF0) == 0xE0 ? 3
+                  : (c & 0xF8) == 0xF0 ? 4 : 1;
+    if (n + clen > max_bytes) break;
+    n += clen;
+  }
+  return n;
+}
+
 /* ================= 时间 ================= */
 static long long filetime_to_ms(FILETIME ft) {
   /* FILETIME 是 1601-01-01 起的 100ns;换成 Unix 毫秒需要减去 1970 的偏移 */

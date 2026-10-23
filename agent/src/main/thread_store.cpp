@@ -221,12 +221,13 @@ json_t *thread_append(const char *thread_id, const char *role, json_t *blocks,
     if (bs && j_len(bs) > 0) first = j_s(j_at(bs, 0), "text", "");
     if (first[0]) {
       char title[120];
-      size_t n = 0;
-      for (const char *p = first; *p && n + 1 < sizeof(title); p++) {
-        if (*p == '\n' || *p == '\r') break;
-        title[n++] = *p;
-        if (n >= 48) break;
+      size_t n = u8_prefix(first, 48);
+      /* 标题只取第一行 */
+      for (size_t i = 0; i < n; i++) {
+        if (first[i] == '\n' || first[i] == '\r') { n = i; break; }
       }
+      n = u8_prefix(first, n);
+      memcpy(title, first, n);
       title[n] = 0;
       j_set_str(meta, "title", title);
     }

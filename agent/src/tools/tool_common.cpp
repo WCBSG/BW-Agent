@@ -18,6 +18,11 @@ int do_fetch(tool_ctx_t *ctx, const char *url, const char *method,
   return rc;
 }
 
+int scope_ok(tool_ctx_t *ctx, const char *url) {
+  if (!ctx->io.in_scope) return 1;   /* 没有边界判定的通道(自检替身):不预筛 */
+  return ctx->io.in_scope(ctx->io.userdata, url);
+}
+
 /* ---------- 本机信息与设置:公共小工具 ---------- */
 
 /* 模型/人两边都能读的一行值:字符串不加引号,其它用紧凑 JSON */

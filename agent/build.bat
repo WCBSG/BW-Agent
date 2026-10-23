@@ -109,3 +109,4 @@ echo.
 echo [DONE] single-file build: build\!APPNAME!.exe
 echo        CLI:   build\agent.exe selftest / run / tool / serve / manifest
 echo        tools: agent.exe toolhost  (single-process tool host)
+exit /b 0
