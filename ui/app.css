@@ -230,12 +230,18 @@ code,pre,.mono{font-family:var(--mono)}
 .ab-yes:hover{background:#000}
 .ab-yes:disabled,.ab-no:disabled{opacity:.55;cursor:default}
 
-/* 通用按钮 */
+/* 通用按钮
+   悬停与顶栏的 chip(#work-model 那种)保持同一套:边框压深、底色浅灰、文字转墨色。
+   以前这里只换边框和文字色,同一个标题行里"数据"按钮和"恒脑"chip 的手感就不一样。 */
 .ghost{
   border:1px solid var(--line-2);border-radius:6px;background:var(--panel);
   padding:4px 10px;font-size:12.5px;color:var(--ink-2);
+  transition:border-color .12s var(--ease),color .12s var(--ease),background .12s var(--ease);
 }
-.ghost:hover{border-color:#b8b8b2;color:var(--ink)}
+.ghost:hover{border-color:var(--ink-3);color:var(--ink);background:#f4f4f1}
+.ghost:active{background:#ececea}
+.ghost:disabled{opacity:.55;cursor:default}
+.ghost:disabled:hover{border-color:var(--line-2);color:var(--ink-2);background:var(--panel)}
 .ghost.tiny{padding:2px 7px;font-size:11.5px}
 .link{color:var(--ink-2);font-size:13px;padding:2px 0}
 .link:hover{color:var(--ink);text-decoration:underline;text-underline-offset:3px}
@@ -454,6 +460,9 @@ body.col-resizing *{cursor:col-resize !important}
 }
 .head h1{font-size:14px;font-weight:600;line-height:1.2}
 .head-right{margin-left:auto;display:flex;align-items:center;gap:6px}
+/* 这一行里"数据"按钮和旁边两个 chip 是同一类东西:尺寸也按 chip 来。
+   原来按钮 29px、chip 25px,排在一起像没对齐(悬停效果已在 .ghost 里统一)。 */
+.head-right .ghost{padding:2px 7px;font-size:12px;border-radius:5px;line-height:1.6}
 .chip{
   display:inline-block;border:1px solid var(--line-2);border-radius:5px;
   padding:2px 7px;font-size:12px;color:var(--ink-2);background:var(--panel);white-space:nowrap;
