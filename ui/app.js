@@ -4330,9 +4330,28 @@ function attachHBar(node) {
     const sheet = document.getElementById('sheet');
     const sheetOn = sheet && sheet.classList.contains('on');
     const inSheet = sheet && sheet.contains(node);
-    /* 谁在最上面就只显示谁的条:弹窗 > 抽屉 > 基线层 */
-    const hidden = (layer && !layer.classList.contains('on')) ||
-                   (modalOn ? !inModal : (sheetOn ? !inSheet : inModal));
+    /* 搜索面板(以及任何 .modal)关掉时是 opacity:0 + visibility:hidden,
+       布局还在 —— 只判"哪一层开着"挡不住它,它的条会一直画在页面上
+       (实测:搜索关掉后,页面中间多出一条横线,正好压在空状态文字上)。
+       所以按"谁在最上层"一路判下来,顺带用 checkVisibility 把这两种隐藏方式算上。 */
+    const palette = document.getElementById('palette');
+    let hidden;
+    let inFloat = null;                  /* 'palette' / 'modal' —— 决定 z-index */
+    if (palette && palette.classList.contains('on')) {
+      inFloat = palette.contains(node) ? 'palette' : null;
+      hidden = !inFloat;
+    } else if (modalOn) {
+      inFloat = inModal ? 'modal' : null;
+      hidden = !inModal;
+    } else if (sheetOn) {
+      hidden = !inSheet;
+    } else {
+      hidden = !!(layer && !layer.classList.contains('on')) || inModal;
+    }
+    if (!hidden && node.checkVisibility &&
+        !node.checkVisibility({ opacityProperty: true, visibilityProperty: true })) {
+      hidden = true;
+    }
     const r = node.getBoundingClientRect();
     let top = r.top, left = r.left, bottom = r.bottom, right = r.right;
     /* 与裁剪祖先求交集:被滚出去/被裁掉的部分不该还画在屏幕上 */
@@ -4346,23 +4365,33 @@ function attachHBar(node) {
     const visW = right - left;
     const visH = bottom - top;
     const canScroll = sh > h + 2 && visW > 60 && visH > 24;
+    /* 停在顶部时不画:这时"读到哪儿了"还没有意义,一条永远在的蓝线
+       会读成随机下划线(左栏列表、空状态那种一眼看不出能滚的框尤其如此)。
+       一旦开始滚就出现,回到顶部再收起来。 */
+    const atTop = node.scrollTop <= 1;
+    const show = !hidden && canScroll && !atTop;
 
     /* 位置、尺寸、滚动量都没变就别碰 DOM:这个函数是每帧跑的,
        无脑写 style 会让浏览器每帧重算样式。 */
     const key = [Math.round(left), Math.round(top), Math.round(visW), h,
-                 node.scrollTop, sh, hidden ? 1 : 0, canScroll ? 1 : 0].join(',');
+                 node.scrollTop, sh, hidden ? 1 : 0, canScroll ? 1 : 0,
+                 show ? 1 : 0, inFloat || ''].join(',');
     if (node.__hbarKey === key) return;
     node.__hbarKey = key;
 
-    if (hidden || !canScroll) {
+    if (!show) {
       if (rail.style.opacity !== '0') {
         rail.style.opacity = '0';
         node.__hbarShown = false;    /* 下次出现时重新"长"一遍 */
+        /* 只有"滚到顶部才收起"这一种,下次出现要跟手;换页导致的重置不算 */
+        node.__hbarHiddenAtTop = !hidden && canScroll && atTop;
       }
       return;
     }
-    /* 弹窗里的条要压在遮罩之上(z-index 80),否则会被自己那层的背景盖住 */
-    rail.classList.toggle('in-modal', !!inModal);
+    /* 浮层里的条要压在浮层之上,否则会被自己的背景盖住
+       (搜索面板 z-index 90、弹窗 80,条默认只有 60) */
+    rail.classList.toggle('in-modal', inFloat === 'modal');
+    rail.classList.toggle('in-palette', inFloat === 'palette');
     /* 位置用"读到哪儿了"表示(和播放器顶上那条一样),不是浮动的滑块:
        视口底部占全文的比例 = 进度。滚到底就是 100%,一眼知道还剩多少。 */
     const len = Math.min(100, ((node.scrollTop + h) / sh) * 100);
@@ -4374,18 +4403,28 @@ function attachHBar(node) {
     rail.style.width = Math.max(0, Math.min(node.clientWidth, visW)) + 'px';
 
     if (!node.__hbarShown) {
-      /* 出现:从 0 涨到当前位置(不做淡入 —— 一条蓝线显影比直接长出来更怪)。
-         目标宽度必须放到下一帧再设:同一帧里"设为 0% + 立即设为目标 + 加 transition"
-         会被浏览器合并成一次计算,动画根本不会开始。 */
       node.__hbarShown = true;
-      node.__hbarGrowUntil = performance.now() + 520;
-      fill.style.transition = 'none';
-      fill.style.width = '0%';
-      void fill.offsetWidth;                       /* 让 0% 先落到样式系统里 */
-      requestAnimationFrame(() => {
-        fill.style.transition = 'width .45s cubic-bezier(.2,.75,.25,1)';
+      if (node.__hbarHiddenAtTop) {
+        /* 是"用户往下滚了才出现"的:直接给到当前位置,不要补一段生长动画
+           (滚动本身已经在动,再补动画会明显滞后) */
+        node.__hbarHiddenAtTop = false;
+        node.__hbarGrowUntil = 0;
+        fill.style.transition = 'none';
         fill.style.width = lenStr;
-      });
+      } else {
+        /* 换页/换分类后出现:从 0 涨到当前位置(不做淡入 ——
+           一条蓝线显影比直接长出来更怪)。
+           目标宽度必须放到下一帧再设:同一帧里"设为 0% + 立即设为目标 + 加 transition"
+           会被浏览器合并成一次计算,动画根本不会开始。 */
+        node.__hbarGrowUntil = performance.now() + 520;
+        fill.style.transition = 'none';
+        fill.style.width = '0%';
+        void fill.offsetWidth;                       /* 让 0% 先落到样式系统里 */
+        requestAnimationFrame(() => {
+          fill.style.transition = 'width .45s cubic-bezier(.2,.75,.25,1)';
+          fill.style.width = lenStr;
+        });
+      }
     } else if (performance.now() > (node.__hbarGrowUntil || 0) && fill.style.width !== lenStr) {
       fill.style.transition = 'none';              /* 滚动时跟手,不做缓动 */
       fill.style.width = lenStr;
