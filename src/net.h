@@ -31,6 +31,11 @@ void net_pool_set(const char **entries, int count);
 /* 从 pool.json 读授权池(返回条目数,读不到返回 -1) */
 int net_pool_load_file(const char *path);
 int  net_pool_count(void);
+/* 授权池快照:把池里的条目原样拷一份出来(含 ! 不允许的条目,保持录入顺序)。
+   "智能体要能说出授权列表"靠它 —— 只告诉模型"本轮焦点"一个域名时,
+   用户说"把授权列表都巡检一遍"它无从下手。
+   返回条目数;list 用 str_free_list(list, n) 释放。out 可为 NULL(只数个数)。 */
+int  net_pool_snapshot(char ***out);
 /* path 传 URL 的路径(可传 "/")。条目里可写 !host 或 !host/path 表示"不允许",
    不允许优先于允许 —— 用来表达"允许 exp.com,但除了 exp.com/admin/"。 */
 int  net_pool_has(const char *host, int port, const char *path);

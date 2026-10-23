@@ -1470,6 +1470,47 @@ static void h_pool(const http_req_t *req, http_res_t *res) {
 
 static char *attach_read(const char *sid, const char *id, size_t cap, size_t *out_len);
 
+/* ---------- "把授权列表都巡检一遍" ----------
+   这句话是个**确定的需求**:对池里每个允许的目标各跑一轮。让模型自己循环也能做,
+   但它一步只能动一个站,跑没跑完取决于它记不记得 —— 实测就是只查了第一个站
+   (或干脆反问"要查哪个")。所以这里由程序展开:N 个目标 → N 轮,
+   每轮各自 apply_scope(建任务、设边界),模型只负责"这个站怎么查"。
+
+   判定要件三条,缺一不可:
+     ① 有"多个/全部"的词(所有/全部/每个/逐个/授权列表/授权池…)；
+     ② 有巡检类动词(巡检/检查/扫/查一遍…)；
+     ③ 这句话里没有点名具体目标 —— 点了名就按单站走,
+        "把 baidu.com 所有页面都查一遍"不能被当成整池巡检。 */
+static int text_has_target(const char *s) {
+  for (const char *p = s; p && *p; p++) {
+    if (!isalnum((unsigned char)*p)) continue;
+    const char *q = p;
+    while (*q && (isalnum((unsigned char)*q) || *q == '.' || *q == '-' || *q == '_')) q++;
+    size_t n = (size_t)(q - p);
+    if (n > 3 && n < 120 && memchr(p, '.', n)) return 1;   /* 形如 host.com / 1.2.3.4 */
+    if (q > p) p = q - 1;
+  }
+  return 0;
+}
+
+static int wants_whole_pool(const char *q) {
+  if (!q || !*q) return 0;
+  static const char *all_words[] = {"所有", "全部", "每个", "逐个", "挨个", "逐一", "批量",
+                                    "授权列表", "授权池", "清单里", "池里", "池子", NULL};
+  static const char *verbs[] = {"巡检", "检查", "扫一遍", "扫一下", "查一遍", "过一遍",
+                                "都查", "都过", "全查", NULL};
+  int has_all = 0, has_verb = 0;
+  for (int i = 0; all_words[i]; i++) {
+    if (str_icontains(q, all_words[i])) { has_all = 1; break; }
+  }
+  if (!has_all) return 0;
+  for (int i = 0; verbs[i]; i++) {
+    if (str_icontains(q, verbs[i])) { has_verb = 1; break; }
+  }
+  if (!has_verb) return 0;
+  return text_has_target(q) ? 0 : 1;
+}
+
 static void h_chat(const http_req_t *req, http_res_t *res) {
   /* 会话 id 先读出来:附件与历史都按会话存,拼输入时要用。
      查询串和 JSON 体都认 —— 界面走查询串,脚本调接口时更顺手的是 body。 */
@@ -1539,7 +1580,12 @@ static void h_chat(const http_req_t *req, http_res_t *res) {
      没带目标就沿用上一次的焦点,这样"接着刚才那个站继续"不用重复输入。 */
   char target[256];
   http_query(req, "target", target, sizeof(target), "");
+  int target_named = (target[0] != 0);
   if (!target[0]) snprintf(target, sizeof(target), "%s", g_domain_disp);
+  /* "把授权列表都巡检一遍":这是整池巡检,不能被上一次的焦点绑成一个站。
+     只认请求里明确给的目标 —— 界面上点某个站进来的,目标一定在查询串里。 */
+  int batch = (!target_named && wants_whole_pool(q));
+  if (batch) target[0] = 0;
   if (target[0]) {
     if (!pool_contains(target)) {
       buf_t msg;
@@ -1612,9 +1658,36 @@ static void h_chat(const http_req_t *req, http_res_t *res) {
         不能在门外干等。共享数据一律走各自的锁(store 自带锁,状态缓存自带锁)。 —— */
   EnterCriticalSection(&slot->lock);
 
+  /* 整池巡检:先把目标列出来(只取池里"允许"的条目,去重,按录入顺序)。
+     每站一轮 —— 见 wants_whole_pool 上面那段说明。 */
+  char **batch_targets = NULL;
+  int batch_n = 0, batch_more = 0;
+  if (batch) {
+    const int kBatchMax = 8;          /* 一轮最多 8 个站,再多就得分次说 */
+    char **pool = NULL;
+    int pn = net_pool_snapshot(&pool);
+    if (pn > 0) batch_targets = (char **)xcalloc((size_t)pn, sizeof(char *));
+    for (int i = 0; i < pn; i++) {
+      const char *e = pool[i];
+      if (!e || !e[0] || e[0] == '!') continue;
+      int dup = 0;
+      for (int k = 0; k < batch_n; k++) {
+        if (str_ieq(batch_targets[k], e)) { dup = 1; break; }
+      }
+      if (dup) continue;
+      if (batch_n >= kBatchMax) { batch_more = 1; continue; }
+      batch_targets[batch_n++] = xstrdup(e);
+    }
+    str_free_list(pool, pn);
+  }
+
   /* 这一轮的授权范围落在线程本地,并由智能体自己持有 —— 别的会话同时在跑,
-     边界也不会被串改。 */
-  if (g_domain[0]) {
+     边界也不会被串改。整池巡检时先落在第一个站上,后面每站再重设。 */
+  if (batch_n > 0) {
+    const char *domvs[1];
+    domvs[0] = batch_targets[0];
+    agent_set_scope(slot->a, g_task, domvs, 1);
+  } else if (g_domain[0]) {
     const char *domvs[1];
     domvs[0] = g_domain;              /* 带路径:这一轮就只看这棵子树 */
     agent_set_scope(slot->a, g_task, domvs, 1);
@@ -1636,7 +1709,74 @@ static void h_chat(const http_req_t *req, http_res_t *res) {
 
   loop_state_t st;
   memset(&st, 0, sizeof(st));
-  agent_run_turn(slot->a, input.data ? input.data : q, &st);
+
+  if (batch && batch_n == 0) {
+    /* 池子是空的(或只有 ! 不允许条目):这不叫"巡检失败",叫"还没授权" */
+    buf_t n;
+    buf_init(&n);
+    buf_puts(&n, "授权池里还没有可巡检的目标 —— 一个请求都不会发出去。\n");
+    buf_puts(&n, "请先在右上角「设置授权」里把要检查的主机加进授权池(可加多条),"
+                 "然后再说一次「把授权列表都巡检一遍」。");
+    t_close_text(&ctx);
+    t_put_text(&ctx, n.data);
+    buf_free(&n);
+    st.stop_code = STOP_NEED_USER;
+    snprintf(st.stop_reason, sizeof(st.stop_reason), "授权池为空,没有可巡检的目标");
+  } else if (batch_n > 0) {
+    /* 逐站一轮:每站单独 apply_scope(建任务、设边界、对齐端口),
+       再把"这次只处理这个站"写进指令 —— 模型换站不会搞混。 */
+    for (int i = 0; i < batch_n; i++) {
+      if (agent_cancelled(slot->a)) break;
+      t_close_text(&ctx);
+      buf_t head;
+      buf_init(&head);
+      buf_printf(&head, "\n── 授权列表巡检 %d/%d:%s ──\n", i + 1, batch_n, batch_targets[i]);
+      t_put_text(&ctx, head.data);
+      buf_free(&head);
+
+      EnterCriticalSection(&g_lock);
+      apply_scope(batch_targets[i]);
+      LeaveCriticalSection(&g_lock);
+      {
+        const char *domvs[1];
+        domvs[0] = batch_targets[i];
+        agent_set_scope(slot->a, g_task, domvs, 1);
+      }
+      net_scope_violation_clear();
+
+      buf_t instr;
+      buf_init(&instr);
+      buf_printf(&instr, "【授权列表巡检 %d/%d】这次只处理 %s。原始要求:", i + 1, batch_n,
+                 batch_targets[i]);
+      buf_puts(&instr, input.data ? input.data : q);
+      loop_state_t sti;
+      memset(&sti, 0, sizeof(sti));
+      agent_run_turn(slot->a, instr.data, &sti);
+      buf_free(&instr);
+
+      /* 汇总:停止原因按"最后一站"记(中途叫停则保留那一站的原因),步数累加 */
+      st.step_count += sti.step_count;
+      st.stop_code = sti.stop_code;
+      snprintf(st.stop_reason, sizeof(st.stop_reason), "%s", sti.stop_reason);
+      if (sti.steps) json_free(sti.steps);
+      buf_free(&sti.transcript);
+      if (agent_cancelled(slot->a)) break;
+    }
+    if (batch_more) {
+      buf_t more;
+      buf_init(&more);
+      buf_printf(&more, "\n这次只跑了 %d 个站(一轮上限),授权池里还有别的目标,"
+                        "要接着查就再说一次。\n", batch_n);
+      t_put_text(&ctx, more.data);
+      buf_free(&more);
+    }
+    if (!st.stop_reason[0]) snprintf(st.stop_reason, sizeof(st.stop_reason), "已完成");
+  } else {
+    agent_run_turn(slot->a, input.data ? input.data : q, &st);
+  }
+
+  for (int i = 0; i < batch_n; i++) free(batch_targets[i]);
+  free(batch_targets);
   g_sse = NULL;
   buf_free(&input);
 

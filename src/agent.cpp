@@ -104,10 +104,54 @@ void agent_set_scope(agent_t *a, const char *task_id, const char **domains, int 
 
   buf_clear(&a->scope_note);
   if (a->domain_count == 0) {
-    buf_puts(&a->scope_note, "当前没有配置授权域名 —— 任何对外动作都不允许执行。");
+    buf_puts(&a->scope_note,
+             "本轮没有指定单一目标(用户没点具体某个站,或是在问整体情况)。\n");
   } else {
-    buf_printf(&a->scope_note, "任务 %s,授权域名:", a->task_id[0] ? a->task_id : "(未命名)");
-    for (int i = 0; i < a->domain_count; i++) buf_printf(&a->scope_note, " %s", a->domains[i]);
+    buf_printf(&a->scope_note, "本轮焦点:%s\n任务 %s。\n", a->domains[0],
+               a->task_id[0] ? a->task_id : "(未命名)");
+    if (a->domain_count > 1) {
+      buf_puts(&a->scope_note, "本轮可覆盖:");
+      for (int i = 1; i < a->domain_count; i++) buf_printf(&a->scope_note, " %s", a->domains[i]);
+      buf_puts(&a->scope_note, "\n");
+    }
+  }
+
+  /* —— 授权池:必须让模型看见完整的"能查谁" ——
+     以前这里只写"本轮焦点"一个域,用户说"把授权列表里的站都巡检一遍"时,
+     模型压根不知道列表里有什么,只能反问或只查一个站(实测遇到的问题)。
+     现在把池子原样摊给它:允许的、明确不允许的,以及"多站点要逐个来"的做法。 */
+  {
+    char **pool = NULL;
+    int pn = net_pool_snapshot(&pool);
+    int allow = 0, deny = 0;
+    for (int i = 0; i < pn; i++) {
+      if (pool[i] && pool[i][0] == '!') deny++;
+      else if (pool[i] && pool[i][0]) allow++;
+    }
+    if (pn == 0) {
+      buf_puts(&a->scope_note,
+               "授权池是空的 —— 一个对外请求都不允许发。先让用户把主机加进授权池。\n");
+    } else {
+      buf_printf(&a->scope_note, "授权池(共 %d 条,允许 %d 个目标):", pn, allow);
+      for (int i = 0; i < pn; i++) {
+        if (!pool[i] || !pool[i][0] || pool[i][0] == '!') continue;
+        buf_printf(&a->scope_note, " %s;", pool[i]);
+      }
+      buf_puts(&a->scope_note, "\n");
+      if (deny > 0) {
+        buf_puts(&a->scope_note, "明确不允许访问(不要碰):");
+        for (int i = 0; i < pn; i++) {
+          if (pool[i] && pool[i][0] == '!' && pool[i][1]) buf_printf(&a->scope_note, " %s;", pool[i]);
+        }
+        buf_puts(&a->scope_note, "\n");
+      }
+      buf_puts(&a->scope_note,
+               "池里的目标都在授权范围内:用户点名某个站就以它为本轮焦点;\n"
+               "用户要求「所有授权站点/授权列表都查一遍」时,逐个站点来做 —— 一次只对一个目标动手,\n"
+               "每个站单独传 target(带协议与端口,例如 https://host),不要合并成一次请求,\n"
+               "也不要因为第一个站跑完就收尾,还没查的站要接着查。\n");
+    }
+    str_free_list(pool, pn);
   }
 }
 
@@ -518,14 +562,29 @@ int agent_run_turn(agent_t *a, const char *user_text, loop_state_t *st) {
         }
         if (already) {
           char *tool = d.tool ? xstrdup(d.tool) : NULL;
+          /* 读信息类工具(授权列表 / 本机信息 / 设置)的**结果本身就是回答**:
+             模型在线时它会照着结果讲一遍;降级到本地规则时没人转述,
+             就该把结果原样交给用户,而不是说一句"已经跑完了"让人自己往上翻。 */
+          const char *last_result = NULL;
+          if (tool && (!strcmp(tool, "pool_list") || !strcmp(tool, "agent_info") ||
+                       !strcmp(tool, "settings_get") || !strcmp(tool, "settings_set"))) {
+            for (int i = 0; i < j_len(observations); i++) {
+              json_t *o = j_at(observations, i);
+              if (strcmp(j_s(o, "tool", ""), tool) == 0) last_result = j_s(o, "result", "");
+            }
+          }
           decision_free(&d);
           d.kind = ACT_ANSWER;
-          buf_t n;
-          buf_init(&n);
-          buf_printf(&n, "「%s」这一轮已经跑完了,结论就在上面的结果里。", tool ? tool : "这项检查");
-          if (findings_total > 0) buf_printf(&n, "共确认 %d 条风险。", findings_total);
-          buf_puts(&n, "需要继续的话,可以针对某一条复测、出报告,或指定某个页面做更深的单点检查。");
-          d.text = buf_take(&n);
+          if (last_result && *last_result) {
+            d.text = xstrdup(last_result);
+          } else {
+            buf_t n;
+            buf_init(&n);
+            buf_printf(&n, "「%s」这一轮已经跑完了,结论就在上面的结果里。", tool ? tool : "这项检查");
+            if (findings_total > 0) buf_printf(&n, "共确认 %d 条风险。", findings_total);
+            buf_puts(&n, "需要继续的话,可以针对某一条复测、出报告,或指定某个页面做更深的单点检查。");
+            d.text = buf_take(&n);
+          }
           free(tool);
         }
       }

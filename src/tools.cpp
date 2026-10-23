@@ -6,14 +6,25 @@
  * 所有工具都遵守两条纪律:
  *   1. 只做只读动作(GET/HEAD),不做任何写入、上传、爆破、利用;
  *   2. 目标必须过授权校验(由 net.c 的合规层兜底,工具自己也再查一次)。
+ *
+ * 例外只有一组:**本机设置类工具**(pool_list / agent_info / settings_get / settings_set)。
+ * 它们读写的是这台机器上的配置,不碰被检目标,所以"只读"这条对它们不适用;
+ * 但反过来管得更严:授权池只读、审批只能收紧、周期规则的目标必须在授权池内,
+ * 每一次写入都留审计 —— 智能体不能靠"改设置"给自己扩权。
  */
 #include "tools.h"
 #include "regex.h"
 #include "profile.h"
 
+#include "approval.h"
+#include "automation.h"
 #include "ext.h"
+#include "llm.h"
+#include "llm_provider.h"
 #include "net.h"
 #include "rules.h"
+#include "rules_domains.h"
+#include "skills.h"
 #include "store.h"
 #include "webutil.h"
 
@@ -27,6 +38,10 @@ static int g_tool_cap = 0;
 static int t_sensitive_scan(tool_ctx_t *ctx, json_t *args, tool_result_t *out);
 static int t_password_check(tool_ctx_t *ctx, json_t *args, tool_result_t *out);
 static int t_site_crawl(tool_ctx_t *ctx, json_t *args, tool_result_t *out);
+static int t_pool_list(tool_ctx_t *ctx, json_t *args, tool_result_t *out);
+static int t_agent_info(tool_ctx_t *ctx, json_t *args, tool_result_t *out);
+static int t_settings_get(tool_ctx_t *ctx, json_t *args, tool_result_t *out);
+static int t_settings_set(tool_ctx_t *ctx, json_t *args, tool_result_t *out);
 static int t_sensitive_file_probe(tool_ctx_t *ctx, json_t *args, tool_result_t *out);
 static int t_dir_probe(tool_ctx_t *ctx, json_t *args, tool_result_t *out);
 static int t_page_diff(tool_ctx_t *ctx, json_t *args, tool_result_t *out);
@@ -40,6 +55,52 @@ static void probe_root(const char *url, char *out, size_t cap);
 /* 工具声明:name / description / schema / kind / source_url
    —— 与三册合同里的 ToolDecl 字段一一对应。 */
 static tool_t g_registry[] = {
+    {"pool_list",
+     "列出授权池里的目标:允许检查哪些主机、哪些被明确禁止(! 开头),以及本轮焦点。"
+     "用户要求「把授权列表 / 所有授权站点都巡检一遍」时先用它拿到完整清单,再逐个站点动手。"
+     "不需要参数,不发起任何网络请求。",
+     "{\"type\":\"object\",\"properties\":{},\"additionalProperties\":false}",
+     "内置 · 本机", "", t_pool_list},
+
+    {"agent_info",
+     "查智能体自身的信息:数据目录、当前模型与可用模型数、授权池、审批策略、规则来源、"
+     "已落盘的发现/运行/资产/告警条数、周期巡检条数、技能与工具数量。"
+     "回答「你现在什么状态」「你有多少能力」「授权了哪些站」这类问题,或在改设置前先看当前值。"
+     "不需要参数,不发起任何网络请求。",
+     "{\"type\":\"object\",\"properties\":{},\"additionalProperties\":false}",
+     "内置 · 本机", "", t_agent_info},
+
+    {"settings_get",
+     "读本机设置(不改任何东西)。section 取 rules / approval / automation / models / profile,"
+     "默认 all 给一份汇总;rules 还可以带 domain(detect/sensitive/probe/alert/org/page)只看一域,"
+     "带 key 只看一个键(点号路径,如 timeout_ms 或 alerts.min_rank)。不碰被检目标。",
+     "{\"type\":\"object\",\"properties\":{"
+     "\"section\":{\"type\":\"string\",\"description\":\"rules|approval|automation|models|profile|all\"},"
+     "\"domain\":{\"type\":\"string\",\"description\":\"section=rules 时的域 id\"},"
+     "\"key\":{\"type\":\"string\",\"description\":\"section=rules 时只看这个键\"}},"
+     "\"additionalProperties\":false}",
+     "内置 · 本机", "", t_settings_get},
+
+    {"settings_set",
+     "改本机设置(不碰被检目标,每次写入都记审计)。按 section 分四种用法:\n"
+     "· rules:带 domain + patch(这一域要改的字段,JSON 对象文本)或 key+value,保存后立即重载生效;\n"
+     "· automation:action=save/remove,带 rule(JSON 对象文本,字段同周期巡检:id/name/domain/scope/"
+     "kind/every_min/at_hour/at_min/weekday/checks/enabled)或 id;目标必须在授权池内;\n"
+     "· models:带 id,切换到已配置且可用的那一家模型;\n"
+     "· approval:带 id,切换到某条策略 —— 只允许换成更严的,\"全部允许\"必须由人在界面上确认。"
+     "授权池不在可改范围(只能 pool_list 读):要加站点请让用户在界面里确认授权。",
+     "{\"type\":\"object\",\"properties\":{"
+     "\"section\":{\"type\":\"string\",\"description\":\"rules|automation|models|approval\"},"
+     "\"domain\":{\"type\":\"string\",\"description\":\"section=rules 时的域 id\"},"
+     "\"patch\":{\"description\":\"section=rules:要保存的字段(JSON 对象,可直接给对象或 JSON 文本)\"},"
+     "\"key\":{\"type\":\"string\",\"description\":\"section=rules:只改一个键\"},"
+     "\"value\":{\"description\":\"section=rules:key 对应的值(数字/布尔/字符串,对象或数组给 JSON 文本)\"},"
+     "\"rule\":{\"description\":\"section=automation:规则(对象或 JSON 文本)\"},"
+     "\"id\":{\"type\":\"string\",\"description\":\"automation/models/approval:目标 id\"},"
+     "\"action\":{\"type\":\"string\",\"description\":\"automation:save|remove\"}},"
+     "\"required\":[\"section\"],\"additionalProperties\":false}",
+     "内置 · 本机", "", t_settings_set},
+
     {"sensitive_scan",
      "扫描一段文本里的敏感信息(身份证/手机号/邮箱/IP/凭据/私钥),并叠加任务绑定的"
      "敏感信息定义(关键词、正则)。用于检查用户粘贴的文本或抓到的页面内容。",
@@ -326,8 +387,836 @@ static int do_fetch(tool_ctx_t *ctx, const char *url, const char *method,
 
 /* ================= 工具实现 ================= */
 
+/* ---------- 本机信息与设置:公共小工具 ---------- */
+
+/* 模型/人两边都能读的一行值:字符串不加引号,其它用紧凑 JSON */
+static void value_text(buf_t *out, json_t *v) {
+  if (!v) {
+    buf_puts(out, "(未设置)");
+    return;
+  }
+  if (v->type == J_STR) {
+    buf_puts(out, v->str ? v->str : "");
+    return;
+  }
+  if (v->type == J_NULL) {
+    buf_puts(out, "null");
+    return;
+  }
+  char *d = json_dump(v);
+  buf_puts(out, d ? d : "");
+  free(d);
+}
+
+/* 把一份规则域里的键名列出来(保存后告诉用户"这次改了哪几个键") */
+static void join_keys(buf_t *out, json_t *obj) {
+  if (!obj || obj->type != J_OBJ) return;
+  for (int i = 0; i < obj->count; i++) {
+    if (!obj->keys[i]) continue;
+    if (out->len) buf_puts(out, "、");
+    buf_puts(out, obj->keys[i]);
+  }
+}
+
+/* 写设置的统一留痕。为什么每次都要留:模型改的东西也必须可追溯,
+   出问题时能回答"这条规则是什么时候、被谁改掉的"。 */
+static void settings_audit(tool_ctx_t *ctx, const char *action, const char *target,
+                           const char *detail) {
+  if (!ctx || !ctx->store) return;
+  store_audit((store_t *)ctx->store, action, target ? target : "", 1,
+              detail ? detail : "", ctx->task_id, ctx->run_id);
+}
+
+/* 对象型参数:模型可能直接给一个对象,也可能给一段 JSON 文本;两种都收。
+   返回的副本由调用方 json_free(不借出 argv 里的指针,省得后面谁改了原对象)。 */
+static json_t *obj_arg(json_t *args, const char *key) {
+  json_t *v = j_get(args, key);
+  if (!v) return NULL;
+  if (v->type == J_OBJ || v->type == J_ARR) {
+    char *d = json_dump(v);
+    json_t *cp = d ? json_parse(d) : NULL;
+    free(d);
+    return cp;
+  }
+  if (v->type == J_STR && v->str && v->str[0]) return json_parse(v->str);
+  return NULL;
+}
+
+/* 单个值:数字/布尔/对象原样用;字符串先当 JSON 试一下,不行才按纯文本 */
+static json_t *value_arg(json_t *args, const char *key) {
+  json_t *v = j_get(args, key);
+  if (!v) return NULL;
+  if (v->type == J_STR) {
+    json_t *parsed = (v->str && v->str[0]) ? json_parse(v->str) : NULL;
+    return parsed ? parsed : j_str(v->str ? v->str : "");
+  }
+  char *d = json_dump(v);
+  json_t *cp = d ? json_parse(d) : NULL;
+  free(d);
+  return cp;
+}
+
+/* "probing.timeout_ms" → 顶层键 "probing"(规则按顶层键分域) */
+static int top_key_of(const char *path, char *out, size_t cap) {
+  if (!path || !*path || !out || cap == 0) return 0;
+  const char *dot = strchr(path, '.');
+  size_t n = dot ? (size_t)(dot - path) : strlen(path);
+  if (n == 0 || n >= cap) return 0;
+  memcpy(out, path, n);
+  out[n] = 0;
+  return 1;
+}
+
+/* 按 a.b.c 设值,中间层不存在就补一个空对象。
+   为什么要它:规则一域里的值常常是嵌套的(探测参数整块是一层对象),
+   而按域保存是"整键替换" —— 直接提交 {probing:{timeout_ms:x}} 会把
+   max_paths/max_dirs 一起抹掉。所以先在现有内容上打点,再整键提交。 */
+static int deep_set(json_t *root, const char *path, json_t *value) {
+  if (!root || root->type != J_OBJ || !path || !*path) return 0;
+  const char *dot = strchr(path, '.');
+  if (!dot) {
+    j_set(root, path, value);
+    return 1;
+  }
+  char head[128];
+  size_t n = (size_t)(dot - path);
+  if (n == 0 || n >= sizeof(head)) return 0;
+  memcpy(head, path, n);
+  head[n] = 0;
+  json_t *child = j_get(root, head);
+  if (!child || child->type != J_OBJ) {
+    child = j_obj();
+    j_set(root, head, child);       /* 接管所有权;child 指针本身不变 */
+  }
+  return deep_set(child, dot + 1, value);
+}
+
+/* 失败回包:错误要能被模型读懂,也要能被人看见 */
+static int settings_fail(tool_result_t *out, buf_t *msg) {
+  out->is_error = 1;
+  out->text = buf_take(msg);
+  out->say = xstrdup("这个设置我没有改动。");
+  return -1;
+}
+
+/* ---- 0. 授权列表(只读,一个请求都不发) ----
+   用户说"把授权列表里的站都巡检一遍"时,模型得先知道列表里有什么。
+   提示词里已经摊了一份授权池,但那是每轮开始时拍的快照;
+   这个工具让它随时能重新问一遍,也让"授权列表"这件事在界面上有据可查。 */
+static int t_pool_list(tool_ctx_t *ctx, json_t *args, tool_result_t *out) {
+  (void)args;
+  char **pool = NULL;
+  int n = net_pool_snapshot(&pool);
+
+  json_t *allow = j_arr();
+  json_t *deny = j_arr();
+  for (int i = 0; i < n; i++) {
+    const char *e = pool[i];
+    if (!e || !e[0]) continue;
+    if (e[0] == '!') j_add(deny, j_str(e + 1));   /* 分类已在数组里,展示时去掉 ! */
+    else j_add(allow, j_str(e));
+  }
+  json_t *data = j_obj();
+  j_set(data, "allowed", allow);
+  j_set(data, "denied", deny);
+  j_set_num(data, "allowed_count", j_len(allow));
+  j_set_num(data, "denied_count", j_len(deny));
+  if (ctx && ctx->domain_count > 0) j_set_str(data, "focus", ctx->domains[0]);
+  out->data = data;
+
+  buf_t t;
+  buf_init(&t);
+  if (j_len(allow) == 0) {
+    if (n == 0) {
+      buf_puts(&t, "授权池是空的:任何对外请求都不会发出去。"
+                   "先在界面上把要检查的主机加进授权池,再发起巡检。");
+    } else {
+      buf_puts(&t, "授权池里没有允许的目标(全是 ! 开头的不允许条目):不会对外发任何请求。");
+    }
+  } else {
+    buf_printf(&t, "授权池共 %d 个允许目标", j_len(allow));
+    if (ctx && ctx->domain_count > 0) buf_printf(&t, ",本轮焦点是 %s", ctx->domains[0]);
+    buf_puts(&t, ":\n");
+    for (int i = 0; i < j_len(allow) && i < 100; i++) {
+      json_t *v = j_at(allow, i);
+      if (v && v->type == J_STR && v->str) buf_printf(&t, "  - %s\n", v->str);
+    }
+    if (j_len(deny) > 0) {
+      buf_puts(&t, "明确不允许(不要访问):\n");
+      for (int i = 0; i < j_len(deny) && i < 100; i++) {
+        json_t *v = j_at(deny, i);
+        if (v && v->type == J_STR && v->str) buf_printf(&t, "  - %s\n", v->str);
+      }
+    }
+    buf_puts(&t, "要巡检多个站点时逐个来:一次只对一个目标调用技能或工具,一个跑完再换下一个。");
+  }
+  out->text = buf_take(&t);
+  out->say = xstrdup(j_len(allow) > 0 ? "我先看一下授权池里有哪些站点。"
+                                      : "授权池是空的,一个请求都发不出去。");
+  str_free_list(pool, n);
+  return 0;
+}
+
+/* ---- 0-B. 智能体自身的信息 ----
+   为什么值得单独一个工具:模型对"自己是谁、现在什么状态"经常瞎猜 ——
+   猜数据目录、猜用的是哪家模型、猜已经查了多少条。这里给的都是真值。 */
+static int t_agent_info(tool_ctx_t *ctx, json_t *args, tool_result_t *out) {
+  (void)args;
+  json_t *d = j_obj();
+  j_set_str(d, "dataDir", app_data_dir());
+  j_set_str(d, "exeDir", app_dir());
+
+  json_t *model = j_obj();
+  j_set_str(model, "active", providers_active_id());
+  j_set_str(model, "display", providers_display_name());
+  j_set_num(model, "configured", providers_count());
+  j_set_num(model, "ready", providers_ready_count());
+  j_set_bool(model, "usable", providers_ready_count() > 0);
+  j_set(d, "model", model);
+
+  char **pool = NULL;
+  int pn = net_pool_snapshot(&pool);
+  json_t *pallow = j_arr();
+  json_t *pdeny = j_arr();
+  for (int i = 0; i < pn; i++) {
+    const char *e = pool[i];
+    if (!e || !e[0]) continue;
+    if (e[0] == '!') j_add(pdeny, j_str(e + 1));
+    else j_add(pallow, j_str(e));
+  }
+  json_t *poolj = j_obj();
+  j_set(poolj, "allowed", pallow);
+  j_set(poolj, "denied", pdeny);
+  j_set_num(poolj, "allowed_count", j_len(pallow));
+  j_set_num(poolj, "denied_count", j_len(pdeny));
+  j_set(d, "pool", poolj);
+
+  json_t *aj = j_obj();
+  j_set_str(aj, "active", approval_active_id());
+  j_set_str(aj, "mode", approval_mode_text());
+  j_set_bool(aj, "allowAll", approval_is_allow_all());
+  j_set(d, "approval", aj);
+
+  json_t *rj = j_obj();
+  j_set_str(rj, "source", rules_source());
+  j_set_bool(rj, "fromFile", rules_from_file());
+  json_t *doms = j_arr();
+  for (int i = 0; i < rules_domain_count(); i++) {
+    const rules_domain_t *dd = rules_domain_at(i);
+    if (!dd) continue;
+    json_t *o = j_obj();
+    j_set_str(o, "id", dd->id);
+    j_set_str(o, "title", dd->title);
+    j_add(doms, o);
+  }
+  j_set(rj, "domains", doms);
+  j_set(d, "rules", rj);
+
+  json_t *counts = j_obj();
+  if (ctx && ctx->store) {
+    store_t *s = (store_t *)ctx->store;
+    j_set_num(counts, "findings", store_count(s, "findings"));
+    j_set_num(counts, "runs", store_count(s, "runs"));
+    j_set_num(counts, "assets", store_count(s, "assets"));
+    j_set_num(counts, "alerts", store_count(s, "alerts"));
+    j_set_num(counts, "automations", store_count(s, "automations"));
+  }
+  j_set(d, "counts", counts);
+
+  j_set_num(d, "skills", skills_count());
+  j_set_num(d, "tools", tools_count());
+  out->data = d;
+
+  buf_t t;
+  buf_init(&t);
+  buf_puts(&t, "网站安全巡检智能体 · 本机信息\n");
+  buf_printf(&t, "  数据目录 : %s\n", app_data_dir());
+  buf_printf(&t, "  当前模型 : %s(%d 家已配置,%d 家可用)\n",
+             providers_display_name(), providers_count(), providers_ready_count());
+  buf_printf(&t, "  授权池   : %d 个允许目标", j_len(pallow));
+  for (int i = 0; i < j_len(pallow) && i < 12; i++) {
+    json_t *v = j_at(pallow, i);
+    if (v && v->str) buf_printf(&t, " %s", v->str);
+  }
+  if (j_len(pdeny) > 0) {
+    buf_printf(&t, " · %d 条不允许", j_len(pdeny));
+  }
+  buf_puts(&t, "\n");
+  buf_printf(&t, "  审批策略 : %s(%s)\n", approval_mode_text(), approval_active_id());
+  buf_printf(&t, "  规则来源 : %s(%d 个域)\n", rules_source(), rules_domain_count());
+  if (ctx && ctx->store) {
+    store_t *s = (store_t *)ctx->store;
+    buf_printf(&t, "  已落盘   : 发现 %d 条 · 运行 %d 次 · 资产 %d 个 · 告警 %d 条 · 周期规则 %d 条\n",
+               store_count(s, "findings"), store_count(s, "runs"), store_count(s, "assets"),
+               store_count(s, "alerts"), store_count(s, "automations"));
+  }
+  buf_printf(&t, "  能力     : 技能 %d 个 · 工具 %d 个\n", skills_count(), tools_count());
+  buf_puts(&t, "\n这些是当前真实值;要改规则/周期/模型/审批用 settings_set(授权池只能由人在界面里加)。");
+  out->text = buf_take(&t);
+  out->say = xstrdup("我看了一下自己的状态,见上面的信息。");
+  str_free_list(pool, pn);
+  return 0;
+}
+
+/* ---- 0-C. 读设置 ---- */
+static int t_settings_get(tool_ctx_t *ctx, json_t *args, tool_result_t *out) {
+  const char *section = j_s(args, "section", "all");
+  const char *domain = j_s(args, "domain", "");
+  const char *key = j_s(args, "key", "");
+  if (!section[0]) section = "all";
+  /* 只给了 domain/key 就说明问的是规则:别再把审批/模型一并倒出来 */
+  if (str_ieq(section, "all") && (domain[0] || key[0])) section = "rules";
+  int all = str_ieq(section, "all");
+
+  json_t *d = j_obj();
+  j_set_str(d, "section", section);
+  buf_t t;
+  buf_init(&t);
+
+  if (all || str_ieq(section, "rules")) {
+    if (!domain[0] && key[0]) {
+      /* 只问一个键:从"当前生效"的整份规则里取,路径可以是 a.b.c。
+         用户问"超时现在是多少""告警门槛是哪一档"最常走这条。 */
+      json_t *v = j_path(rules_root(), key);
+      if (!v) {
+        json_free(d);
+        buf_free(&t);
+        buf_t m;
+        buf_init(&m);
+        buf_printf(&m, "规则里没有 %s 这个键(可以先用 section=rules 看各域的键名)", key);
+        return settings_fail(out, &m);
+      }
+      const rules_domain_t *owner = rules_domain_of_key(key);
+      if (!owner) {
+        char top[128];
+        if (top_key_of(key, top, sizeof(top))) owner = rules_domain_of_key(top);
+      }
+      j_set_str(d, "key", key);
+      if (owner) j_set_str(d, "domain", owner->id);
+      char *dump = json_dump(v);
+      json_t *copy = dump ? json_parse(dump) : NULL;
+      free(dump);
+      if (copy) j_set(d, "value", copy);
+      buf_printf(&t, "规则 %s = ", key);
+      value_text(&t, v);
+      if (owner) buf_printf(&t, "  (属于 %s 域:%s)", owner->id, owner->title);
+      buf_puts(&t, "\n");
+    } else if (domain[0]) {
+      char err[512] = {0};
+      json_t *dom = rules_domains_read(domain, err, sizeof(err));
+      if (!dom) {
+        json_free(d);
+        buf_t m;
+        buf_init(&m);
+        buf_printf(&m, "读不到规则域 %s:%s", domain, err[0] ? err : "未知原因");
+        buf_free(&t);
+        return settings_fail(out, &m);
+      }
+      if (key[0]) {
+        /* 单键:从"当前生效"的整份规则里取,路径可以是 a.b.c */
+        json_t *v = j_path(rules_root(), key);
+        if (!v && dom) v = j_path(dom, key);
+        if (!v) {
+          json_free(dom);
+          json_free(d);
+          buf_t m;
+          buf_init(&m);
+          buf_printf(&m, "规则里没有 %s 这个键", key);
+          buf_free(&t);
+          return settings_fail(out, &m);
+        }
+        j_set_str(d, "key", key);
+        char *dump = json_dump(v);
+        json_t *copy = dump ? json_parse(dump) : NULL;
+        free(dump);
+        if (copy) j_set(d, "value", copy);
+        buf_printf(&t, "规则 %s = ", key);
+        value_text(&t, v);
+        buf_puts(&t, "\n");
+        json_free(dom);
+      } else {
+        const rules_domain_t *dd = rules_domain_find(domain);
+        j_set_str(d, "domain", domain);
+        j_set_str(d, "title", dd ? dd->title : domain);
+        j_set(d, "rules", dom);
+        char *pretty = json_dump_pretty(dom);
+        buf_printf(&t, "规则域 %s(%s):\n%s\n", domain, dd ? dd->title : "",
+                   pretty ? pretty : "{}");
+        free(pretty);
+      }
+    } else {
+      json_t *list = j_arr();
+      buf_puts(&t, "规则域:");
+      for (int i = 0; i < rules_domain_count(); i++) {
+        const rules_domain_t *dd = rules_domain_at(i);
+        if (!dd) continue;
+        json_t *o = j_obj();
+        j_set_str(o, "id", dd->id);
+        j_set_str(o, "title", dd->title);
+        j_set_str(o, "file", dd->file);
+        j_set_str(o, "note", dd->note);
+        j_add(list, o);
+        buf_printf(&t, " %s(%s)", dd->id, dd->title);
+      }
+      buf_puts(&t, "\n");
+      j_set(d, "domains", list);
+      j_set_str(d, "source", rules_source());
+    }
+  }
+
+  if (all || str_ieq(section, "approval")) {
+    json_t *list = approval_list_json();
+    buf_puts(&t, "审批策略(★ 为当前生效):\n");
+    for (int i = 0; i < j_len(list); i++) {
+      json_t *p = j_at(list, i);
+      const char *id = j_s(p, "id", "");
+      buf_printf(&t, "  %s %s  方式 %s%s%s\n", str_ieq(id, approval_active_id()) ? "★" : "-",
+                 j_s(p, "name", id), j_s(p, "mode", ""),
+                 j_s(p, "note", "")[0] ? "  · " : "", j_s(p, "note", ""));
+    }
+    j_set(d, "approval", list);
+  }
+
+  if (all || str_ieq(section, "models")) {
+    json_t *list = j_arr();
+    buf_puts(&t, "模型通道(★ 为当前使用):\n");
+    for (int i = 0; i < providers_count(); i++) {
+      provider_t *p = provider_at(i);
+      if (!p) continue;
+      json_t *o = j_obj();
+      j_set_str(o, "id", p->id);
+      j_set_str(o, "name", p->name);
+      j_set_str(o, "kind", provider_kind_name(p->kind));
+      j_set_bool(o, "ready", provider_ready(p));
+      j_set_bool(o, "enabled", p->enabled);
+      j_add(list, o);
+      buf_printf(&t, "  %s %s(%s)%s\n", str_ieq(p->id, providers_active_id()) ? "★" : "-",
+                 p->name, provider_kind_name(p->kind),
+                 provider_ready(p) ? "" : "  · 未就绪");
+    }
+    j_set(d, "models", list);
+  }
+
+  if (all || str_ieq(section, "automation")) {
+    store_t *s = (ctx && ctx->store) ? (store_t *)ctx->store : NULL;
+    auto_rule_t *rules = NULL;
+    int n = 0;
+    if (s) auto_list(s, &rules, &n);
+    json_t *list = j_arr();
+    if (n == 0) {
+      buf_puts(&t, "周期巡检:还没有规则\n");
+    } else {
+      buf_printf(&t, "周期巡检(%d 条):\n", n);
+      for (int i = 0; i < n; i++) {
+        json_t *o = auto_to_json(&rules[i]);
+        j_add(list, o);
+        char cyc[64];
+        auto_cycle_text(&rules[i], cyc, sizeof(cyc));
+        buf_printf(&t, "  - %s  %s  %s  %s%s\n", rules[i].id, rules[i].domain, cyc,
+                   auto_scope_label(rules[i].scope), rules[i].enabled ? "" : "(已停用)");
+      }
+    }
+    auto_free_list(rules);
+    j_set(d, "automation", list);
+  }
+
+  if (all || str_ieq(section, "profile")) {
+    json_t *o = j_obj();
+    j_set_bool(o, "active", profile_is_active());
+    j_set_str(o, "id", profile_active_id());
+    j_set_str(o, "name", profile_active_name());
+    j_set(d, "profile", o);
+    buf_printf(&t, "敏感信息定义: %s\n",
+               profile_is_active() ? profile_active_name() : "出厂口径(没有启用自定义定义)");
+  }
+
+  out->data = d;
+  out->text = buf_take(&t);
+  out->say = xstrdup("这些是当前设置。");
+  return 0;
+}
+
+/* ---- 0-D. 改设置 ----
+   写入的边界(三条,都是为了不让模型给自己扩权):
+     ① 授权池只读 —— 往池里加站必须由人在界面上确认授权;
+     ② 审批只能换成更严的 —— "全部允许"必须由人点;
+     ③ 周期规则的目标必须在授权池内 —— 否则模型能凭空加一个站去周期性地查。
+   其余的(检测口径、周期、当前模型)可以改,但每次都写审计。 */
+static int t_settings_set(tool_ctx_t *ctx, json_t *args, tool_result_t *out) {
+  const char *section = j_s(args, "section", "");
+  if (!section[0]) {
+    buf_t m;
+    buf_init(&m);
+    buf_puts(&m, "需要 section:rules / automation / models / approval 之一。");
+    return settings_fail(out, &m);
+  }
+
+  /* ---------- 规则:按域保存并立即重载 ---------- */
+  if (str_ieq(section, "rules")) {
+    const char *domain = j_s(args, "domain", "");
+    if (!domain[0]) {
+      buf_t m;
+      buf_init(&m);
+      buf_puts(&m, "section=rules 需要 domain。可用的域:");
+      for (int i = 0; i < rules_domain_count(); i++) {
+        const rules_domain_t *dd = rules_domain_at(i);
+        if (dd) buf_printf(&m, " %s", dd->id);
+      }
+      return settings_fail(out, &m);
+    }
+    const rules_domain_t *dd = rules_domain_find(domain);
+    if (!dd) {
+      buf_t m;
+      buf_init(&m);
+      buf_printf(&m, "没有 %s 这个域。可用的域:", domain);
+      for (int i = 0; i < rules_domain_count(); i++) {
+        const rules_domain_t *x = rules_domain_at(i);
+        if (x) buf_printf(&m, " %s", x->id);
+      }
+      return settings_fail(out, &m);
+    }
+
+    json_t *patch = obj_arg(args, "patch");
+    if (!patch) {
+      const char *k = j_s(args, "key", "");
+      if (!k[0]) {
+        buf_t m;
+        buf_init(&m);
+        buf_puts(&m, "section=rules 需要 patch(这一域要改的字段),或者 key + value。");
+        return settings_fail(out, &m);
+      }
+      json_t *v = value_arg(args, "value");
+      if (!v) {
+        buf_t m;
+        buf_init(&m);
+        buf_printf(&m, "改 %s 需要给 value。", k);
+        return settings_fail(out, &m);
+      }
+      char top[128];
+      if (!top_key_of(k, top, sizeof(top))) {
+        json_free(v);
+        buf_t m;
+        buf_init(&m);
+        buf_printf(&m, "键名不合法:%s", k);
+        return settings_fail(out, &m);
+      }
+      const char *dot = strchr(k, '.');
+      if (dot) {
+        /* 嵌套键:在"现有内容"上打点,再整键提交 */
+        char err[512] = {0};
+        json_t *dom = rules_domains_read(domain, err, sizeof(err));
+        if (!dom) {
+          json_free(v);
+          buf_t m;
+          buf_init(&m);
+          buf_printf(&m, "读不到规则域 %s:%s", domain, err[0] ? err : "未知原因");
+          return settings_fail(out, &m);
+        }
+        json_t *cur = j_get(dom, top);
+        if (!cur || cur->type != J_OBJ) {
+          cur = j_obj();
+          j_set(dom, top, cur);
+        }
+        if (!deep_set(cur, dot + 1, v)) {
+          json_free(dom);
+          buf_t m;
+          buf_init(&m);
+          buf_printf(&m, "键名不合法:%s", k);
+          return settings_fail(out, &m);
+        }
+        patch = j_obj();
+        char *d = json_dump(cur);
+        json_t *cp = d ? json_parse(d) : NULL;
+        free(d);
+        if (cp) j_set(patch, top, cp);
+        json_free(dom);
+      } else {
+        patch = j_obj();
+        j_set(patch, k, v);
+      }
+    }
+    if (patch->type != J_OBJ) {
+      json_free(patch);
+      buf_t m;
+      buf_init(&m);
+      buf_puts(&m, "patch 要是一个对象,例如 {\"timeout_ms\":15000}。");
+      return settings_fail(out, &m);
+    }
+
+    /* 只报"这一域认的键",别的键 save 会忽略 —— 提前告诉模型,免得白改 */
+    char changed[512] = {0};
+    {
+      buf_t keys;
+      buf_init(&keys);
+      join_keys(&keys, patch);
+      snprintf(changed, sizeof(changed), "%s", keys.data ? keys.data : "");
+      buf_free(&keys);
+    }
+    char err[512] = {0};
+    int rc = rules_domains_save(domain, patch, err, sizeof(err));
+    json_free(patch);
+    if (rc != 0) {
+      buf_t m;
+      buf_init(&m);
+      buf_printf(&m, "保存规则域 %s 失败:%s", domain, err[0] ? err : "未知原因");
+      return settings_fail(out, &m);
+    }
+    /* 保存即生效:和界面里点保存走的是同一条路(不重启) */
+    rules_shutdown();
+    rules_init(app_dir());
+    settings_audit(ctx, "修改规则(智能体)", dd->title, changed[0] ? changed : "按域更新");
+
+    json_t *d = j_obj();
+    j_set_bool(d, "ok", 1);
+    j_set_str(d, "domain", domain);
+    j_set_str(d, "title", dd->title);
+    j_set_str(d, "source", rules_source());
+    out->data = d;
+    buf_t t;
+    buf_init(&t);
+    buf_printf(&t, "已保存规则域 %s(%s)并立即生效。改动的键:%s\n规则来源现在是 %s。",
+               domain, dd->title, changed[0] ? changed : "(未指定)", rules_source());
+    out->text = buf_take(&t);
+    out->say = xstrdup("规则已经按你说的改好并生效了。");
+    return 0;
+  }
+
+  /* ---------- 周期巡检 ---------- */
+  if (str_ieq(section, "automation")) {
+    store_t *s = (ctx && ctx->store) ? (store_t *)ctx->store : NULL;
+    if (!s) {
+      buf_t m;
+      buf_init(&m);
+      buf_puts(&m, "当前没有存储句柄(命令行/自检环境不支持改周期规则)。");
+      return settings_fail(out, &m);
+    }
+    const char *action = j_s(args, "action", "save");
+    char id[24];
+    snprintf(id, sizeof(id), "%s", j_s(args, "id", ""));
+
+    if (str_ieq(action, "remove")) {
+      if (!id[0]) {
+        buf_t m;
+        buf_init(&m);
+        buf_puts(&m, "删除周期规则需要 id(先用 settings_get section=automation 查到)。");
+        return settings_fail(out, &m);
+      }
+      if (auto_remove(s, id) != 0) {
+        buf_t m;
+        buf_init(&m);
+        buf_printf(&m, "没有找到周期规则 %s", id);
+        return settings_fail(out, &m);
+      }
+      settings_audit(ctx, "删除周期巡检(智能体)", id, "智能体调用 settings_set");
+      json_t *d = j_obj();
+      j_set_bool(d, "ok", 1);
+      j_set_str(d, "removed", id);
+      out->data = d;
+      out->text = xstrdup("已删除这条周期巡检规则,后续不会再自动跑。");
+      out->say = xstrdup("这条周期巡检已经删掉了。");
+      return 0;
+    }
+
+    json_t *ro = obj_arg(args, "rule");
+    if (!ro || ro->type != J_OBJ) {
+      json_free(ro);
+      buf_t m;
+      buf_init(&m);
+      buf_puts(&m, "action=save 需要 rule(对象),例如 "
+                   "{\"domain\":\"exp.com\",\"scope\":\"full\",\"kind\":\"interval\",\"every_min\":360}。");
+      return settings_fail(out, &m);
+    }
+
+    /* 改已有规则时只覆盖调用方给出的字段,别把 name/created_at 冲掉 */
+    auto_rule_t old;
+    memset(&old, 0, sizeof(old));
+    int have_old = id[0] && auto_find(s, id, &old) == 0;
+    json_t *merged = have_old ? auto_to_json(&old) : j_obj();
+    for (int i = 0; i < ro->count; i++) {
+      if (!ro->keys[i]) continue;
+      char *dump = json_dump(ro->items[i]);
+      json_t *cp = dump ? json_parse(dump) : NULL;
+      free(dump);
+      if (cp) j_set(merged, ro->keys[i], cp);
+    }
+    json_free(ro);
+    if (id[0]) j_set_str(merged, "id", id);
+
+    auto_rule_t r;
+    auto_from_json(merged, &r);
+    json_free(merged);
+
+    const char *bad = auto_validate(&r);
+    if (bad) {
+      buf_t m;
+      buf_init(&m);
+      buf_printf(&m, "周期规则不合法:%s", bad);
+      return settings_fail(out, &m);
+    }
+    /* 授权边界:周期规则会自己发请求,目标必须是已经有授权的。
+       措辞避开 "不在授权池内" —— 那句话是决策循环的硬停止信号。 */
+    char host[256] = {0};
+    int port = net_host_port_of(r.domain, host, sizeof(host));
+    if (!host[0]) snprintf(host, sizeof(host), "%s", r.domain);
+    if (!net_pool_has(host, port, "/")) {
+      buf_t m;
+      buf_init(&m);
+      buf_printf(&m, "目标 %s 还没有被授权,不能建周期规则。"
+                     "请让用户在界面的授权池里确认这个主机,再由我来加周期。", r.domain);
+      return settings_fail(out, &m);
+    }
+    int rc = auto_save(s, &r);
+    if (rc != 0) {
+      buf_t m;
+      buf_init(&m);
+      buf_puts(&m, "周期规则保存失败(存储写入出错)。");
+      return settings_fail(out, &m);
+    }
+    settings_audit(ctx, have_old ? "修改周期巡检(智能体)" : "新建周期巡检(智能体)", r.domain,
+                   r.id);
+    char cyc[64];
+    auto_cycle_text(&r, cyc, sizeof(cyc));
+
+    json_t *d = auto_to_json(&r);
+    out->data = d;
+    buf_t t;
+    buf_init(&t);
+    buf_printf(&t, "%s周期巡检:%s %s %s(%s)。\n到点会自动跑一轮,并与上一轮比差异;有变化才告警。",
+               have_old ? "已更新" : "已新建", r.id, r.domain, cyc,
+               auto_scope_label(r.scope));
+    out->text = buf_take(&t);
+    out->say = xstrdup("周期巡检已经设好了。");
+    return 0;
+  }
+
+  /* ---------- 当前模型 ---------- */
+  if (str_ieq(section, "models")) {
+    char id[80];
+    snprintf(id, sizeof(id), "%s", j_s(args, "id", ""));
+    if (!id[0]) {
+      buf_t m;
+      buf_init(&m);
+      buf_puts(&m, "切换模型需要 id(先用 settings_get section=models 看有哪些)。");
+      return settings_fail(out, &m);
+    }
+    provider_t *p = provider_find(id);
+    if (!p) {
+      buf_t m;
+      buf_init(&m);
+      buf_printf(&m, "没有 id 为 %s 的模型通道。", id);
+      return settings_fail(out, &m);
+    }
+    if (!provider_ready(p)) {
+      buf_t m;
+      buf_init(&m);
+      buf_printf(&m, "模型通道 %s 还没配好(缺地址/密钥,或已被停用),不能切过去。", p->name);
+      return settings_fail(out, &m);
+    }
+    /* 和界面"切换"走同一条路:整份读出来、改 active、校验后落盘 */
+    char *dump = providers_json(0);
+    json_t *root = dump ? json_parse(dump) : NULL;
+    free(dump);
+    if (!root) root = j_obj();
+    j_set_str(root, "active", id);
+    char err[512] = {0};
+    int rc = providers_apply(root, err, sizeof(err));
+    json_free(root);
+    if (rc != 0) {
+      buf_t m;
+      buf_init(&m);
+      buf_printf(&m, "切换失败:%s", err[0] ? err : "配置没有通过校验");
+      return settings_fail(out, &m);
+    }
+    /* 换了通道要把上一家的失败冷却清掉,否则界面还显示"离线" */
+    llm_reset_error();
+    settings_audit(ctx, "切换模型通道(智能体)", p->name, id);
+
+    json_t *d = j_obj();
+    j_set_bool(d, "ok", 1);
+    j_set_str(d, "active", id);
+    j_set_str(d, "name", p->name);
+    out->data = d;
+    buf_t t;
+    buf_init(&t);
+    buf_printf(&t, "已切换到「%s」(%s)。下一轮决策就用它。", p->name, provider_kind_name(p->kind));
+    out->text = buf_take(&t);
+    out->say = xstrdup("模型通道已经切过去了。");
+    return 0;
+  }
+
+  /* ---------- 审批策略:只允许收紧 ---------- */
+  if (str_ieq(section, "approval")) {
+    char id[32];
+    snprintf(id, sizeof(id), "%s", j_s(args, "id", ""));
+    if (!id[0]) {
+      buf_t m;
+      buf_init(&m);
+      buf_puts(&m, "切换审批策略需要 id(先用 settings_get section=approval 看有哪些)。");
+      return settings_fail(out, &m);
+    }
+    json_t *list = approval_list_json();
+    int found = 0;
+    char name[80] = {0}, mode[24] = {0};
+    for (int i = 0; i < j_len(list); i++) {
+      json_t *p = j_at(list, i);
+      if (!str_ieq(j_s(p, "id", ""), id)) continue;
+      found = 1;
+      snprintf(name, sizeof(name), "%s", j_s(p, "name", id));
+      snprintf(mode, sizeof(mode), "%s", j_s(p, "mode", ""));
+      break;
+    }
+    json_free(list);
+    if (!found) {
+      buf_t m;
+      buf_init(&m);
+      buf_printf(&m, "没有 id 为 %s 的审批策略。", id);
+      return settings_fail(out, &m);
+    }
+    if (str_ieq(mode, "allow_all")) {
+      buf_t m;
+      buf_init(&m);
+      buf_puts(&m, "「全部允许」会让我不再逐条问你,这属于放宽限制,必须由人在界面上确认,"
+                   "我不替你做这个决定。要收紧的话可以切到更严的策略。");
+      return settings_fail(out, &m);
+    }
+    if (!approval_activate(id)) {
+      buf_t m;
+      buf_init(&m);
+      buf_printf(&m, "切换到审批策略 %s 失败。", id);
+      return settings_fail(out, &m);
+    }
+    settings_audit(ctx, "切换审批策略(智能体)", name, id);
+
+    json_t *d = j_obj();
+    j_set_bool(d, "ok", 1);
+    j_set_str(d, "active", id);
+    j_set_str(d, "name", name);
+    j_set_str(d, "mode", mode);
+    out->data = d;
+    buf_t t;
+    buf_init(&t);
+    buf_printf(&t, "审批策略已切成「%s」。之后每个动作都会按这条策略走。", name);
+    out->text = buf_take(&t);
+    out->say = xstrdup("审批策略已经切好了。");
+    return 0;
+  }
+
+  /* ---------- 授权池:明确拒绝 ---------- */
+  if (str_ieq(section, "pool")) {
+    buf_t m;
+    buf_init(&m);
+    buf_puts(&m, "授权池不能由我改:往池里加一个站等于扩大检查范围,必须由人在界面上确认授权。"
+                 "你可以在界面上加好之后告诉我,我再用 pool_list 读最新的清单。");
+    return settings_fail(out, &m);
+  }
+
+  buf_t m;
+  buf_init(&m);
+  buf_printf(&m, "不认识的 section:%s。可用:rules / automation / models / approval。", section);
+  return settings_fail(out, &m);
+}
+
 /* ---- 1. 文本敏感信息扫描 ---- */
-/* 判定用的正则全部来自规则文件(patterns.sensitive),代码里不写死任何一条:
 /* 判定用的正则来自规则文件(patterns.sensitive),匹配交给 src\regex.c 的极简引擎:
    支持字面量、字符类、分组与分支、* + ? {n,m}、^ $、(?i) 与两种 [0-9] 断言,
    带完整回溯 —— 邮箱/私钥头这种"先贪婪后回退"的形状才能正确匹配。

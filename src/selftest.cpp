@@ -309,6 +309,33 @@ static void selftest_agent(void) {
     check(net_pool_has("other.example.org", 443, "/") == 0, "池:池外主机一律拒(默认关门)");
     check(net_pool_has("exp.com", 8443, "/") == 1, "池:带端口的条目放行该端口");
     check(net_pool_has("exp.com", 8080, "/") == 1, "池:同一主机的其它端口按主机条目放行");
+
+    /* ---- 本机工具:模型要能读出授权列表 / 自身状态 / 当前设置 ----
+       这三条是"智能体说不出授权了谁"那个问题的回归门禁。 */
+    tool_ctx_t lctx;
+    memset(&lctx, 0, sizeof(lctx));
+    tool_result_t lr;
+    memset(&lr, 0, sizeof(lr));
+    int lrc = tools_run(&lctx, "pool_list", j_obj(), &lr);
+    check(lrc == 0 && lr.text && strstr(lr.text, "exp.com") && strstr(lr.text, "bad.example.org"),
+          "pool_list 能读出授权池(含 ! 不允许条目)", lr.text ? lr.text : "");
+    free(lr.text); free(lr.say); json_free(lr.data);
+
+    memset(&lr, 0, sizeof(lr));
+    lrc = tools_run(&lctx, "agent_info", j_obj(), &lr);
+    check(lrc == 0 && lr.text && strstr(lr.text, "当前模型") && strstr(lr.text, "授权池"),
+          "agent_info 能给出本机状态", lr.text ? lr.text : "");
+    free(lr.text); free(lr.say); json_free(lr.data);
+
+    memset(&lr, 0, sizeof(lr));
+    json_t *sargs = j_obj();
+    j_set_str(sargs, "key", "probing.timeout_ms");
+    lrc = tools_run(&lctx, "settings_get", sargs, &lr);
+    check(lrc == 0 && lr.text && strstr(lr.text, "probing.timeout_ms"),
+          "settings_get 能读单个规则键", lr.text ? lr.text : "");
+    json_free(sargs);
+    free(lr.text); free(lr.say); json_free(lr.data);
+
     net_pool_set(NULL, 0);
   }
 

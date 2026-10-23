@@ -463,7 +463,28 @@ void rule_decide(const char *user_text, const char *scope_note, decision_t *out)
   if (target[0]) j_set_str(args, "target", target);
 
   /* 意图判定:从强到弱(更具体的先命中) */
-  if (str_icontains(t, "复测") || str_icontains(t, "复查") || str_icontains(t, "修好")) {
+  if ((str_icontains(t, "授权列表") || str_icontains(t, "授权池") ||
+       str_icontains(t, "能查哪些") || str_icontains(t, "可以查哪些")) &&
+      !str_icontains(t, "巡检") && !str_icontains(t, "检查") && !str_icontains(t, "扫")) {
+    /* 只问"授权了谁"。带了巡检动词就不走这条 —— 那是整池巡检,
+       由服务端展开成每站一轮(见 serve.cpp 的 wants_whole_pool)。 */
+    out->kind = ACT_ACT;
+    out->tool = xstrdup("pool_list");
+    out->reason = xstrdup("规则降级:读授权列表");
+  } else if (str_icontains(t, "你的状态") || str_icontains(t, "本机信息") ||
+             str_icontains(t, "你自己的") || str_icontains(t, "数据目录") ||
+             str_icontains(t, "配置在哪")) {
+    out->kind = ACT_ACT;
+    out->tool = xstrdup("agent_info");
+    out->reason = xstrdup("规则降级:查本机信息与状态");
+  } else if (str_icontains(t, "当前设置") || str_icontains(t, "现在的设置") ||
+             (str_icontains(t, "设置") &&
+              (str_icontains(t, "看一下") || str_icontains(t, "查一下") ||
+               str_icontains(t, "是什么") || str_icontains(t, "当前")))) {
+    out->kind = ACT_ACT;
+    out->tool = xstrdup("settings_get");
+    out->reason = xstrdup("规则降级:读当前设置");
+  } else if (str_icontains(t, "复测") || str_icontains(t, "复查") || str_icontains(t, "修好")) {
     out->kind = ACT_ACT;
     out->tool = xstrdup("skill_retest");
     out->reason = xstrdup("规则降级:命中复测意图");

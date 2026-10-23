@@ -152,6 +152,27 @@ int net_pool_count(void) {
   return n;
 }
 
+/* 池子条目的一份拷贝:界面、模型、命令行都从这里读,不共享内部指针 ——
+   调用方手里的是自己的副本,不用担心下一刻池子被改掉。 */
+int net_pool_snapshot(char ***out) {
+  if (out) *out = NULL;
+  net_lock_init();
+  EnterCriticalSection(&g_net_lock);
+  int n = g_pool_count;
+  char **list = NULL;
+  if (n > 0) {
+    list = (char **)xcalloc((size_t)n, sizeof(char *));
+    for (int i = 0; i < n; i++) list[i] = xstrdup(g_pool[i]);
+  }
+  LeaveCriticalSection(&g_net_lock);
+  if (!out) {
+    str_free_list(list, n);
+    return n;
+  }
+  *out = list;
+  return n;
+}
+
 /* 从 pool.json 载入授权池。命令行、技能直跑、常驻服务都走这一个入口 ——
    边界只有一份,不能因为"这次不是从界面点的"就松掉。 */
 int net_pool_load_file(const char *path) {
