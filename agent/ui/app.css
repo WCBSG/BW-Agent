@@ -1149,3 +1149,39 @@ button.primary + .ghost, .ghost + button.primary{padding-top:4px;padding-bottom:
 @media (prefers-reduced-motion:reduce){
   *{animation-duration:.01ms !important;transition-duration:.01ms !important}
 }
+
+/* ---------- Markdown 正文 ----------
+   模型输出的是 Markdown。这里只把它排版成"能读的文档",不追求完整语法:
+   标题、列表、代码、引用、表格、链接够用了。 */
+.md > :first-child { margin-top:0 }
+.md > :last-child { margin-bottom:0 }
+.md p { margin:0 0 8px }
+.md h1,.md h2,.md h3,.md h4,.md h5,.md h6 { margin:14px 0 6px;line-height:1.35;font-weight:600 }
+.md h1 { font-size:19px }
+.md h2 { font-size:17px }
+.md h3 { font-size:15.5px }
+.md h4,.md h5,.md h6 { font-size:14.5px;color:#3a3a33 }
+.md ul,.md ol { margin:4px 0 10px;padding-left:22px }
+.md li { margin:2px 0 }
+.md li::marker { color:#8a8a80 }
+.md code { font-family:var(--mono);font-size:12.8px;background:#f1f0eb;
+  border:1px solid var(--line);border-radius:4px;padding:1px 5px }
+.md .md-pre { margin:8px 0 10px;background:#f6f5f1;border:1px solid var(--line);
+  border-radius:6px;padding:10px 12px;overflow:auto;max-height:420px }
+.md .md-pre code { background:none;border:0;padding:0;font-size:12.6px;line-height:1.6;
+  white-space:pre;display:block }
+.md blockquote { margin:8px 0;padding:2px 0 2px 12px;border-left:3px solid var(--line);color:#5b5b52 }
+.md hr { border:0;border-top:1px solid var(--line);margin:14px 0 }
+.md a { color:var(--accent);text-decoration:none;border-bottom:1px solid rgba(26,79,138,.28) }
+.md a:hover { border-bottom-color:var(--accent) }
+.md table { border-collapse:collapse;margin:8px 0 12px;font-size:13.5px }
+.md th,.md td { border:1px solid var(--line);padding:5px 9px;text-align:left;vertical-align:top }
+.md th { background:#f4f3ef;font-weight:600 }
+.md strong { font-weight:600 }
+.md del { color:#8a8a80 }
+
+/* 文件编辑器:单栏。多文件时用下拉切换,不再另起一列文件列表。 */
+.cfg-mini { display:block }
+.cfg-mini-pick { max-width:42%;height:28px;border:1px solid var(--line);border-radius:6px;
+  background:#fff;font:inherit;font-size:12.6px;padding:0 8px;color:#3a3a33 }
+.cfg-mini-pick:focus { outline:none;border-color:#c9c9c1 }

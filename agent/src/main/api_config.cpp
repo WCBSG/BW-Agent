@@ -18,6 +18,9 @@
 #include "rules.h"
 #include "rules_domains.h"
 
+#include <string>
+#include <vector>
+
 #define CFG_MAX_BYTES (256 * 1024)
 
 /* ================= 规则设置(图形化) =================
@@ -180,7 +183,9 @@ static int cfg_allowed(const char *name) {
     /* 旧的 rules.json 不再参与:规则已拆到 rules\ 下,留着入口只会让人改一个不生效的文件 */
     return strcmp(name, "mcp.json") == 0 || strcmp(name, "rules.default.json") == 0;
   }
-  if (slash != 1) return 0;
+  /* 技能与工具现在是"一个目录一个":skills\<名字>\SKILL.md、tools\<目录>\<名字>.json。
+     所以这里允许到两级,但仍然挡住更深的路径与 ..(越界由 cfg_path 再兜一层)。 */
+  if (slash > 2) return 0;
   if (str_startswith(name, "skills\\") || str_startswith(name, "skills/")) return md;
   if (str_startswith(name, "tools\\") || str_startswith(name, "tools/")) return js;
   /* 规则的 6 个分域文件也要能手改(界面改不动的东西,记事本还留一条路) */
@@ -216,28 +221,78 @@ void api_config_list(const http_req_t *req, http_res_t *res) {
     j_set_str(o, "group", "外部能力");
     j_add(arr, o);
   }
-  /* skills\*.md 与 tools\*.json */
-  const char *dirs[2][2] = {{"skills", ".md"}, {"tools", ".json"}};
-  for (int d = 0; d < 2; d++) {
+  /* 技能:skills\<名字>\SKILL.md(目录形态)与 skills\<名字>.md(旧形态)
+     工具:tools\<目录>\<名字>.json(目录形态)与 tools\<名字>.json(旧形态) */
+  {
+    const char *sub = "skills";
     char dir[MAX_PATH * 2];
-    app_data_path(dir, sizeof(dir), dirs[d][0]);
+    app_data_path(dir, sizeof(dir), sub);
     ensure_dir(dir);
-    char **files = NULL;
-    int n = ext_list_files(dir, dirs[d][1], &files);
-    for (int i = 0; i < n; i++) {
-      const char *full = files[i];
-      const char *base = strrchr(full, '\\');
-      base = base ? base + 1 : full;
-      char name[192];
-      snprintf(name, sizeof(name), "%s\\%s", dirs[d][0], base);
+
+    std::vector<std::string> flat = fs_list_files(dir, ".md");
+    for (size_t i = 0; i < flat.size(); i++) {
+      char rel[192];
+      snprintf(rel, sizeof(rel), "%s\\%s", sub, flat[i].c_str());
+      char full[MAX_PATH * 2];
+      app_data_path(full, sizeof(full), rel);
       json_t *o = j_obj();
-      j_set_str(o, "name", name);
+      j_set_str(o, "name", rel);
       j_set_bool(o, "exists", 1);
       j_set_num(o, "size", (double)file_size(full));
-      j_set_str(o, "group", d == 0 ? "技能说明/技能包" : "外部工具");
+      j_set_str(o, "group", "技能");
       j_add(arr, o);
     }
-    if (files) str_free_list(files, n);
+    std::vector<std::string> subs = fs_list_dirs(dir);
+    for (size_t i = 0; i < subs.size(); i++) {
+      char rel[192];
+      snprintf(rel, sizeof(rel), "%s\\%s\\SKILL.md", sub, subs[i].c_str());
+      char full[MAX_PATH * 2];
+      app_data_path(full, sizeof(full), rel);
+      if (file_size(full) < 0) continue;
+      json_t *o = j_obj();
+      j_set_str(o, "name", rel);
+      j_set_bool(o, "exists", 1);
+      j_set_num(o, "size", (double)file_size(full));
+      j_set_str(o, "group", "技能");
+      j_add(arr, o);
+    }
+  }
+  {
+    const char *sub = "tools";
+    char dir[MAX_PATH * 2];
+    app_data_path(dir, sizeof(dir), sub);
+    ensure_dir(dir);
+    std::vector<std::string> subs = fs_list_dirs(dir);
+    for (size_t i = 0; i < subs.size(); i++) {
+      char subdir[MAX_PATH * 2];
+      snprintf(subdir, sizeof(subdir), "%s\\%s", dir, subs[i].c_str());
+      std::vector<std::string> inner = fs_list_files(subdir, ".json");
+      for (size_t k = 0; k < inner.size(); k++) {
+        char rel[192];
+        snprintf(rel, sizeof(rel), "%s\\%s\\%s", sub, subs[i].c_str(), inner[k].c_str());
+        char full[MAX_PATH * 2];
+        app_data_path(full, sizeof(full), rel);
+        json_t *o = j_obj();
+        j_set_str(o, "name", rel);
+        j_set_bool(o, "exists", 1);
+        j_set_num(o, "size", (double)file_size(full));
+        j_set_str(o, "group", "工具");
+        j_add(arr, o);
+      }
+    }
+    std::vector<std::string> flat = fs_list_files(dir, ".json");
+    for (size_t i = 0; i < flat.size(); i++) {
+      char rel[192];
+      snprintf(rel, sizeof(rel), "%s\\%s", sub, flat[i].c_str());
+      char full[MAX_PATH * 2];
+      app_data_path(full, sizeof(full), rel);
+      json_t *o = j_obj();
+      j_set_str(o, "name", rel);
+      j_set_bool(o, "exists", 1);
+      j_set_num(o, "size", (double)file_size(full));
+      j_set_str(o, "group", "工具");
+      j_add(arr, o);
+    }
   }
   char *dump = json_dump(arr);
   buf_t b;

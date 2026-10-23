@@ -674,6 +674,138 @@ function bindPoolImport() {
 }
 
 
+/* ============ Markdown ============
+   模型给的是 Markdown,直接塞进 textContent 就会看到一堆 # 与 **。
+   这里按"先转义、再套有限语法"的顺序渲染:任何原文都进不了标签,
+   只认我们支持的这几种结构 —— 不引入第三方库(单文件交付的底线)。
+   流式期间仍按纯文本走(打字机效果),一段结束时才换成渲染后的 HTML。 */
+
+function mdEscape(s) {
+  return String(s == null ? '' : s)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+function mdInline(s) {
+  return s
+    .replace(/`([^`\n]+)`/g, (m, c) => '<code>' + c + '</code>')
+    .replace(/\*\*([^*\n]+)\*\*/g, '<strong>$1</strong>')
+    .replace(/__([^_\n]+)__/g, '<strong>$1</strong>')
+    .replace(/(^|[\s(])\*([^*\n]+)\*/g, '$1<em>$2</em>')
+    .replace(/~~([^~\n]+)~~/g, '<del>$1</del>')
+    .replace(/\[([^\]\n]+)\]\((https?:[^)\s]+)\)/g,
+             '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>');
+}
+
+function mdToHtml(src) {
+  const lines = String(src == null ? '' : src).replace(/\r\n?/g, '\n').split('\n');
+  const out = [];
+  let i = 0;
+  let inList = null;
+  const closeList = () => {
+    if (inList) { out.push('</' + inList + '>'); inList = null; }
+  };
+  const cells = (row) => row.replace(/^\s*\|/, '').replace(/\|\s*$/, '')
+    .split('|').map((x) => x.trim());
+
+  while (i < lines.length) {
+    const line = lines[i];
+
+    /* 代码块:原样保留(只转义,不解析里面的 Markdown) */
+    const fence = /^\s*```/.exec(line);
+    if (fence) {
+      closeList();
+      const buf = [];
+      i++;
+      while (i < lines.length && !/^\s*```\s*$/.test(lines[i])) { buf.push(lines[i]); i++; }
+      i++;
+      out.push('<pre class="md-pre"><code>' + mdEscape(buf.join('\n')) + '</code></pre>');
+      continue;
+    }
+
+    if (/^\s*$/.test(line)) { closeList(); i++; continue; }
+
+    /* 标题 */
+    const h = /^\s*(#{1,6})\s+(.*)$/.exec(line);
+    if (h) {
+      closeList();
+      const n = h[1].length;
+      out.push('<h' + n + '>' + mdInline(mdEscape(h[2])) + '</h' + n + '>');
+      i++;
+      continue;
+    }
+
+    /* 分隔线 */
+    if (/^\s*([-*_])\s*\1\s*\1[\s\-*_]*$/.test(line)) {
+      closeList(); out.push('<hr>'); i++; continue;
+    }
+
+    /* 引用 */
+    if (/^\s*>\s?/.test(line)) {
+      closeList();
+      const buf = [];
+      while (i < lines.length && /^\s*>\s?/.test(lines[i])) {
+        buf.push(lines[i].replace(/^\s*>\s?/, ''));
+        i++;
+      }
+      out.push('<blockquote>' + mdToHtml(buf.join('\n')) + '</blockquote>');
+      continue;
+    }
+
+    /* 表格:表头 + 分隔行 */
+    if (/\|/.test(line) && i + 1 < lines.length &&
+        /^\s*\|?[\s:|-]+\|[\s:|-]*$/.test(lines[i + 1]) && /-/.test(lines[i + 1])) {
+      closeList();
+      const head = cells(line);
+      i += 2;
+      let html = '<table><thead><tr>' +
+        head.map((c) => '<th>' + mdInline(mdEscape(c)) + '</th>').join('') +
+        '</tr></thead><tbody>';
+      while (i < lines.length && /\|/.test(lines[i]) && !/^\s*$/.test(lines[i])) {
+        html += '<tr>' + cells(lines[i]).map((c) => '<td>' + mdInline(mdEscape(c)) + '</td>').join('') + '</tr>';
+        i++;
+      }
+      out.push(html + '</tbody></table>');
+      continue;
+    }
+
+    /* 列表(有序 / 无序,支持一级缩进) */
+    const ul = /^\s*[-*+]\s+(.*)$/.exec(line);
+    const ol = /^\s*(\d+)[.)]\s+(.*)$/.exec(line);
+    if (ul || ol) {
+      const tag = ul ? 'ul' : 'ol';
+      if (inList !== tag) { closeList(); out.push('<' + tag + '>'); inList = tag; }
+      const item = ul ? ul[1] : ol[2];
+      out.push('<li>' + mdInline(mdEscape(item)) + '</li>');
+      i++;
+      continue;
+    }
+
+    /* 段落:连续的非空行合成一段,段内换行保留 */
+    closeList();
+    const buf = [line];
+    i++;
+    while (i < lines.length && !/^\s*$/.test(lines[i]) &&
+           !/^\s*(#{1,6})\s+/.test(lines[i]) && !/^\s*```/.test(lines[i]) &&
+           !/^\s*>\s?/.test(lines[i]) && !/^\s*([-*+]|\d+[.)])\s+/.test(lines[i])) {
+      buf.push(lines[i]);
+      i++;
+    }
+    out.push('<p>' + mdInline(mdEscape(buf.join('\n'))).replace(/\n/g, '<br>') + '</p>');
+  }
+  closeList();
+  return out.join('');
+}
+
+/* 把一个文本块渲染成 Markdown;渲染过就打个记号,避免重复解析 */
+function renderMdBlock(b) {
+  if (!b || !b.node || b.mdDone) return;
+  b.node.classList.add('md');
+  b.node.innerHTML = mdToHtml(b.text || '');
+  b.mdDone = true;
+  scrollBottom();
+}
+
 /* ============ 事件流渲染 ============ */
 
 function beginMessage(messageId) {
@@ -773,7 +905,7 @@ function onBlockStart(e) {
     current.steps++;
     scrollBottom();
   } else {
-    const n = el('div');
+    const n = el('div', 'md');
     current.body.appendChild(n);
     current.blocks[e.index] = { kind: 'text', node: n, text: '', shown: 0 };
   }
@@ -904,6 +1036,7 @@ function onBlockStop(e) {
     b.shown = b.text.length;
     b.node.textContent = b.text;
     dirtyBlocks.delete(b);
+    renderMdBlock(b);
   }
   noteActivity();                 /* 换下一段(或去调工具)前,计时重置 */
 }
@@ -964,6 +1097,7 @@ function onMessageStop(e) {
   msg.stopReason = e.stopReason;
   const seconds = ((Date.now() - msg.startedAt) / 1000).toFixed(1);
   const back = () => {
+    for (const k of Object.keys(msg.blocks || {})) renderMdBlock(msg.blocks[k]);
     const line = el('div', 'stopline');
     line.textContent = `消息结束 · 停止原因 ${e.stopReason} · 调用技能/工具 ${msg.steps} 次 · 耗时 ${seconds}s`;
     msg.body.appendChild(line);
@@ -1759,7 +1893,9 @@ async function openChat(sid) {
       const wrap = el('div', 'msg agent');
       wrap.appendChild(el('div', 'who', '智能体 · ' + (usage.target || m.target || '')));
       const body = el('div', 'body');
-      body.appendChild(el('div', null, textOf(m) || '(这一轮没有给出结论)'));
+      const mdBody = el('div', 'md');
+      mdBody.innerHTML = mdToHtml(textOf(m) || '(这一轮没有给出结论)');
+      body.appendChild(mdBody);
       if (stop) {
         body.appendChild(el('div', 'stopline',
           '停止原因 ' + stop + (steps ? ' · ' + steps + ' 步' : '')));
@@ -2842,25 +2978,37 @@ function capApi(body) {
 }
 
 async function capsOpen(kind) {
-  const changed = CAP.kind !== kind;
+  /* 技能与工具只做"文件式"编辑:能力本来就是文件 ——
+       skills\\<名字>\\SKILL.md      一个技能一个目录(可以带脚本、模板)
+       tools\\<目录>\\<名字>.json    工具声明(入口与协议写在里面)
+     所以这里只把文件列出来就地编辑;加一个能力 = 新建一个文件。 */
   CAP.kind = kind;
-  if (changed) { CAP.data = null; CAP.editing = null; }
-  if (!CAP.data) {
-    try { CAP.data = await api('/api/caps'); }
-    catch (e) { CAP.data = { skills: [], tools: [] }; }
+  const host = $('cap-files');
+  if (!host) return;
+  host.style.display = 'block';
+  host.innerHTML = '';
+
+  let names = [];
+  try {
+    const r = await api('/api/config/list');
+    const want = kind === 'skill' ? '技能' : '工具';
+    names = (r.files || [])
+      .filter((f) => String(f.group || '').indexOf(want) >= 0)
+      .map((f) => f.name);
+  } catch (e) {
+    names = [];
   }
-  const label = kind === 'skill' ? '技能' : '工具';
-  if ($('cap-kind-label')) $('cap-kind-label').textContent = label;
-  const st = (CAP.data && CAP.data.stats) || {};
-  if ($('cap-stat')) {
-    $('cap-stat').textContent = kind === 'skill'
-      ? `共 ${st.skills || 0} 个（技能包 ${st.extSkills || 0}）`
-      : `共 ${st.tools || 0} 个（外部 ${st.extTools || 0} · MCP ${st.mcpTools || 0}）`;
+
+  if (!names.length) {
+    const box = el('div', 'muted');
+    box.textContent = kind === 'skill'
+      ? '还没有技能文件。技能放在 <数据目录>\\skills\\<名字>\\SKILL.md,建好文件即生效。'
+      : '还没有工具声明。工具放在 <数据目录>\\tools\\<目录>\\<名字>.json,建好文件即生效。';
+    host.appendChild(box);
+    refreshHBars();
+    return;
   }
-  if (kind === 'skill' || kind === 'tool') renderCapNav(kind).catch(() => {});
-  capsShowList();
-  capsRenderList();
-  capsRenderForm(CAP.editing);
+  mountFileEditor(host, names);
   refreshHBars();
 }
 
@@ -2928,10 +3076,23 @@ function showCapFile(name) {
    安全边界不在前端 —— 能改哪些文件由后端白名单决定,这里只负责把内容摆出来。 */
 function mountFileEditor(host, names) {
   host.innerHTML = '';
-  const grid = el('div', 'cfg-mini');
-  const side = el('div', 'cfg-mini-side');
+  const grid = el('div', 'cfg-mini single');
   const main = el('div', 'cfg-mini-main');
   const head = el('div', 'config-main-head');
+
+  /* 多文件时用下拉选,不再另起一列文件列表 —— 设置页只有一栏。 */
+  let picker = null;
+  if (names.length > 1) {
+    picker = el('select', 'cfg-mini-pick');
+    for (const n of names) {
+      const o = el('option', null, String(n).replace(/\\/g, ' / '));
+      o.value = n;
+      picker.appendChild(o);
+    }
+    picker.addEventListener('change', () => open(picker.value));
+    head.appendChild(picker);
+  }
+
   const fileEl = el('code', null, '');
   const meta = el('span', 'muted', '');
   const grow = el('span', 'grow');
@@ -2948,12 +3109,6 @@ function mountFileEditor(host, names) {
   const msg = el('span', 'note', '');
   foot.appendChild(msg);
 
-  if (names.length <= 1) {
-    /* 只有一个文件时不需要列表:名字已经写在上面那行,左边再列一遍是浪费 */
-    grid.classList.add('single');
-    side.style.display = 'none';
-  }
-  grid.appendChild(side);
   main.appendChild(head); main.appendChild(ta); main.appendChild(foot);
   grid.appendChild(main);
   host.appendChild(grid);
@@ -2966,9 +3121,7 @@ function mountFileEditor(host, names) {
     fileEl.textContent = name;
     msg.textContent = '';
     msg.className = 'note';
-    for (const b of Array.from(side.querySelectorAll('.fileitem'))) {
-      b.classList.toggle('active', b.dataset.name === name);
-    }
+    if (picker) picker.value = name;
     try {
       const r = await api('/api/config?name=' + encodeURIComponent(name));
       ta.value = r.content || '';
@@ -2981,15 +3134,6 @@ function mountFileEditor(host, names) {
     }
     refreshHBars();
   };
-
-  for (const n of names) {
-    const b = el('button', 'fileitem');
-    b.type = 'button';
-    b.dataset.name = n;
-    b.appendChild(el('span', 'fname', String(n).replace(/\\/g, ' / ')));
-    b.addEventListener('click', () => open(n));
-    side.appendChild(b);
-  }
 
   ta.addEventListener('input', () => {
     dirty = true;
@@ -4067,6 +4211,30 @@ ta.addEventListener('input', () => {
   ta.style.height = 'auto';
   ta.style.height = Math.min(ta.scrollHeight, 120) + 'px';
 });
+/* 回车直接发,Shift+回车换行 —— 聊天框的通用手势。
+   用 requestSubmit 而不是 click:表单的 submit 处理器只有一处,别绕开它。 */
+ta.addEventListener('keydown', (e) => {
+  if (e.key !== 'Enter' || e.shiftKey || e.ctrlKey || e.altKey || e.isComposing) return;
+  e.preventDefault();
+  const form = $('form');
+  if (form) form.requestSubmit();
+});
+
+/* 工作台的输入表单:以前没有 submit 处理器,点「执行」/按回车会走浏览器默认的
+   GET 提交,整页重载 —— 看起来就是"说了一句就再也接不上"。 */
+const workForm = $('form');
+if (workForm) {
+  workForm.addEventListener('submit', (e) => {
+    e.preventDefault();
+    if (busy) return;
+    const box = $('q');
+    const text = (box.value || '').trim();
+    if (!text && !pendingAtt.length) return;
+    box.value = '';
+    box.style.height = 'auto';
+    send(text);
+  });
+}
 
 document.querySelectorAll('.vtab').forEach((b) => {
   b.addEventListener('click', () => {
