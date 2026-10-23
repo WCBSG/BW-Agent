@@ -1,0 +1,72 @@
+{
+  "profile_keywords": [
+    "身份证",
+    "内部文件",
+    "测试账号",
+    "数据库口令"
+  ],
+  "profile_file_types": [
+    ".env",
+    ".sql",
+    ".bak",
+    ".zip",
+    ".log",
+    ".config",
+    ".yml"
+  ],
+  "server_header_keys": [
+    "server",
+    "x-powered-by",
+    "x-aspnet-version",
+    "x-aspnetmvc-version",
+    "x-generator",
+    "x-runtime",
+    "via"
+  ],
+  "error_signatures": [
+    "sql syntax",
+    "you have an error in your sql",
+    "warning: mysql",
+    "mysqli_",
+    "pg_query",
+    "postgresql query failed",
+    "ora-0",
+    "oracle error",
+    "sqlite3_",
+    "unclosed quotation mark",
+    "odbc sql server driver",
+    "system.data.sqlclient",
+    "jdbc.exception",
+    "traceback (most recent call last)",
+    "fatal error:",
+    "notice: undefined",
+    "warning: include",
+    "microsoft ole db provider"
+  ],
+  "dangerous_methods": [
+    "PUT",
+    "DELETE",
+    "TRACE",
+    "PATCH",
+    "CONNECT",
+    "COPY",
+    "MOVE"
+  ],
+  "suspicious_tlds": [
+    ".xyz",
+    ".top",
+    ".cc",
+    ".biz",
+    ".click",
+    ".work",
+    ".win",
+    ".bid",
+    ".loan",
+    ".review",
+    ".gq",
+    ".cf",
+    ".tk",
+    ".ml",
+    ".su"
+  ]
+}

@@ -4,15 +4,15 @@
 并且**不知道答案时会说"没结论"**，而不是硬报一个"未发现问题"。
 
 - 交付物：`agent\build\网站安全巡检智能体.exe`（单文件，界面与默认规则都在里面）
-- 后端：C++20（`agent/src/` 约 1.3 万行），**零第三方依赖** —— 不要 Python、不要 Node、不要额外运行库；libstdc++/libgcc 已静态链入，目标机器只要有系统 DLL 即可
+- 后端：C++20（`agent/src/main/` 约 1.3 万行），**零第三方依赖** —— 不要 Python、不要 Node、不要额外运行库；libstdc++/libgcc 已静态链入，目标机器只要有系统 DLL 即可
 - 界面：自建网页界面（起手式 → 任务工作台 → 数据视图，一套纸白），由程序内置
 - 数据：默认放 `C:\Users\<用户名>\.bw_agent`
 
-> 想先看「做了哪些验证、怎么复现」？见 [测试报告.md](./测试报告.md)。
-> 想跑一遍演示？见 [演示环境.md](./演示环境.md)（配套分级靶场，含未授权禁区）。
-> 想看内部怎么搭的？见 [系统架构.md](./系统架构.md)、[工具清单.md](./工具清单.md)。
+> 想先看「做了哪些验证、怎么复现」？见 [测试报告.md](./docs/测试报告.md)。
+> 想跑一遍演示？见 [演示环境.md](./docs/演示环境.md)（配套分级靶场，含未授权禁区）。
+> 想看内部怎么搭的？见 [系统架构.md](./docs/系统架构.md)、[工具清单.md](./docs/工具清单.md)。
 >
-> 多人一起改？先看 [CONTRIBUTING.md](./CONTRIBUTING.md)：分支模型、构建与自检、以及"改代码时不能破的四条线"。
+> 多人一起改？先看 [CONTRIBUTING.md](./docs/CONTRIBUTING.md)：分支模型、构建与自检、以及"改代码时不能破的四条线"。
 > CI 在 `.github/workflows/build.yml`，每次 push / PR 都会编译并跑 `agent.exe selftest`。
 
 ---
@@ -140,11 +140,11 @@ DAS_USER_APP_KEY=...
 
 ### 0) 规则本身就是数据：**内置但不硬编码**（并且能在界面里直接改）
 
-代码里只留"判定手法"，"判定什么"全在 `agent\data\rules.json`（构建时编进 exe，作为出厂值）。
+代码里只留"判定手法"，"判定什么"全在 `agent\data\rules\`（构建时编进 exe，作为出厂值）。
 运行时以**数据目录 `rules\` 下的 6 个域文件**为准：某个文件缺了或某个键没写，就回落到出厂值；
 整个 `rules\` 删掉，下次启动会重新按出厂规则生成。
 
-**为什么拆成 6 个文件**：一个 9KB 的 `rules.json` 里，改"弱口令"和改"告警阈值"落在同一个文件 ——
+**为什么拆成 6 个文件**：一个 9KB 的 `rules\*.json` 里，改"弱口令"和改"告警阈值"落在同一个文件 ——
 版本库里每次整篇变动，也没法把某一类单独交给别人看。拆完之后**改哪一类就只动那一个文件**。
 
 **两种改法**：
@@ -304,7 +304,7 @@ agent\build\agent.exe run skill_我的技能
 | 说不清时 | 报"未发现"（其实是没查成） | 明确说"这次没得出结论"，并说明卡在哪一步 |
 | 收尾 | 无 | 复测推进闭环状态 → 报告分级统计 → 证据与闭环核对 |
 
-几个具体手法（都在 `agent/src/` 里，可对着代码看）：
+几个具体手法（都在 `agent/src/main/` 里，可对着代码看）：
 
 - **软 404 校准**：很多站点对不存在的路径返回 `200 + 自定义错误页`，不校准必然大面积误报
 - **同形比较**：比对正文时先把数字串抹平，否则带时间戳/计数器的页面会被判成"变了"
@@ -317,9 +317,9 @@ agent\build\agent.exe run skill_我的技能
 ## 四、三层结构(为什么它是「智能体」)
 
 ```
-循环(loop)  ─ 大脑：感知 → 决策 → 行动 → 观察 → 反思 → 收敛      agent/src/agent.cpp
-技能(skill) ─ 能力：一件事的完整做法与判定                        agent/src/skills.cpp  agent/src/skills_closure.cpp
-工具(tool)  ─ 手：一次原子动作，只做只读取数与客观判断(本机类见下)    agent/src/tools.cpp
+循环(loop)  ─ 大脑：感知 → 决策 → 行动 → 观察 → 反思 → 收敛      agent/src/main/agent.cpp
+技能(skill) ─ 能力：一件事的完整做法与判定                        agent/src/main/skills.cpp  agent/src/main/skills_closure.cpp
+工具(tool)  ─ 手：一次原子动作，只做只读取数与客观判断(本机类见下)    agent/src/main/tools.cpp
 ```
 
 **工具（12 个）**：8 个侦察类 —— `site_crawl` 资产发现 / `sensitive_file_probe` 落点探测 /
@@ -372,7 +372,7 @@ agent\build\agent.exe run skill_我的技能
 
 ## 五、规则是数据,不是代码
 
-`agent\data\rules.json` 里放的是"这个单位关心什么"（构建时编进 exe 作为出厂值）：
+`agent\data\rules\` 里放的是"这个单位关心什么"（构建时编进 exe 作为出厂值）：
 
 - `sensitive_paths` 要试的落点清单（默认 36 个）
 - `dir_candidates` 要试的目录清单（默认 29 个）
@@ -382,7 +382,7 @@ agent\build\agent.exe run skill_我的技能
 - `probing` 探测上限与超时
 
 换目标、换单位只要改这个文件，**不用改代码、不用重编译**。报告与界面"生效规则"页都会写明本次用的是哪套规则。
-`agent\data\rules.json` 缺失时使用内置的同结构默认规则（保证零配置也能跑）。
+`agent\data\rules\` 缺失时使用内置的同结构默认规则（保证零配置也能跑）。
 
 ---
 
@@ -545,7 +545,7 @@ agent\build\agent.exe run skill_我的技能
 ## 九、验收步骤
 
 演示环境用本仓配套的分级靶场（`网络安全\靶机服务器`，7 个关卡、137 个考点，含 1 个未授权禁区），
-细节见 [演示环境.md](./演示环境.md)。
+细节见 [演示环境.md](./docs/演示环境.md)。
 
 ```
 0) 起靶场：进 网络安全\靶机服务器 双击 start.bat（或 py serve.py --port 8081）
@@ -578,7 +578,9 @@ agent\build\agent.exe run skill_我的技能
 ```
 (仓库根)/
 ├─ 启动.bat / start.bat            启动入口(转发到 agent\build\...;没有产物会先调 agent\build.bat)
-├─ README.md 交付说明.md 系统架构.md 测试报告.md 工具清单.md 演示环境.md
+├─ README.md                    项目总览(你正在看的这页)
+├─ 启动.bat / start.bat         一键启动(没有产物时先调 agent\build.bat)
+├─ docs/                        交付说明 / 系统架构 / 测试报告 / 工具清单 / 演示环境 / 工具协议 / CONTRIBUTING
 ├─ .env.example                   大模型凭证样例(复制成 .env 填自己的密钥)
 └─ agent/                         ★ 程序本体
     ├─ build.bat                  一键编译:生成内置资源 → 编译 → 输出单文件 exe
@@ -586,7 +588,7 @@ agent\build\agent.exe run skill_我的技能
     ├─ build/                     构建产物(每次 build.bat 重新生成)
     │   ├─ 网站安全巡检智能体.exe   ★ 交付物:单文件,双击即用(界面与规则都在里面)
     │   └─ agent.exe              同源产物,命令行工具形态
-    ├─ src/                       后端源码(约 1.3 万行, C++20, 零第三方依赖)
+    ├─ src/main/                  后端源码(约 1.3 万行, C++20, 零第三方依赖)
     │   ├─ main.cpp               入口:零参数启动 / selftest / run / tool / chat / serve / rules
     │   ├─ selftest.cpp           自检套件(基础件/JSON/决策/技能/循环),`agent.exe selftest` 跑的就是它
     │   ├─ agent.cpp              循环:决策、执行、观察、反思、收敛
@@ -609,11 +611,13 @@ agent\build\agent.exe run skill_我的技能
     │   ├─ json.cpp common.cpp    自写 JSON、缓冲、编码、时间、路径、数据目录解析
     │   └─ app.rc                 图标与版本信息(UTF-8,windres 用 --codepage=65001)
     ├─ ui/                        界面源码(index.html / app.css / app.js / logo.ico),编译时打进 exe
-    ├─ data/                      出厂规则与测试集(rules.json / testcases.jsonl),构建时打进 exe
-    ├─ tools/                     构建期小工具
-    │   ├─ mkres.cpp              把界面、规则与 WebView2 加载器转成 C++ 数组编进 exe
-    │   └─ gen_webview2_min.js    从官方 SDK 头里抽出用到的那几个接口(生成 src\webview2_min.h)
-    └─ third_party/webview2/x64/  WebView2Loader.dll(微软官方加载器,构建时编进 exe)
+    ├─ data/                      出厂数据(规则/技能/工具声明/默认 MCP),构建时打进 exe
+    ├─ tools/                     工具与构建期小工具
+    │   ├─ toolhost.cpp           工具宿主:每个内置工具编成一个独立 exe(声明 + 入口 + 协议)
+    │   ├─ mkres.cpp              把界面、出厂数据与 WebView2 加载器转成 C++ 数组编进 exe
+    │   └─ gen_webview2_min.js    从官方 SDK 头里抽出用到的那几个接口(生成 src\main\webview2_min.h)
+    └─ data/                      出厂数据:rules/(6 个域) skills/ tools/(声明+exe) mcp.json
+                                   WebView2Loader.dll(微软官方加载器,构建时编进 exe)
 ```
 
 ### 运行时数据目录（`C:\Users\<用户名>\.bw_agent`）
@@ -668,7 +672,7 @@ WebView2 的**浏览器数据目录放在用户数据目录下**（`%USERPROFILE
 
 `agent/tools/mkres.cpp` 在构建期把 `agent/ui/` 三件套 + 图标 + 出厂规则转成一个 C++ 数组
 （`agent/build/resources.cpp`），与源码一起编译链接，所以 exe 自己就能提供界面与规则。
-运行时**磁盘优先、内置兜底**：放一份 `ui\index.html` 或 `rules.json` 在旁边就能覆盖内置版本，
+运行时**磁盘优先、内置兜底**：放一份 `ui\index.html` 或 `rules\*.json` 在旁边就能覆盖内置版本，
 方便换界面、换检测范围，而不需要改代码。
 
 ---

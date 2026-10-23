@@ -1,0 +1,15 @@
+{
+    "name":  "agent_info",
+    "kind":  "内置",
+    "readonly":  true,
+    "impl":  "agent_info",
+    "description":  "查智能体自身的信息:数据目录、当前模型与可用模型数、授权池、审批策略、规则来源、已落盘的发现/运行/资产/告警条数、周期巡检条数、技能与工具数量。回答「你现在什么状态」「你有多少能力」「授权了哪些站」这类问题,或在改设置前先看当前值。不需要参数,不发起任何网络请求。",
+    "schema":  {
+                   "type":  "object",
+                   "properties":  {
+
+                                  },
+                   "additionalProperties":  false
+               },
+    "source":  "~/tools/agent_info/agent_info.exe"
+}

@@ -1,0 +1,46 @@
+{
+    "name":  "settings_set",
+    "kind":  "内置",
+    "readonly":  false,
+    "impl":  "settings_set",
+    "description":  "改本机设置(不碰被检目标,每次写入都记审计)。按 section 分四种用法:\n· rules:带 domain + patch(这一域要改的字段,JSON 对象文本)或 key+value,保存后立即重载生效;\n· automation:action=save/remove,带 rule(JSON 对象文本,字段同周期巡检:id/name/domain/scope/kind/every_min/at_hour/at_min/weekday/checks/enabled)或 id;目标必须在授权池内;\n· models:带 id,切换到已配置且可用的那一家模型;\n· approval:带 id,切换到某条策略 —— 只允许换成更严的,\"全部允许\"必须由人在界面上确认。授权池不在可改范围(只能 pool_list 读):要加站点请让用户在界面里确认授权。",
+    "schema":  {
+                   "type":  "object",
+                   "properties":  {
+                                      "section":  {
+                                                      "type":  "string",
+                                                      "description":  "rules|automation|models|approval"
+                                                  },
+                                      "domain":  {
+                                                     "type":  "string",
+                                                     "description":  "section=rules 时的域 id"
+                                                 },
+                                      "patch":  {
+                                                    "description":  "section=rules:要保存的字段(JSON 对象,可直接给对象或 JSON 文本)"
+                                                },
+                                      "key":  {
+                                                  "type":  "string",
+                                                  "description":  "section=rules:只改一个键"
+                                              },
+                                      "value":  {
+                                                    "description":  "section=rules:key 对应的值(数字/布尔/字符串,对象或数组给 JSON 文本)"
+                                                },
+                                      "rule":  {
+                                                   "description":  "section=automation:规则(对象或 JSON 文本)"
+                                               },
+                                      "id":  {
+                                                 "type":  "string",
+                                                 "description":  "automation/models/approval:目标 id"
+                                             },
+                                      "action":  {
+                                                     "type":  "string",
+                                                     "description":  "automation:save|remove"
+                                                 }
+                                  },
+                   "required":  [
+                                    "section"
+                                ],
+                   "additionalProperties":  false
+               },
+    "source":  "~/tools/settings_set/settings_set.exe"
+}

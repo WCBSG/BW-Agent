@@ -1,0 +1,20 @@
+{
+    "name":  "page_diff",
+    "kind":  "内置",
+    "readonly":  true,
+    "impl":  "page_diff",
+    "description":  "内容基线比对:第一次执行采集基线,之后每次比对差异,给出内容、标题与外域链接的增减情况。用于发现网页被篡改或被插入外部链接。",
+    "schema":  {
+                   "type":  "object",
+                   "properties":  {
+                                      "target":  {
+                                                     "type":  "string"
+                                                 }
+                                  },
+                   "required":  [
+                                    "target"
+                                ],
+                   "additionalProperties":  false
+               },
+    "source":  "~/tools/page_diff/page_diff.exe"
+}

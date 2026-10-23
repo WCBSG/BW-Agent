@@ -1,0 +1,17 @@
+{
+  "markers": {
+    "note": "页面结构判定用的标记串:目录索引页长什么样、口令字段叫什么。",
+    "dir_listing": [
+      "index of /",
+      "<title>index of",
+      "directory listing for",
+      "[to parent directory]",
+      "parent directory</a>",
+      ">index of /"
+    ],
+    "login_password_field": "password"
+  },
+  "tamper": {
+    "report_external_hosts": 8
+  }
+}

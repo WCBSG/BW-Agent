@@ -1,0 +1,9 @@
+{
+  "alerts": {
+    "min_rank": 2,
+    "immediate_rank": 3,
+    "channel_immediate": "邮件",
+    "channel_normal": "站内",
+    "note": "达到 immediate_rank 的发现走 channel_immediate,其余走 channel_normal;低于 min_rank 的不进告警(只进报告)"
+  }
+}

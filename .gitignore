@@ -1,8 +1,8 @@
 # 网站安全巡检智能体 —— 忽略规则
 # 原则:源码与文档入库,可重生成的产物和真实密钥不入库
 
-# ---------- 真实密钥:绝不入库(样板见 .env.example) ----------
-.env
+# ---------- 真实密钥:绝不入库 ----------
+models.json
 # 缓存目录(临时下载、旧界面备份、外部 zip 等)
 .cache/
 
@@ -14,10 +14,19 @@ exp/*.exe
 exp/*.log
 exp/*.txt
 
-# ---------- 数据目录:入库出厂规则,运行结果不入库 ----------
-# 运行数据默认在 C:\Users\<用户名>\.bw_agent,这里只放"出厂规则 + 测试集"
+# ---------- 数据目录:出厂数据入库,运行结果不入库 ----------
+# 运行数据默认在 C:\Users\<用户名>\.bw_agent,这里只放"出厂数据"
+#   rules/   6 个规则域(检测口径/敏感信息/探测参数/告警/单位口径/页面)
+#   skills/  技能包(<名字>/SKILL.md)
+#   tools/   工具声明与工具 exe(<名字>/<名字>.json + <名字>.exe)
+#   mcp.json 默认 MCP 清单
+# 模型密钥在 models.json 里,不入库(见上面单独一行)
 agent/data/*
-!agent/data/rules.json
+!agent/data/rules/
+!agent/data/skills/
+!agent/data/tools/
+!agent/data/mcp.json
+!agent/data/WebView2Loader.dll
 
 # ---------- 编辑器/系统噪声 ----------
 Thumbs.db
