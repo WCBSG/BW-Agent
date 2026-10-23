@@ -2993,7 +2993,6 @@ async function capsOpen(kind) {
       ? `共 ${st.skills || 0} 个（技能包 ${st.extSkills || 0}）`
       : `共 ${st.tools || 0} 个（外部 ${st.extTools || 0} · MCP ${st.mcpTools || 0}）`;
   }
-  if (kind === 'skill' || kind === 'tool') renderCapNav(kind).catch(() => {});
   capsShowList();
   capsRenderList();
   capsRenderForm(CAP.editing);
@@ -3061,7 +3060,19 @@ function showCapFile(name) {
   const host = $('cap-files');
   if (!host) return;
   host.style.display = 'block';
+  /* 先挂编辑器再把「返回」插到最前面:mountFileEditor 会清空 host */
   mountFileEditor(host, [name]);
+  const back = el('div', 'cap-back');
+  const btn = el('button', 'ghost', '← 返回清单');
+  btn.type = 'button';
+  btn.addEventListener('click', () => {
+    host.style.display = 'none';
+    host.innerHTML = '';
+    if (lv) lv.style.display = '';
+    refreshHBars();
+  });
+  back.appendChild(btn);
+  host.insertBefore(back, host.firstChild);
 }
 
 /* ---------- 通用"单文件编辑器" ----------
@@ -3301,7 +3312,32 @@ function capsRenderList() {
   }
 }
 
-function capsEditExisting(x) {
+/* 清单里的「编辑」= 打开它对应的那个文件。
+   文件路径从后端清单里找:技能是 skills\<名字>\SKILL.md,工具是 tools\<目录>\<名字>.json;
+   老形态(skills\<名字>.md / tools\<名字>.json)同样能匹配上。 */
+async function capFileOf(x) {
+  const want = CAP.kind === 'skill' ? '技能' : '工具';
+  let files = state.__capFileList;
+  if (!files) {
+    try {
+      const r = await api('/api/config/list');
+      files = state.__capFileList = r.files || [];
+    } catch (e) { files = []; }
+  }
+  const name = String((x && x.name) || '');
+  if (!name) return '';
+  const pool = files.filter((f) => String(f.group || '').indexOf(want) >= 0);
+  const base = (p) => String(p).split('\\').pop();
+  return (pool.find((f) => String(f.name).split('\\').indexOf(name) >= 0) ||
+          pool.find((f) => base(f.name) === name + '.json') ||
+          pool.find((f) => base(f.name) === name + '.md') ||
+          pool.find((f) => String(f.name).indexOf(name) >= 0) || {}).name || '';
+}
+
+async function capsEditExisting(x) {
+  const file = await capFileOf(x);
+  if (file) { showCapFile(file); return; }
+  /* 找不到文件(比如内置技能还没导出)时退回表单,至少能改说明文字 */
   if (CAP.kind === 'skill') {
     CAP.editing = {
       name: x.name || '', title: x.title || '', purpose: x.purpose || '',

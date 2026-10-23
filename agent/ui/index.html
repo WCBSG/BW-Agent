@@ -529,27 +529,22 @@
           </section>
 
           <div class="set-panel" id="cap-panel">
-            <div class="config-grid">
-              <div class="config-side">
-                <div class="config-side-head"><span id="cap-nav-title">技能</span></div>
-                <div class="filelist" id="cap-nav"></div>
-              </div>
-              <div class="config-main cap-main">
-                <div id="cap-list-view">
-                  <div class="cap-bar" id="cap-bar">
-                    <span class="cap-title" id="cap-kind-label">技能</span>
-                    <span class="cap-count" id="cap-stat"></span>
-                    <span class="grow"></span>
-                    <button class="ghost" type="button" id="cap-btn-market">从市场导入</button>
-                    <button class="ghost" type="button" id="cap-btn-gen">用大模型创建</button>
-                    <button type="button" class="primary" id="cap-btn-new">＋ 新建</button>
-                  </div>
-                  <div class="cap-aux" id="cap-aux"></div>
-                  <div class="cap-list" id="cap-list"></div>
-                  <div class="cap-edit" id="cap-edit"></div>
+            <!-- 只有一栏:清单在上面,点「编辑」直接进文件编辑。 -->
+            <div class="config-main cap-main">
+              <div id="cap-list-view">
+                <div class="cap-bar" id="cap-bar">
+                  <span class="cap-title" id="cap-kind-label">技能</span>
+                  <span class="cap-count" id="cap-stat"></span>
+                  <span class="grow"></span>
+                  <button class="ghost" type="button" id="cap-btn-market">从市场导入</button>
+                  <button class="ghost" type="button" id="cap-btn-gen">用大模型创建</button>
+                  <button type="button" class="primary" id="cap-btn-new">＋ 新建</button>
                 </div>
-                <div class="cap-files" id="cap-files"></div>
+                <div class="cap-aux" id="cap-aux"></div>
+                <div class="cap-list" id="cap-list"></div>
+                <div class="cap-edit" id="cap-edit"></div>
               </div>
+              <div class="cap-files" id="cap-files" style="display:none"></div>
             </div>
           </div>
 

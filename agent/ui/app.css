@@ -1180,3 +1180,7 @@ button.primary + .ghost, .ghost + button.primary{padding-top:4px;padding-bottom:
 .md strong { font-weight:600 }
 .md del { color:#8a8a80 }
 
+/* 能力页只有一栏:清单占满宽度,编辑时就地换成文件编辑器。 */
+#cap-panel .config-main { max-width:none }
+#cap-panel .cap-back { margin:0 0 10px }
+#cap-panel .cap-back button { padding:5px 10px }
