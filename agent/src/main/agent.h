@@ -61,7 +61,7 @@ typedef struct {
 void decision_free(decision_t *d);
 
 /* 循环的可观测状态:每一步都留痕,"为什么停"必须能回答 */
-#define MAX_STEPS_DEFAULT 6
+#define MAX_STEPS_DEFAULT 10
 
 typedef struct {
   buf_t transcript;          /* 人类可读的思考/行动流水(评审要看) */
@@ -105,6 +105,10 @@ typedef struct {
   /* 动手之前的权限审批:返回 1 放行、0 拒绝(拒绝理由写进 reason,调用方 free)。
      不实现(为 NULL)等价于"全部允许" —— 命令行与自检走这条路。 */
   int (*on_approval)(void *ud, const char *tool, json_t *args, char **reason);
+  /* 向用户提问:payload 是 ask_user 的参数(问题与选项),返回用户答案的 JSON。
+     与审批一样是"停下来等人",区别是答案是自由内容而不只是允许/拒绝。
+     不实现(为 NULL)时,循环会把问题当成"没人可问"直接收束。 */
+  int (*on_question)(void *ud, const char *payload, char **answer);
   /* 模型边收边到的正文增量(流式)。决策 JSON 不会被送到这里 —— 那不是给人看的。 */
   void (*on_delta)(void *ud, const char *text);
 } agent_hooks_t;
@@ -123,6 +127,9 @@ void     agent_set_hooks(agent_t *a, const agent_hooks_t *hooks);
 void     agent_set_scope(agent_t *a, const char *task_id, const char **domains, int n);
 /* 绑定存储层:技能的"发现入库"要写进去;不绑也能跑,只是不落盘 */
 void     agent_set_store(agent_t *a, void *store, const char *run_id);
+/* 本轮有没有人在看:定时/自动巡检没有人回答提问,模型也不该问 */
+void     agent_set_unattended(agent_t *a, int on);
+int      agent_unattended(agent_t *a);
 /* 对话历史(多轮上下文,决定"这轮说的是哪个站"时要用) */
 void     agent_add_history(agent_t *a, const char *role, const char *text);
 /* 读历史:决策提示词要把最近几轮带上,否则"继续""换到那个站"没法消解 */

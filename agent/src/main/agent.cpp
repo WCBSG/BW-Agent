@@ -45,6 +45,8 @@ struct agent {
   int max_steps;
   /* 用户叫停:跨线程写、循环线程读。动作用的是原子读,不用锁。 */
   volatile LONG cancel;
+  /* 1 = 定时/自动巡检,没有人在看:不许提问,直接按增量做 */
+  int unattended;
   buf_t scope_note;      /* 拼好的授权范围说明(提示词里用) */
 };
 
@@ -73,6 +75,12 @@ void agent_free(agent_t *a) {
 void agent_set_hooks(agent_t *a, const agent_hooks_t *hooks) {
   if (a && hooks) a->hooks = *hooks;
 }
+
+void agent_set_unattended(agent_t *a, int on) {
+  if (a) a->unattended = on ? 1 : 0;
+}
+
+int agent_unattended(agent_t *a) { return a ? a->unattended : 0; }
 
 static void emit(agent_t *a, int which, const char *s1, const char *s2, json_t *args) {
   if (!a) return;
@@ -279,6 +287,10 @@ static int trailing_no_new_skill(json_t *obs) {
   for (int i = n - 1; i >= 0; i--) {
     json_t *o = j_at(obs, i);
     if (!o || o->type != J_OBJ) break;
+    /* 只对"技能"设这道闸:技能是成套路的一整轮,换参数重跑同一套确实常是空转。
+       工具不一样 —— http_get 连着读十个页面、record_finding 连着记三条,
+       正是"顺着线索往下查"的样子,不该被当成打转。 */
+    if (!str_startswith(j_s(o, "tool", ""), "skill_")) break;
     if (j_b(o, "new_skill", 0)) break;
     run++;
   }
@@ -307,6 +319,15 @@ static void observation_append(json_t *observations, const char *name, json_t *a
   }
   j_set_bool(o, "new_skill", fresh);
   j_add(observations, o);
+}
+
+/* 最近一步是不是在说"和上次一样、没有变化" */
+static int last_observation_unchanged(json_t *observations) {
+  int n = j_len(observations);
+  if (n <= 0) return 0;
+  const char *res = j_s(j_at(observations, n - 1), "result", "");
+  return str_icontains(res, "与基线一致") || str_icontains(res, "指纹未变") ||
+         str_icontains(res, "未发现改动") || str_icontains(res, "没有发现变化");
 }
 
 static int run_step(agent_t *a, tool_ctx_t *ctx, const char *name, json_t *args,
@@ -346,6 +367,43 @@ static int run_step(agent_t *a, tool_ctx_t *ctx, const char *name, json_t *args,
     observation_append(observations, name, args, msg.data, 1);
     buf_free(&msg);
     return -1;
+  }
+
+  /* —— 提问:停下来等用户回答 ——
+     这是"问一句",不是"动手":不经过审批,也不产生任何请求。
+     无人值守(定时巡检)时没人可问,就把这件事写成一条观察,让模型自己按最保守的做法继续。 */
+  if (!sk && strcmp(name, "ask_user") == 0) {
+    char *payload = args ? json_dump(args) : NULL;
+    char *answer = NULL;
+    int ok = 0;
+    if (!a->unattended && a->hooks.on_question) {
+      ok = a->hooks.on_question(a->hooks.userdata, payload ? payload : "{}", &answer);
+    }
+    free(payload);
+
+    buf_t msg;
+    buf_init(&msg);
+    if (ok && answer && answer[0]) {
+      buf_printf(&msg, "用户回答:%s", answer);
+    } else if (a->unattended) {
+      buf_puts(&msg,
+               "这一轮是定时/自动巡检,没有人在看,没人回答:不要停下来等。"
+               "按最保守的做法继续(没有变化就只做增量),并在结论里说明。");
+    } else {
+      buf_puts(&msg, "用户没有回答(可能关掉了界面):按最保守的做法继续,并在结论里说明这一点。");
+    }
+    free(answer);
+    EMIT_STATUS(a, name, "done");
+    observation_append(observations, name, args, msg.data, 0);
+    if (a->hooks.on_observation) {
+      tool_result_t view;
+      memset(&view, 0, sizeof(view));
+      view.text = msg.data;
+      view.say = (char *)"我等你回答。";
+      a->hooks.on_observation(a->hooks.userdata, name, &view);
+    }
+    buf_free(&msg);
+    return 0;
   }
 
   /* —— 权限审批 ——
@@ -422,6 +480,7 @@ int agent_run_turn(agent_t *a, const char *user_text, loop_state_t *st) {
 
   json_t *observations = j_arr();
   int findings_total = 0;
+  int asked_no_change = 0;     /* 同一轮只问一次"要不要重跑" */
   int rc = 0;
 
   /* 授权范围由智能体自己持有,并在本轮开始时落到本线程的取数通道上。
@@ -654,6 +713,35 @@ int agent_run_turn(agent_t *a, const char *user_text, loop_state_t *st) {
     int step_rc = run_step(a, &ctx, d.tool, args, observations, &findings_total);
     if (step_rc != 0 && observations->count >= a->max_steps - 1) rc = step_rc;
     decision_free(&d);
+
+    /* —— 手动巡检撞上"没有变化",这一问必须发生 ——
+       同一个站刚查过、这次比对又没变化,该由人决定要不要重跑。
+       全交给模型的话,它一旦超时降级就会悄悄收尾 ——
+       所以这条规则写在循环里,用同一个提问工具问出去。 */
+    if (!a->unattended && !asked_no_change && a->hooks.on_question &&
+        str_icontains(user_text, "巡检") && last_observation_unchanged(observations)) {
+      asked_no_change = 1;
+      static const char *kPayload =
+          "{\"message\":\"这个站上次巡检过,这次比对没有发现变化。还要继续做完整巡检吗?\","
+          "\"questions\":[{\"id\":\"mode\",\"title\":\"接下来怎么做\",\"type\":\"select\","
+          "\"options\":[\"继续完整巡检\",\"只看增量\",\"先不做\"],\"default\":\"只看增量\"}]}";
+      char *answer = NULL;
+      if (a->hooks.on_question(a->hooks.userdata, kPayload, &answer) && answer) {
+        buf_t msg;
+        buf_init(&msg);
+        buf_printf(&msg, "用户回答:%s", answer);
+        observation_append(observations, "ask_user", NULL, msg.data, 0);
+        if (a->hooks.on_observation) {
+          tool_result_t view;
+          memset(&view, 0, sizeof(view));
+          view.text = msg.data;
+          view.say = (char *)"我等你拿主意。";
+          a->hooks.on_observation(a->hooks.userdata, "ask_user", &view);
+        }
+        buf_free(&msg);
+      }
+      free(answer);
+    }
 
     if (step == a->max_steps - 1 && st) {
       st->stop_code = STOP_BUDGET;

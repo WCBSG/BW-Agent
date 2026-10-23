@@ -142,6 +142,19 @@
           <button class="ab-yes" id="ab-yes" type="button">允许</button>
         </div>
       </div>
+      <!-- 提问卡：贴在输入框上方，和审批条同一位置（两者不会同时出现） -->
+      <div class="approval-bar question-bar" id="question-bar" role="dialog" aria-live="polite">
+        <div class="ab-row">
+          <span class="ab-tag">需要你决定</span>
+          <span class="ab-tool" id="q-title">智能体提问</span>
+          <span class="ab-policy" id="q-hint"></span>
+        </div>
+        <div class="q-msg" id="q-msg"></div>
+        <div id="q-fields"></div>
+        <div class="ab-actions">
+          <button class="ab-yes" id="q-submit" type="button">提交</button>
+        </div>
+      </div>
       <div class="field">
         <button type="button" class="clip" id="btn-attach" title="添加附件：日志、配置、导出文件或截图" aria-label="添加附件">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8.5 12.5 15 6a3.2 3.2 0 0 1 4.5 4.5l-7.6 7.6a5 5 0 0 1-7.1-7.1l7.3-7.3"/></svg>
@@ -182,16 +195,6 @@
         <div class="bar-mini" id="rail-report-bars"></div>
         <dl class="kv" id="rail-report-kv"></dl>
         <button class="go" data-goto="report">看完整报告</button>
-      </section>
-
-      <section class="card rail-card">
-        <div class="k"><span>过程要点</span><span id="trace-hint"></span></div>
-        <div class="steps" id="steps"><div class="muted">执行后按步列出。</div></div>
-      </section>
-
-      <section class="card rail-card">
-        <div class="k"><span>本轮留痕</span><span>逐条</span></div>
-        <pre class="trace" id="trace">还没有执行过循环。</pre>
       </section>
 
     </div>
@@ -386,8 +389,6 @@
                 <input type="range" id="ui-rail" min="240" max="560" step="4"><b id="ui-rail-v"></b></label>
               <label class="ui-row"><span>输入框高度</span>
                 <input type="range" id="ui-compose" min="44" max="300" step="4"><b id="ui-compose-v"></b></label>
-              <label class="ui-row ui-check"><span>本轮留痕</span>
-                <input type="checkbox" id="ui-trace"><b></b></label>
               <label class="ui-row ui-check"><span>自动滚动</span>
                 <input type="checkbox" id="ui-autoscroll"><b></b></label>
               <label class="ui-row ui-check"><span>界面动效</span>

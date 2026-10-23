@@ -233,8 +233,8 @@ void decision_free(decision_t *d) {
 /* 观察结果按"单步 + 总量"双重截断:一轮 6 步、每步上万字时,
    全文塞进提示词只会把真正有用的信息挤出去,还可能超出模型的输入上限。
    截断保留头尾 —— 结论通常在末尾,链接与样本通常在开头。 */
-#define OBS_PER_STEP_MAX 4000
-#define OBS_TOTAL_MAX 20000
+#define OBS_PER_STEP_MAX 2500
+#define OBS_TOTAL_MAX 12000
 #define HISTORY_TURNS 6
 #define HISTORY_PER_TURN 600
 
@@ -267,8 +267,16 @@ static void build_prompt(buf_t *out, agent_t *a, const char *user_text,
       "4. 同一动作已有结果且无变化,不再重复,直接收尾。\n\n"
       "## 选择\n"
       "优先技能(一次调用即跑完、直接给结论);技能覆盖不到才单独用工具。\n"
+      "全流程巡检已含完整性/敏感信息/目录/模板,别再单独重跑这几个技能。\n"
+      "技能只是成套路的第一步:跑完还有线索(页面、接口、外链)就用工具接着看,别急着收尾。\n"
       "非只读工具会弹审批、可能被拒:被拒按否定结果处理,不要换个说法再试。\n"
-      "args 只填必需参数,不要枚举长列表。\n");
+      "args 只填必需参数,不要枚举长列表。\n\n"
+      "## 深入分析(需要真判断时)\n"
+      "- 看底账:asset_list 拿页面清单;http_get 读状态、响应头、标题、正文与链接。\n"
+      "- 篡改:跨页比对标题/关键文案/外链/脚本来源,再结合基线差异;新增外域或裸 IP 最可疑。\n"
+      "- 漏洞:看响应头缺失、错误回显、危险方法、参数回显;有参数就上 sqli_probe 做差分。\n"
+      "- 多步链:上一步拿到的路径/参数就是下一步的输入,链上每一环都要写进证据。\n"
+      "- 有结论就用 record_finding 落库(等级/证据/影响/修复),再决定继续还是收尾。\n");
   buf_printf(out, "\n## 本轮预算\n最多 %d 步,已用 %d 步,还剩 %d 步。\n", MAX_STEPS_DEFAULT,
              used_steps, MAX_STEPS_DEFAULT - used_steps > 0 ? MAX_STEPS_DEFAULT - used_steps : 0);
 
@@ -281,6 +289,18 @@ static void build_prompt(buf_t *out, agent_t *a, const char *user_text,
     buf_puts(out, "\n## 授权范围(硬约束)\n");
     buf_puts(out, scope_note);
     buf_puts(out, "\n池外不动手,直接说明。\n");
+  }
+
+  /* 同一件事该不该重做,取决于"有没有人在看" —— 
+     无人值守时没人回答,问题问出去只会卡住整轮。 */
+  if (agent_unattended(a)) {
+    buf_puts(out, "\n## 无人值守\n"
+                  "本轮是定时/自动巡检:不要用 ask_user。没有变化的站只做增量比对,结论直接写。\n");
+  } else {
+    buf_puts(out, "\n## 什么时候该问\n"
+                  "用户手动让查某个站时,如果它已经巡检过、这次比对又没变化,必须先 ask_user 问清楚"
+                  "(选项:继续完整巡检 / 只看增量 / 先不做),不要自行收尾。\n"
+                  "其它情况不要打断用户。\n");
   }
 
   /* 多轮上下文:没有这一段,"继续""那个站也一样查一下"就没法消解 ——

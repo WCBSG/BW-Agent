@@ -122,6 +122,10 @@ int t_dir_probe(tool_ctx_t *ctx, json_t *args, tool_result_t *out);
 int t_page_diff(tool_ctx_t *ctx, json_t *args, tool_result_t *out);
 int t_nuclei_scan(tool_ctx_t *ctx, json_t *args, tool_result_t *out);
 int t_sqli_probe(tool_ctx_t *ctx, json_t *args, tool_result_t *out);
+/* 让模型自己往下查的三件套:看底账 → 读页面 → 落结论 */
+int t_asset_list(tool_ctx_t *ctx, json_t *args, tool_result_t *out);
+int t_http_get(tool_ctx_t *ctx, json_t *args, tool_result_t *out);
+int t_record_finding(tool_ctx_t *ctx, json_t *args, tool_result_t *out);
 
 /* 文件类工具共用的路径边界(见 fs_common.cpp):三个工具都在同一个边界下工作 */
 int  abs_path(const char *raw, wchar_t *out, size_t cap);

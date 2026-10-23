@@ -1,0 +1,21 @@
+{
+  "name": "asset_list",
+  "kind": "内置",
+  "readonly": true,
+  "impl": "asset_list",
+  "description": "列已摸到的资产(页面/静态资源/接口)及状态码、发现来源,用于挑值得深看的页面。不发起请求。",
+  "schema": {
+    "type": "object",
+    "properties": {
+      "kind": {
+        "type": "string"
+      },
+      "limit": {
+        "type": "number"
+      }
+    },
+    "required": [],
+    "additionalProperties": false
+  },
+  "source": "@app"
+}

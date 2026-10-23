@@ -1,0 +1,40 @@
+{
+  "name": "record_finding",
+  "kind": "内置",
+  "readonly": true,
+  "impl": "record_finding",
+  "description": "把你亲自判断出的问题落成一条发现(标题/等级/类型/目标/证据/影响/修复)。没有证据会被拒收;同目标同标题只更新一条。只写本机记录,不碰目标站。",
+  "schema": {
+    "type": "object",
+    "properties": {
+      "title": {
+        "type": "string"
+      },
+      "severity": {
+        "type": "string"
+      },
+      "kind": {
+        "type": "string"
+      },
+      "target": {
+        "type": "string"
+      },
+      "evidence": {
+        "type": "string"
+      },
+      "impact": {
+        "type": "string"
+      },
+      "fix": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "title",
+      "severity",
+      "evidence"
+    ],
+    "additionalProperties": false
+  },
+  "source": "@app"
+}

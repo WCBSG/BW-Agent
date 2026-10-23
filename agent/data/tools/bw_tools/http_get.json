@@ -1,0 +1,26 @@
+{
+  "name": "http_get",
+  "kind": "内置",
+  "readonly": true,
+  "impl": "http_get",
+  "description": "读授权范围内的一个地址,返回状态码、关键响应头、页面标题、正文片段(截断)与页面里的链接。用来自己看页面、跟线索、验证假设;越池地址会跳过。",
+  "schema": {
+    "type": "object",
+    "properties": {
+      "url": {
+        "type": "string"
+      },
+      "method": {
+        "type": "string"
+      },
+      "max_bytes": {
+        "type": "number"
+      }
+    },
+    "required": [
+      "url"
+    ],
+    "additionalProperties": false
+  },
+  "source": "@app"
+}

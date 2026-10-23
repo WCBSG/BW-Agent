@@ -467,9 +467,92 @@ static int hook_approval(void *ud, const char *tool, json_t *args, char **reason
   return 0;
 }
 
+/* ================= 提问(等人回答,不是等人点头) =================
+ * 和审批走同一条 SSE:循环线程卡在 WaitForSingleObject 上,界面把答案 POST 回来。
+ * 区别是答案不只有"允许/拒绝":单选、多选、自由文本都能带回来。
+ * 为什么要有:同一个站已经查过且没有变化时,该由人决定"重跑还是只看增量",
+ * 而不是让模型替人做主。
+ */
+typedef struct {
+  HANDLE event;
+  char id[40];
+  char *answer;          /* JSON 文本;所有权在槽上,取走后由调用方 free */
+  int pending;
+} ask_slot_t;
+
+#define MAX_ASK_SLOTS 8
+static ask_slot_t g_ask_slots[MAX_ASK_SLOTS];
+static CRITICAL_SECTION g_ask_lock;
+static int g_ask_ready = 0;
+static volatile LONG g_ask_seq = 0;
+
+static void ask_init(void) {
+  if (g_ask_ready) return;
+  InitializeCriticalSection(&g_ask_lock);
+  for (int i = 0; i < MAX_ASK_SLOTS; i++) {
+    g_ask_slots[i].event = CreateEventA(NULL, TRUE, FALSE, NULL);
+    g_ask_slots[i].id[0] = 0;
+    g_ask_slots[i].answer = NULL;
+    g_ask_slots[i].pending = 0;
+  }
+  g_ask_ready = 1;
+}
+
+/* 循环线程调用:把问题播出去,然后等答案。 */
+static int hook_question(void *ud, const char *payload, char **answer_out) {
+  (void)ud;
+  ask_init();
+  if (answer_out) *answer_out = NULL;
+  sse_ctx_t *c = g_sse;
+  if (!c) return 0;
+
+  int seq = (int)InterlockedIncrement(&g_ask_seq);
+  char id[40];
+  snprintf(id, sizeof(id), "q-%ld-%04d", (long)GetCurrentProcessId(), seq);
+
+  ask_slot_t *slot = NULL;
+  EnterCriticalSection(&g_ask_lock);
+  for (int i = 0; i < MAX_ASK_SLOTS; i++) {
+    if (!g_ask_slots[i].pending) { slot = &g_ask_slots[i]; break; }
+  }
+  if (slot) {
+    snprintf(slot->id, sizeof(slot->id), "%s", id);
+    free(slot->answer);
+    slot->answer = NULL;
+    ResetEvent(slot->event);
+    slot->pending = 1;
+  }
+  LeaveCriticalSection(&g_ask_lock);
+  if (!slot) return 0;
+
+  buf_t b;
+  buf_init(&b);
+  buf_puts(&b, "{\"type\":\"question_request\",\"id\":");
+  buf_json_str(&b, id);
+  buf_puts(&b, ",\"payload\":");
+  buf_puts(&b, (payload && *payload) ? payload : "{}");
+  buf_puts(&b, "}");
+  sse_send(c, b.data);
+  buf_free(&b);
+
+  ev_tool_status(c, c->tool_use_id, "waiting_answer", "等你回答");
+
+  DWORD got = WaitForSingleObject(slot->event, 15 * 60 * 1000);
+  EnterCriticalSection(&g_ask_lock);
+  char *answer = slot->answer;
+  slot->answer = NULL;
+  slot->pending = 0;
+  LeaveCriticalSection(&g_ask_lock);
+
+  if (got != WAIT_OBJECT_0 || !answer) return 0;
+  if (answer_out) *answer_out = answer;
+  else free(answer);
+  return 1;
+}
+
 static const agent_hooks_t g_hooks = {
     NULL, hook_thinking, hook_action, hook_status,
-    hook_observation, hook_answer, hook_ask, hook_approval, hook_delta};
+    hook_observation, hook_answer, hook_ask, hook_approval, hook_question, hook_delta};
 
 /* ================= 会话表(每个会话一个智能体实例) =================
    并发的前提:每个会话有自己的历史、自己的步数、自己的审批等待。
@@ -994,6 +1077,40 @@ static void h_approval_decision(const http_req_t *req, http_res_t *res) {
   http_res_json(res, 200, "{\"ok\":true}");
 }
 
+/* 界面提交提问的答案:按 id 找到还在等的那一问,唤醒循环线程 */
+static void h_answer(const http_req_t *req, http_res_t *res) {
+  json_t *body = req->body ? json_parse(req->body) : NULL;
+  const char *id = body ? j_s(body, "id", "") : "";
+  json_t *answers = body ? j_get(body, "answers") : NULL;
+  if (!id[0] || !answers) {
+    if (body) json_free(body);
+    http_res_json(res, 400, "{\"ok\":false,\"error\":\"需要 id 与 answers\"}");
+    return;
+  }
+  char *text = json_dump(answers);
+  ask_init();
+  int match = 0;
+  EnterCriticalSection(&g_ask_lock);
+  for (int i = 0; i < MAX_ASK_SLOTS; i++) {
+    if (g_ask_slots[i].pending && strcmp(g_ask_slots[i].id, id) == 0) {
+      free(g_ask_slots[i].answer);
+      g_ask_slots[i].answer = text;
+      text = NULL;
+      SetEvent(g_ask_slots[i].event);
+      match = 1;
+      break;
+    }
+  }
+  LeaveCriticalSection(&g_ask_lock);
+  if (text) free(text);
+  if (body) json_free(body);
+  if (!match) {
+    http_res_json(res, 409, "{\"ok\":false,\"error\":\"这条提问已经不在了(可能超时或已回答)\"}");
+    return;
+  }
+  http_res_json(res, 200, "{\"ok\":true}");
+}
+
 /* ================= 报告导出 ================= */
 static void h_export(const http_req_t *req, http_res_t *res) {
   char fmt[16], rid[24];
@@ -1109,6 +1226,7 @@ static DWORD WINAPI sched_thread(LPVOID param) {
 
     store_set_trigger("周期巡检");
     g_appr_unattended = 1;
+    agent_set_unattended(g_sched_agent, 1);   /* 没人回答提问:模型不该问 */
     net_scope_violation_clear();        /* 每轮从零开始记越界 */
     loop_state_t st;
     memset(&st, 0, sizeof(st));
@@ -1116,6 +1234,7 @@ static DWORD WINAPI sched_thread(LPVOID param) {
     int violated = net_scope_violation();
     net_scope_violation_clear();
     g_appr_unattended = 0;
+    agent_set_unattended(g_sched_agent, 0);
     store_set_trigger("手动");
 
     char *run_id = is_full ? auto_latest_run_of_domain(g_store, rule.domain)
@@ -2222,6 +2341,7 @@ static void router(const http_req_t *req, http_res_t *res, void *ud) {
     if (!strcmp(p, "/api/profiles")) { api_profiles(req, res); return; }
     if (!strcmp(p, "/api/approvals")) { h_approvals(req, res); return; }
     if (!strcmp(p, "/api/approval")) { h_approval_decision(req, res); return; }
+    if (!strcmp(p, "/api/answer")) { h_answer(req, res); return; }
     http_res_404(res);
     return;
   }

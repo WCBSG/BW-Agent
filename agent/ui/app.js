@@ -807,10 +807,31 @@ function mdToHtml(src) {
 /* 把一个文本块渲染成 Markdown;渲染过就打个记号,避免重复解析 */
 function renderMdBlock(b) {
   if (!b || !b.node || b.mdDone) return;
-  b.node.classList.add('md');
-  b.node.innerHTML = mdToHtml(b.text || '');
   b.mdDone = true;
+  const t = (b.text || '').trim();
+  const m = /^\[第\s*(\d+)\s*步\s*·\s*思考\]\s*([\s\S]*)$/.exec(t);
+  if (m) {
+    renderThink(b.node, m[1], m[2]);
+  } else {
+    b.node.classList.add('md');
+    b.node.innerHTML = mdToHtml(b.text || '');
+  }
   scrollBottom();
+}
+
+/* 思考块:默认收成一行(和主流 agent 一样),点开看全文 */
+function renderThink(node, step, text) {
+  node.classList.add('think');
+  node.innerHTML = '';
+  const head = el('div', 'think-head');
+  head.appendChild(el('span', 'chev', '›'));
+  head.appendChild(el('span', 'think-label', '思考'));
+  head.appendChild(el('span', 'think-step', '第 ' + step + ' 步'));
+  node.appendChild(head);
+  const body = el('div', 'think-body');
+  body.innerHTML = mdToHtml(text || '');
+  node.appendChild(body);
+  head.addEventListener('click', () => node.classList.toggle('open'));
 }
 
 /* ============ 事件流渲染 ============ */
@@ -925,10 +946,13 @@ function onBlockStart(e) {
     head.appendChild(el('span', 'tool-name', e.toolName || '?'));
     const note = el('span', 'tool-note', '已决定调用');
     head.appendChild(note);
+    head.appendChild(el('span', 'tool-chev', '›'));
     card.appendChild(head);
-    const args = el('div', 'tool-args hidden');
+    /* 点一下展开参数与输出:过程默认占一行,细节按需看 */
+    head.addEventListener('click', () => card.classList.toggle('open'));
+    const args = el('div', 'tool-args');
     card.appendChild(args);
-    const out = el('div', 'tool-out hidden');
+    const out = el('div', 'tool-out');
     card.appendChild(out);
     current.body.appendChild(card);
     current.blocks[e.index] = { kind: 'tool_use', node: card, dot, note, args, out, name: e.toolName };
@@ -1017,7 +1041,7 @@ function flushStream() {
 
   if (current && current.lastText) {
     const t = current.lastText.trim();
-    if (/^\[第 \d+ 步/.test(t) || /^\[需要你补充信息\]/.test(t)) trace.textContent = current.lastText;
+    if ((/^\[第 \d+ 步/.test(t) || /^\[需要你补充信息\]/.test(t)) && trace) trace.textContent = current.lastText;
   }
   scrollBottom();
 }
@@ -1056,7 +1080,6 @@ function onBlockDelta(e) {
     scheduleFlush();
   } else if (e.delta.type === 'input_json_delta') {
     b.args.textContent = e.delta.partialJson || '';
-    if (e.delta.partialJson && e.delta.partialJson !== '{}') b.args.classList.remove('hidden');
   }
 }
 
@@ -1064,8 +1087,9 @@ function onBlockStop(e) {
   const b = getBlock(e.index);
   if (!b) return;
   if (b.kind === 'tool_use') b.dot.className = 'dot ' + (b.dot.dataset.state || 'done');
-  else if (b.kind === 'text' && b.node && b.shown !== undefined && b.shown < b.text.length) {
-    /* 这一段已经写完了:剩下的字一次补齐,不用等动画走完 */
+  else if (b.kind === 'text' && b.node) {
+    /* 这一段已经写完了:剩下的字一次补齐,并立刻按最终形态渲染
+       (思考块要收成一行、Markdown 要成型)—— 不等收尾。 */
     b.shown = b.text.length;
     b.node.textContent = b.text;
     dirtyBlocks.delete(b);
@@ -1085,7 +1109,6 @@ function onToolStatus(e) {
   }
   if (e.status === 'done' || e.status === 'error') {
     b.out.textContent = e.note || '(无输出)';
-    b.out.classList.remove('hidden');
     b.note.textContent = (e.note || '').split('\n')[0].slice(0, 60) || '完成';
   }
   appendTrace((e.status === 'running' ? '→ ' : '✓ ') + e.toolUseId + ' [' + e.status + '] ' +
@@ -1133,6 +1156,7 @@ function onMessageStop(e) {
      收尾后还会冒出一条"模型还在想"。 */
   endApprovalWait(msg);
   clearWaiting();
+  hideQuestionBar();
   /* 人在审批条上停的那几秒不是模型在算 —— 把它从耗时里扣掉,
      否则"光速跑完但被人耽误了 40 秒"会被记成模型慢。 */
   endApprovalWait(msg);
@@ -1217,7 +1241,7 @@ function send(text) {
   setBusy(true);
   /* 后端建好这一轮再刷新左栏，否则新任务不会出现在列表里 */
   setTimeout(() => { renderChats().catch(() => {}); }, 900);
-  trace.textContent = '';
+  if (trace) trace.textContent = '';
   if (stepsBox) stepsBox.innerHTML = '<div class="muted">执行后按步列出。</div>';
 
   /* EventSource 不能自定义请求头,所以令牌走查询串 */
@@ -1243,6 +1267,7 @@ function send(text) {
       case 'block_stop':    onBlockStop(e); break;
       case 'tool_status':   onToolStatus(e); break;
       case 'approval_request': showApprovalBar(e); break;
+      case 'question_request': showQuestionBar(e); break;
       case 'message_stop':  onMessageStop(e); es.close(); closed = true; break;
     }
   };
@@ -2667,6 +2692,80 @@ async function decideApproval(ok) {
 
 $('ab-yes').addEventListener('click', () => decideApproval(true));
 $('ab-no').addEventListener('click', () => decideApproval(false));
+
+/* 提问卡:模型问「怎么做」时浮在输入框上方。
+   和审批条的区别只有一处 —— 答案是内容,不是允许/拒绝。 */
+const QB = { id: '', fields: [] };
+
+function showQuestionBar(e) {
+  const p = e.payload || {};
+  QB.id = e.id;
+  QB.fields = [];
+  const box = $('q-fields');
+  box.innerHTML = '';
+  $('q-title').textContent = '智能体提问';
+  $('q-hint').textContent = '';
+  $('q-msg').textContent = p.message || '需要你拿个主意。';
+  const qs = Array.isArray(p.questions) ? p.questions : [];
+  for (const q of qs) {
+    const id = q.id || ('q' + QB.fields.length);
+    const type = String(q.type || 'select').toLowerCase();
+    const wrap = el('div', 'q-field');
+    wrap.appendChild(el('div', 'q-label', q.title || id));
+    let get;
+    if (type === 'text') {
+      const inp = el('input', 'q-input');
+      inp.type = 'text';
+      inp.value = q.default || '';
+      wrap.appendChild(inp);
+      get = () => inp.value.trim();
+    } else {
+      const multi = type === 'multi' || type === 'multiple';
+      const chosen = new Set(String(q.default || '').split(',').map((s) => s.trim()).filter(Boolean));
+      const opts = el('div', 'q-opts');
+      const btns = [];
+      for (const o of (q.options || [])) {
+        const b = el('button', 'q-opt', String(o));
+        b.type = 'button';
+        if (chosen.has(String(o))) b.classList.add('on');
+        b.addEventListener('click', () => {
+          if (multi) b.classList.toggle('on');
+          else for (const x of btns) x.classList.remove('on'), b.classList.add('on');
+        });
+        btns.push(b);
+        opts.appendChild(b);
+      }
+      wrap.appendChild(opts);
+      get = () => (multi
+        ? btns.filter((b) => b.classList.contains('on')).map((b) => b.textContent)
+        : ((btns.find((b) => b.classList.contains('on')) || {}).textContent || ''));
+    }
+    QB.fields.push({ id, get });
+    box.appendChild(wrap);
+  }
+  $('q-submit').disabled = false;
+  $('q-submit').textContent = '提交';
+  $('question-bar').classList.add('on');
+  /* 等人回答的这段时间既不算模型在想,也不算模型耗时 */
+  beginApprovalWait();
+  stopIdle();
+}
+
+function hideQuestionBar() {
+  $('question-bar').classList.remove('on');
+  QB.id = '';
+}
+
+$('q-submit').addEventListener('click', () => {
+  if (!QB.id) return;
+  const answers = {};
+  for (const f of QB.fields) answers[f.id] = f.get();
+  const id = QB.id;
+  $('q-submit').disabled = true;
+  api('/api/answer', { method: 'POST', body: JSON.stringify({ id, answers }) })
+    .then(() => { $('q-submit').textContent = '已提交'; hideQuestionBar(); endApprovalWait(); })
+    .catch((err) => { $('q-hint').textContent = '提交失败：' + err.message; $('q-submit').disabled = false; });
+});
 
 /* ============ 导出 ============ */
 /* 五种格式都由后端渲染(/api/export),前端只负责点一个链接 —— 
@@ -4120,11 +4219,27 @@ function modelsRenderForm(m) {
 
   grid.appendChild(capField('接口地址', 'model-url', m.base_url, { wide: true, ph: MODEL_PRESETS[m.kind || 'openai'].url }));
   grid.appendChild(capField('模型名', 'model-model', m.model, { ph: MODEL_PRESETS[m.kind || 'openai'].model }));
-  grid.appendChild(capField('API Key / appKey', 'model-key', m.api_key, { ph: '留空或保持掩码 = 不改' }));
-  grid.appendChild(capField('appSecret（恒脑用）', 'model-secret', m.api_secret, { ph: '留空或保持掩码 = 不改' }));
-  grid.appendChild(capField('userAppKey（可信配置 5.1 可选）', 'model-userkey', m.user_app_key));
-  grid.appendChild(capField('智能体 ID（恒脑用）', 'model-agent', m.agent_id));
-  grid.appendChild(capField('智能体关键词（恒脑按名字找）', 'model-keyword', m.agent_keyword));
+  const keyField = capField('API Key / appKey', 'model-key', m.api_key, { ph: '留空或保持掩码 = 不改' });
+  grid.appendChild(keyField);
+  /* 下面这几项只有恒脑用得上:换别的协议时藏起来,别让人以为都要填 */
+  const secretField = capField('appSecret（恒脑用）', 'model-secret', m.api_secret, { ph: '留空或保持掩码 = 不改' });
+  const userKeyField = capField('userAppKey（可信配置 5.1 可选）', 'model-userkey', m.user_app_key);
+  const agentField = capField('智能体 ID（恒脑用）', 'model-agent', m.agent_id);
+  const kwField = capField('智能体关键词（恒脑按名字找）', 'model-keyword', m.agent_keyword);
+  grid.appendChild(secretField);
+  grid.appendChild(userKeyField);
+  grid.appendChild(agentField);
+  grid.appendChild(kwField);
+
+  const applyKind = (kind) => {
+    const das = kind === 'das';
+    for (const n of [secretField, userKeyField, agentField, kwField]) {
+      n.style.display = das ? '' : 'none';
+    }
+    const lb = keyField.querySelector('label');
+    if (lb) lb.textContent = das ? 'appKey（恒脑）' : 'API Key';
+  };
+  applyKind(sel.value);
   grid.appendChild(capField('附加请求头（一行一个 Name: value）', 'model-headers', m.headers, { wide: true, area: true, rows: 2 }));
   grid.appendChild(capField('超时（毫秒）', 'model-timeout', m.timeout_ms || 45000, { num: true, step: '1000' }));
   grid.appendChild(capField('温度（-1 = 不带）', 'model-temp', m.temperature === undefined ? 0.2 : m.temperature, { num: true, step: '0.1' }));
@@ -4164,6 +4279,7 @@ function modelsRenderForm(m) {
     if (url && (!url.value.trim() || url.value.trim() === old.url)) url.value = p.url;
     if (mdl && (!mdl.value.trim() || mdl.value.trim() === old.model)) mdl.value = p.model;
     m.kind = sel.value;
+    applyKind(sel.value);
     const h = box.querySelector('.set-hint');
     if (h) h.textContent = p.hint;
   });
@@ -4484,17 +4600,14 @@ function savePrefs() {
 }
 
 function applyPrefs() {
-  const traceNode = $('trace');
-  const traceCard = traceNode ? traceNode.closest('.rail-card') : null;
-  if (traceCard) traceCard.style.display = PREFS.trace ? '' : 'none';
   document.body.classList.toggle('no-motion', !PREFS.motion);
-  [['ui-trace', 'trace'], ['ui-autoscroll', 'autoscroll'], ['ui-motion', 'motion']].forEach(([id, key]) => {
+  [['ui-autoscroll', 'autoscroll'], ['ui-motion', 'motion']].forEach(([id, key]) => {
     const node = $(id);
     if (node) node.checked = !!PREFS[key];
   });
 }
 
-[['ui-trace', 'trace'], ['ui-autoscroll', 'autoscroll'], ['ui-motion', 'motion']].forEach(([id, key]) => {
+[['ui-autoscroll', 'autoscroll'], ['ui-motion', 'motion']].forEach(([id, key]) => {
   const node = $(id);
   if (!node) return;
   node.addEventListener('change', () => {

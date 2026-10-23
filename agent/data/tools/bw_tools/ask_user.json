@@ -1,0 +1,46 @@
+{
+  "name": "ask_user",
+  "kind": "内置",
+  "readonly": true,
+  "impl": "ask_user",
+  "description": "向用户提一个带选项的问题并等回答(单选/多选/文本都行)。只在需要人拿主意时用:例如这个站巡检过且没有变化,要问继续完整巡检还是只看增量。定时/自动巡检不要用。",
+  "schema": {
+    "type": "object",
+    "properties": {
+      "message": {
+        "type": "string"
+      },
+      "questions": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "title": {
+              "type": "string"
+            },
+            "type": {
+              "type": "string"
+            },
+            "options": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "default": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    },
+    "required": [
+      "message"
+    ],
+    "additionalProperties": false
+  },
+  "source": "@app"
+}
