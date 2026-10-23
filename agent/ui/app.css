@@ -1180,8 +1180,3 @@ button.primary + .ghost, .ghost + button.primary{padding-top:4px;padding-bottom:
 .md strong { font-weight:600 }
 .md del { color:#8a8a80 }
 
-/* 文件编辑器:单栏。多文件时用下拉切换,不再另起一列文件列表。 */
-.cfg-mini { display:block }
-.cfg-mini-pick { max-width:42%;height:28px;border:1px solid var(--line);border-radius:6px;
-  background:#fff;font:inherit;font-size:12.6px;padding:0 8px;color:#3a3a33 }
-.cfg-mini-pick:focus { outline:none;border-color:#c9c9c1 }

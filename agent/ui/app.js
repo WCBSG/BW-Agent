@@ -2978,37 +2978,25 @@ function capApi(body) {
 }
 
 async function capsOpen(kind) {
-  /* 技能与工具只做"文件式"编辑:能力本来就是文件 ——
-       skills\\<名字>\\SKILL.md      一个技能一个目录(可以带脚本、模板)
-       tools\\<目录>\\<名字>.json    工具声明(入口与协议写在里面)
-     所以这里只把文件列出来就地编辑;加一个能力 = 新建一个文件。 */
+  const changed = CAP.kind !== kind;
   CAP.kind = kind;
-  const host = $('cap-files');
-  if (!host) return;
-  host.style.display = 'block';
-  host.innerHTML = '';
-
-  let names = [];
-  try {
-    const r = await api('/api/config/list');
-    const want = kind === 'skill' ? '技能' : '工具';
-    names = (r.files || [])
-      .filter((f) => String(f.group || '').indexOf(want) >= 0)
-      .map((f) => f.name);
-  } catch (e) {
-    names = [];
+  if (changed) { CAP.data = null; CAP.editing = null; }
+  if (!CAP.data) {
+    try { CAP.data = await api('/api/caps'); }
+    catch (e) { CAP.data = { skills: [], tools: [] }; }
   }
-
-  if (!names.length) {
-    const box = el('div', 'muted');
-    box.textContent = kind === 'skill'
-      ? '还没有技能文件。技能放在 <数据目录>\\skills\\<名字>\\SKILL.md,建好文件即生效。'
-      : '还没有工具声明。工具放在 <数据目录>\\tools\\<目录>\\<名字>.json,建好文件即生效。';
-    host.appendChild(box);
-    refreshHBars();
-    return;
+  const label = kind === 'skill' ? '技能' : '工具';
+  if ($('cap-kind-label')) $('cap-kind-label').textContent = label;
+  const st = (CAP.data && CAP.data.stats) || {};
+  if ($('cap-stat')) {
+    $('cap-stat').textContent = kind === 'skill'
+      ? `共 ${st.skills || 0} 个（技能包 ${st.extSkills || 0}）`
+      : `共 ${st.tools || 0} 个（外部 ${st.extTools || 0} · MCP ${st.mcpTools || 0}）`;
   }
-  mountFileEditor(host, names);
+  if (kind === 'skill' || kind === 'tool') renderCapNav(kind).catch(() => {});
+  capsShowList();
+  capsRenderList();
+  capsRenderForm(CAP.editing);
   refreshHBars();
 }
 
@@ -3025,7 +3013,7 @@ async function renderCapNav(kind) {
   if (CAP_NAV.kind !== kind || !CAP_NAV[kind].length) {
     try {
       const r = await api('/api/config/list');
-      const key = kind === 'skill' ? '技能' : '外部工具';
+      const key = kind === 'skill' ? '技能' : '工具';
       CAP_NAV[kind] = (r.files || []).filter((f) => (f.group || '').indexOf(key) >= 0);
     } catch (e) { CAP_NAV[kind] = []; }
     CAP_NAV.kind = kind;
@@ -3047,8 +3035,13 @@ async function renderCapNav(kind) {
   };
   item('', kind === 'skill' ? '技能清单' : '工具清单', '有哪些、分别能做什么');
   for (const f of CAP_NAV[kind]) {
-    const base = String(f.name || '').split('\\').pop();
-    const label = kind === 'skill' ? base.replace(/^skill_/, '').replace(/\.md$/, '') : base;
+    const parts = String(f.name || '').split('\\');
+    const base = parts.pop();
+    /* 目录形态:skills\<名字>\SKILL.md —— 取目录名当标签,否则每一项都叫 SKILL.md */
+    const stem = /^SKILL\.md$/i.test(base) && parts.length ? parts.pop() : base;
+    const label = kind === 'skill'
+      ? String(stem).replace(/^skill_/, '').replace(/\.md$/i, '')
+      : stem;
     item(f.name, label, f.name);
   }
 }
@@ -3076,23 +3069,10 @@ function showCapFile(name) {
    安全边界不在前端 —— 能改哪些文件由后端白名单决定,这里只负责把内容摆出来。 */
 function mountFileEditor(host, names) {
   host.innerHTML = '';
-  const grid = el('div', 'cfg-mini single');
+  const grid = el('div', 'cfg-mini');
+  const side = el('div', 'cfg-mini-side');
   const main = el('div', 'cfg-mini-main');
   const head = el('div', 'config-main-head');
-
-  /* 多文件时用下拉选,不再另起一列文件列表 —— 设置页只有一栏。 */
-  let picker = null;
-  if (names.length > 1) {
-    picker = el('select', 'cfg-mini-pick');
-    for (const n of names) {
-      const o = el('option', null, String(n).replace(/\\/g, ' / '));
-      o.value = n;
-      picker.appendChild(o);
-    }
-    picker.addEventListener('change', () => open(picker.value));
-    head.appendChild(picker);
-  }
-
   const fileEl = el('code', null, '');
   const meta = el('span', 'muted', '');
   const grow = el('span', 'grow');
@@ -3109,6 +3089,12 @@ function mountFileEditor(host, names) {
   const msg = el('span', 'note', '');
   foot.appendChild(msg);
 
+  if (names.length <= 1) {
+    /* 只有一个文件时不需要列表:名字已经写在上面那行,左边再列一遍是浪费 */
+    grid.classList.add('single');
+    side.style.display = 'none';
+  }
+  grid.appendChild(side);
   main.appendChild(head); main.appendChild(ta); main.appendChild(foot);
   grid.appendChild(main);
   host.appendChild(grid);
@@ -3121,7 +3107,9 @@ function mountFileEditor(host, names) {
     fileEl.textContent = name;
     msg.textContent = '';
     msg.className = 'note';
-    if (picker) picker.value = name;
+    for (const b of Array.from(side.querySelectorAll('.fileitem'))) {
+      b.classList.toggle('active', b.dataset.name === name);
+    }
     try {
       const r = await api('/api/config?name=' + encodeURIComponent(name));
       ta.value = r.content || '';
@@ -3134,6 +3122,15 @@ function mountFileEditor(host, names) {
     }
     refreshHBars();
   };
+
+  for (const n of names) {
+    const b = el('button', 'fileitem');
+    b.type = 'button';
+    b.dataset.name = n;
+    b.appendChild(el('span', 'fname', String(n).replace(/\\/g, ' / ')));
+    b.addEventListener('click', () => open(n));
+    side.appendChild(b);
+  }
 
   ta.addEventListener('input', () => {
     dirty = true;
