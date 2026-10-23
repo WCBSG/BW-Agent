@@ -154,6 +154,21 @@ int tool_entry_parse(json_t *spec, const char *origin) {
      都没有才当作内置实现(impl 命中 g_prims,由 tools.cpp 处理)。 */
   if (!path[0] && !url) {
     const char *src = j_s(spec, "source", "");
+    /* "@app" = 当前程序自己:`agent.exe toolhost` 读 stdin 的调用 JSON */
+    if (str_ieq(src, "@app")) {
+      wchar_t self[MAX_PATH * 4];
+      DWORD n = GetModuleFileNameW(NULL, self, (DWORD)(sizeof(self) / sizeof(self[0])));
+      if (n > 0 && n < sizeof(self) / sizeof(self[0])) {
+        char *u8 = w_to_u8(self);
+        if (u8) { snprintf(path, sizeof(path), "%s", u8); free(u8); }
+      }
+      type = "exec";
+      proto = "json-stdio";
+      if (!args) {
+        args = j_arr();
+        j_add(args, j_str("toolhost"));
+      }
+    }
     char cand[MAX_PATH * 2];
     cand[0] = 0;
     if (src[0] && (src[0] == '~' || strchr(src, '/') || strchr(src, '\\') ||

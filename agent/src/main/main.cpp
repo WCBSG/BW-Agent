@@ -16,6 +16,8 @@
 #include "skills.h"
 #include "store.h"
 #include "tools.h"
+
+int toolhost_run(const char *tool_arg);
 #include "ui.h"
 #include "webutil.h"
 
@@ -166,6 +168,8 @@ int app_main(int argc, char **argv) {
 
   app_fix_argv_encoding(argc, argv);
   app_init_paths();
+  /* 工具宿主:stdout 只留给结果 JSON,日志别混进来 */
+  if (argc > 1 && str_ieq(argv[1], "toolhost")) freopen("NUL", "w", stderr);
   /* 长驻形态(界面/服务)一律留日志:双击运行看不到控制台,出问题时能对着文件查 */
   int have_log_file = 0;
   {
@@ -245,6 +249,14 @@ int app_main(int argc, char **argv) {
   net_init();
 
   const char *cmd = (argc > 1) ? argv[1] : "start";
+
+  /* 工具进程形态:供 <数据目录>\tools 里的声明以 "@app" 调回来 */
+  if (str_ieq(cmd, "toolhost")) {
+    int rc = toolhost_run((argc > 2) ? argv[2] : "");
+    net_shutdown();
+    rules_shutdown();
+    return rc;
+  }
 
   if (str_ieq(cmd, "selftest")) {
     printf("网站安全巡检智能体(C 版)· 自检\n");
@@ -710,37 +722,6 @@ int app_main(int argc, char **argv) {
     return rc;
   }
 
-  printf(
-      "网站安全巡检智能体(C 版)\n"
-      "\n"
-      "用法: 网站安全巡检智能体.exe [命令] [参数]\n"
-      "  (不带命令就是启动界面:双击即可,不会弹命令行窗口)\n"
-      "\n"
-      "  selftest                自检(基础件/JSON/决策/技能/循环)\n"
-      "  chat [授权域名]          在终端里和智能体对话(看得到决策循环)\n"
-      "  tools                   打印工具与技能清单\n"
-      "  skills                  只打印技能清单(智能体的专业能力)\n"
-      "  manifest [文件名]        导出工具+技能清单 JSON\n"
-      "  serve [授权域名] [端口]   起后端服务并打开界面(默认 8765)\n"
-      "                          加 --no-ui 只起服务,不开窗口\n"
-      "  help                    显示本帮助\n"
-      "\n"
-      "  --debug                 显示命令行窗口与实时日志(排查问题用;双击运行时才有意义)\n"
-      "  --multi                 允许同一份数据同时开多个实例(默认单实例:再启动只把\n"
-      "                          已有界面叫到前台)\n"
-      "\n"
-      "模型:\n"
-      "  界面的「设置 → 模型」里配,支持恒脑 / OpenAI 兼容 / Anthropic 三类接口,\n"
-      "  可以配多家,用哪个由你在界面上选(不会自动换另一家)。配置存在数据目录的\n"
-      "  models.json 里,不内置任何密钥。\n"
-      "  下面这些环境变量(或 .env)只是给老配置兜底用的,界面上配了就不看它们:\n"
-      "  DAS_APP_KEY / DAS_APP_SECRET / DAS_AGENT_ID   恒脑平台凭证与智能体\n"
-      "\n"
-      "环境变量(或程序目录下的 .env):\n"
-      "  TARGET_BASE_URL          巡检起点对齐到指定站点(如 http://127.0.0.1:8081)\n"
-      "  UI_MODE                  界面形态: auto(默认,WebView2 窗口) / browser(强制用系统浏览器) / off(不开窗口)\n"
-      "  BW_AGENT_DEBUG=1         等同于 --debug\n"
-      "  BW_AGENT_HOME            改数据目录(默认 C:\\Users\\<用户名>\\.bw_agent)\n");
   net_shutdown();
   return 0;
 }

@@ -587,7 +587,7 @@ agent\build\agent.exe run skill_我的技能
     ├─ build.bat                  一键编译:生成内置资源 → 编译 → 输出单文件 exe
     ├─ build_dbg.bat              调试版构建(-O0 -g)
     ├─ build/                     构建产物(每次 build.bat 重新生成)
-    │   ├─ 网站安全巡检智能体.exe   ★ 交付物:单文件,双击即用(界面与规则都在里面)
+    │   ├─ 网站安全巡检智能体.exe   ★ 交付物:单文件(~1.45 MB),双击即用;界面/规则/技能/工具声明压进资源
     │   └─ agent.exe              同源产物,命令行工具形态
     ├─ src/main/                  后端源码(约 1.3 万行, C++20, 零第三方依赖)
     │   ├─ main.cpp               入口:零参数启动 / selftest / run / tool / chat / serve / rules
@@ -614,7 +614,7 @@ agent\build\agent.exe run skill_我的技能
     ├─ ui/                        界面源码(index.html / app.css / app.js / logo.ico),编译时打进 exe
     ├─ data/                      出厂数据(规则/技能/工具声明/默认 MCP),构建时打进 exe
     ├─ src/tools/                 工具实现:一个工具一个 .cpp
-    │   ├─ bw_tools.cpp           工具宿主:一个 exe 承载全部工具,按请求里的 tool 字段分派
+    │   ├─ toolhost.cpp           工具宿主(app.exe toolhost):按请求里的 tool 字段分派
     │   ├─ tool_common.cpp        公共手法:取数、URL 归一、软 404 校准
     │   ├─ tool_api.h             各工具入口与公共手法的声明
     │   └─ fs_read.cpp fs_write.cpp ... 15 个工具各自的实现

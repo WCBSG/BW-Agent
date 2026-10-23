@@ -1,3 +1,5 @@
+#include <windows.h>
+#include <compressapi.h>
 /* mkres.c —— 构建期小工具:把界面、默认规则、工具声明、技能目录打包成一份 C 数组。
  *
  * 用法:  mkres <输出.c> <名字=文件> [<名字=文件> ...] [@前缀=目录 ...]
@@ -33,29 +35,56 @@ static void ident_of(const char *name, char *out, size_t cap) {
   out[j] = 0;
 }
 
+/* 读整个文件;压缩后更小就用压缩的那份(MSZIP,系统自带,不引第三方) */
 static int write_one(FILE *out, const char *name, const char *path) {
   FILE *in = fopen(path, "rb");
   if (!in) {
-    fprintf(stderr, "[mkres] 打不开: %s\n", path);
+    fprintf(stderr, "[mkres] not found: %s\n", path);
     return -1;
   }
+  fseek(in, 0, SEEK_END);
+  long size = ftell(in);
+  fseek(in, 0, SEEK_SET);
+  if (size < 0) { fclose(in); return -1; }
+  unsigned char *raw = (unsigned char *)malloc((size_t)size + 1);
+  if (!raw) { fclose(in); return 3; }
+  size_t got = fread(raw, 1, (size_t)size, in);
+  fclose(in);
+
+  unsigned char *payload = raw;
+  size_t payload_len = got;
+  int packed = 0;
+
+  COMPRESSOR_HANDLE comp = NULL;
+  if (got > 512 && CreateCompressor(COMPRESS_ALGORITHM_MSZIP, NULL, &comp)) {
+    size_t cap = 0;
+    Compress(comp, raw, got, NULL, 0, &cap);
+    if (cap > 0) {
+      unsigned char *buf = (unsigned char *)malloc(cap);
+      if (buf && Compress(comp, raw, got, buf, cap, &cap) && cap < got) {
+        payload = buf;
+        payload_len = cap;
+        packed = 1;
+      } else {
+        free(buf);
+      }
+    }
+    CloseCompressor(comp);
+  }
+
   char id[256];
   ident_of(name, id, sizeof(id));
   fprintf(out, "/* %s(来自 %s) */\n", name, path);
   fprintf(out, "static const unsigned char res_%s[] = {\n  ", id);
-  unsigned long total = 0;
-  int c, col = 0;
-  while ((c = fgetc(in)) != EOF) {
-    fprintf(out, "%u,", (unsigned char)c);
-    total++;
-    if (++col == 20) {
-      fprintf(out, "\n  ");
-      col = 0;
-    }
+  for (size_t i = 0; i < payload_len; i++) {
+    fprintf(out, "%u,", payload[i]);
+    if (i % 20 == 19) fprintf(out, "\n  ");
   }
   fprintf(out, "\n};\n\n");
-  fclose(in);
-  fprintf(stderr, "[mkres] %-18s <- %s(%lu 字节)\n", name, path, total);
+  fprintf(stderr, "[mkres] %-18s <- %s(%lu -> %lu 字节%s)\n", name, path,
+          (unsigned long)got, (unsigned long)payload_len, packed ? ",已压缩" : "");
+  if (payload != raw) free(payload);
+  free(raw);
   return 0;
 }
 
@@ -183,27 +212,61 @@ int main(int argc, char **argv) {
   while ((c = fgetc(body)) != EOF) fputc(c, out);
   fclose(body);
 
+  fprintf(out,
+          "#include <windows.h>\n"
+          "#include <compressapi.h>\n"
+          "#include <stdlib.h>\n"
+          "#include <string.h>\n#include <stdint.h>\n\n");
   fprintf(out, "typedef struct { const char *name; const unsigned char *data; "
-               "unsigned long len; } res_t;\n");
+               "unsigned long len; unsigned long orig; } res_t;\n");
   fprintf(out, "static const res_t RES[] = {\n");
   for (int i = 0; i < g_n; i++) {
-    fprintf(out, "  {\"%s\", res_%s, sizeof(res_%s)},\n", g_ent[i].name, ids[i], ids[i]);
+    FILE *f = fopen(g_ent[i].path, "rb");
+    long orig = 0;
+    if (f) { fseek(f, 0, SEEK_END); orig = ftell(f); fclose(f); }
+    fprintf(out, "  {\"%s\", res_%s, sizeof(res_%s), %ldUL},\n",
+            g_ent[i].name, ids[i], ids[i], orig);
   }
   fprintf(out, "};\n\n");
   fprintf(out,
+          "static SRWLOCK g_dec_lock = SRWLOCK_INIT;\n"
+          "static unsigned char *g_dec[sizeof(RES) / sizeof(RES[0])];\n\n"
           "int embed_count(void) { return (int)(sizeof(RES) / sizeof(RES[0])); }\n\n"
           "const char *embed_name_at(int i) {\n"
           "  if (i < 0 || i >= embed_count()) return NULL;\n"
           "  return RES[i].name;\n"
           "}\n\n"
+          "/* len < orig 表示这一份压过:首次取用时解压并缓存 */\n"
           "int embed_lookup(const char *name, const char **data, size_t *len) {\n"
           "  if (!name) return 0;\n"
           "  for (int i = 0; i < embed_count(); i++) {\n"
-          "    if (strcmp(RES[i].name, name) == 0) {\n"
+          "    if (strcmp(RES[i].name, name) != 0) continue;\n"
+          "    if (RES[i].len >= RES[i].orig) {\n"
           "      if (data) *data = (const char *)RES[i].data;\n"
-          "      if (len) *len = (size_t)RES[i].len;\n"
+          "      if (len) *len = (size_t)RES[i].orig;\n"
           "      return 1;\n"
           "    }\n"
+          "    AcquireSRWLockExclusive(&g_dec_lock);\n"
+          "    if (!g_dec[i]) {\n"
+          "      DECOMPRESSOR_HANDLE d = NULL;\n"
+          "      if (CreateDecompressor(COMPRESS_ALGORITHM_MSZIP, NULL, &d)) {\n"
+          "        unsigned char *buf = (unsigned char *)malloc((size_t)RES[i].orig);\n"
+          "        size_t got = (size_t)RES[i].orig;\n"
+          "        if (buf && Decompress(d, (PVOID)(uintptr_t)RES[i].data, (size_t)RES[i].len, buf,\n"
+          "                              (size_t)RES[i].orig, &got) && got == RES[i].orig) {\n"
+          "          g_dec[i] = buf;\n"
+          "        } else {\n"
+          "          free(buf);\n"
+          "        }\n"
+          "        CloseDecompressor(d);\n"
+          "      }\n"
+          "    }\n"
+          "    unsigned char *p = g_dec[i];\n"
+          "    ReleaseSRWLockExclusive(&g_dec_lock);\n"
+          "    if (!p) return 0;\n"
+          "    if (data) *data = (const char *)p;\n"
+          "    if (len) *len = (size_t)RES[i].orig;\n"
+          "    return 1;\n"
           "  }\n"
           "  return 0;\n"
           "}\n");

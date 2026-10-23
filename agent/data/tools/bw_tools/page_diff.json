@@ -16,5 +16,5 @@
     ],
     "additionalProperties": false
   },
-  "source": "~/tools/bw_tools/bw_tools.exe"
+  "source": "@app"
 }

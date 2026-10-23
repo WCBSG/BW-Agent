@@ -3,7 +3,7 @@
   "kind": "外置 · 本机",
   "readonly": false,
   "impl": "fs_write",
-  "source": "~/tools/bw_tools/bw_tools.exe",
+  "source": "@app",
   "description": "把内容写进数据目录里的一个文件(只能写数据目录,程序目录是只读的)。相对路径按数据目录算,父目录不存在会自动建。覆盖已有文件时原内容会先备份成同名 .bak;要接着往后面写就带 append=true。用于把归并好的结论、清单、报告草稿落到本地,而不是只在对话里说完就没了。",
   "schema": {
     "type": "object",

@@ -22,6 +22,9 @@
 #include "ui.h"
 #include "webview2_min.h"
 
+/* 本进程的接口令牌(定义在 serve.cpp) */
+const char *serve_token(void);
+
 #include <atomic>
 #include <functional>
 #include <string>
@@ -519,8 +522,16 @@ static DWORD WINAPI webview_thread(LPVOID param) {
       g_web->add_NewWindowRequested(nw, &tok);
       nw->Release();
 
-      wchar_t url[128];
-      swprintf(url, 128, L"http://127.0.0.1:%d/", ctx->port);
+      /* 带上本次进程的接口令牌:浏览器可能还拿着上一份页面,只有 URL 里的才是最新的 */
+      const char *api_tok = serve_token();
+      wchar_t wtok[96] = {0};
+      if (api_tok && *api_tok) {
+        wchar_t *w = u8_to_w(api_tok);
+        if (w) { wcsncpy(wtok, w, 95); free(w); }
+      }
+      wchar_t url[192];
+      if (wtok[0]) swprintf(url, 192, L"http://127.0.0.1:%d/?t=%ls", ctx->port, wtok);
+      else swprintf(url, 192, L"http://127.0.0.1:%d/", ctx->port);
       if (FAILED(g_web->Navigate(url))) {
         log_warn("WebView2:导航失败");
         boot_finish(ctx, -1);

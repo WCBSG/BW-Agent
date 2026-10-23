@@ -550,7 +550,19 @@ static void pool_load(void) {
   size_t len = 0;
   char *text = file_read_all(g_pool_file, &len);
   if (text && len > 0 && len < sizeof(g_pool_json)) {
-    snprintf(g_pool_json, sizeof(g_pool_json), "%s", text);
+    /* 剥掉 BOM:这份文本会被原样嵌进 /api/status 的响应里,
+       带着 BOM 会让界面的 JSON.parse 直接失败(表现成"连不上后端")。 */
+    const char *body = text;
+    if (len >= 3 && (unsigned char)body[0] == 0xEF && (unsigned char)body[1] == 0xBB &&
+        (unsigned char)body[2] == 0xBF) {
+      body += 3;
+    }
+    snprintf(g_pool_json, sizeof(g_pool_json), "%s", body);
+    char *norm = json_dump(json_parse(g_pool_json));   /* 顺手规范化:去掉多余空白 */
+    if (norm) {
+      snprintf(g_pool_json, sizeof(g_pool_json), "%s", norm);
+      free(norm);
+    }
   }
   free(text);
   if (!json_parse(g_pool_json)) snprintf(g_pool_json, sizeof(g_pool_json), "{\"hosts\":[]}");

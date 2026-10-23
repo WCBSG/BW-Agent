@@ -312,7 +312,12 @@ function scrollBottom(force) {
 }
 
 /* 接口令牌:由后端在发送 index.html 时注入 meta —— 用来挡住"别的网页借我们的手扫别人" */
-const BW_TOKEN = (document.querySelector('meta[name="bw-token"]') || {}).content || '';
+const BW_TOKEN = (() => {
+  /* 优先用 URL 里的 t:重启后浏览器可能还拿着上一份页面,而令牌是每个进程新生成的 */
+  const q = new URLSearchParams(location.search).get('t');
+  if (q) return q;
+  return (document.querySelector('meta[name="bw-token"]') || {}).content || '';
+})();
 
 /* 会话 id:每个标签页一个。同一条会话的上下文在后端是独立的,
    所以两个标签页可以各查各的站,互不打断。
