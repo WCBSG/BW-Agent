@@ -4265,9 +4265,16 @@ function attachHBar(node) {
     const modal = document.getElementById('modal');
     const modalOn = modal && modal.classList.contains('on');
     const inModal = modal && modal.contains(node);
-    /* 弹窗打开时:外面的条全部让开,里面的照常显示(它是 fixed,不会被遮罩挡住) */
+    /* 抽屉(数据视图)是盖在基线层上面的:基线层仍然 .on(关掉抽屉要原样露出),
+       所以"层没开"这一条挡不住它 —— 必须单独判"我的层被抽屉盖住了没有"。
+       否则从对话页点进报告页,聊天的侧栏、产物栏那几条进度条会浮在报告页上
+       (它们 fixed 且 z-index 60,高于抽屉的 40)。 */
+    const sheet = document.getElementById('sheet');
+    const sheetOn = sheet && sheet.classList.contains('on');
+    const inSheet = sheet && sheet.contains(node);
+    /* 谁在最上面就只显示谁的条:弹窗 > 抽屉 > 基线层 */
     const hidden = (layer && !layer.classList.contains('on')) ||
-                   (modalOn && !inModal) || (!modalOn && inModal);
+                   (modalOn ? !inModal : (sheetOn ? !inSheet : inModal));
     const r = node.getBoundingClientRect();
     let top = r.top, left = r.left, bottom = r.bottom, right = r.right;
     /* 与裁剪祖先求交集:被滚出去/被裁掉的部分不该还画在屏幕上 */
@@ -4348,7 +4355,21 @@ function loopHBars() {
   /* 30Hz 足够:位置变化是拖拽/动画带出来的,33ms 的滞后看不出来,
      但省下一半的布局读取 —— 流式输出时每帧都在改 DOM,这里不该再抢。 */
   if ((hbarTick++ & 1) === 0) {
-    for (const n of HBARS) if (n.__hbarUpd) n.__hbarUpd();
+    /* 倒着走:顺手把已经被换掉的容器清出去。
+       消息流重绘、表格重渲染都会换掉一批节点,条是 fixed 挂在 body 上的,
+       不清就会一直留在屏幕上(叠到别的页面上),还白占每帧一次布局读取。 */
+    for (let i = HBARS.length - 1; i >= 0; i--) {
+      const n = HBARS[i];
+      if (!n.isConnected) {
+        if (n.__hbar && n.__hbar.parentNode) n.__hbar.parentNode.removeChild(n.__hbar);
+        n.__hbar = null;
+        n.__hbarUpd = null;
+        HBAR_SEEN.delete(n);        /* 万一它又挂回来,要能重新接管 */
+        HBARS.splice(i, 1);
+        continue;
+      }
+      if (n.__hbarUpd) n.__hbarUpd();
+    }
   }
   hbarLoop = requestAnimationFrame(loopHBars);
 }
