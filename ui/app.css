@@ -1009,6 +1009,113 @@ body.no-motion *{animation:none !important;transition:none !important}
 .err{color:var(--bad);font-size:12px;margin-top:9px;min-height:16px}
 
 /* ============================================================
+   四·五 · 统一控件(select / checkbox / 主按钮)
+   为什么要自绘:Windows 上 <select> 的弹层由系统画(蓝底高亮 + 系统箭头),
+   和这套纸白界面不是一路;复选框的勾也是系统画的。CSS 改得动关闭态,
+   改不动那两样 —— 所以 select 保留原生元素当"值的真相"(.value 与 change
+   事件照旧),旁边画一个同款按钮,弹层挂在 body 上(不被滚动容器裁掉);
+   复选框纯 CSS 画(不是这里加脚本,免得每多一个勾就多一份状态)。
+   ============================================================ */
+
+/* 原生 select 藏起来但留在 DOM 里:代码读 .value、监听 change 都不受影响 */
+.sel-native{
+  position:absolute !important;width:1px;height:1px;padding:0;margin:0;border:0;
+  opacity:0;pointer-events:none;clip:rect(0 0 0 0);overflow:hidden;
+}
+
+.sel{position:relative;display:inline-flex;min-width:0;max-width:100%;vertical-align:middle}
+.sel-btn{
+  display:inline-flex;align-items:center;gap:7px;width:100%;min-width:0;
+  border:1px solid var(--line-2);border-radius:6px;background:var(--panel);
+  padding:2px 7px;font-size:12px;color:var(--ink-2);line-height:normal;text-align:left;
+  transition:border-color .14s var(--ease),background .14s var(--ease),color .14s var(--ease);
+}
+.sel-btn:hover{border-color:#c9c9c1;color:var(--ink)}
+.sel-btn:focus-visible{outline:none;border-color:#a9a9a1}
+.sel-btn[aria-expanded="true"]{border-color:#b0b0a8;color:var(--ink);background:#fdfcf9}
+.sel-btn:disabled{opacity:.55;cursor:default}
+.sel-label{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.sel-caret{flex:0 0 auto;display:block;width:9px;height:6px;opacity:.5;
+  transition:transform .16s var(--ease),opacity .16s var(--ease)}
+.sel-caret svg{display:block;width:9px;height:6px;fill:none;stroke:currentColor;
+  stroke-width:1.5;stroke-linecap:round;stroke-linejoin:round}
+.sel-btn:hover .sel-caret,.sel-btn[aria-expanded="true"] .sel-caret{opacity:.85}
+.sel-btn[aria-expanded="true"] .sel-caret{transform:rotate(180deg)}
+/* 审批策略切到"全部允许"时整条标红 —— 和原来 .target-select.warn 一个意思 */
+.sel.warn .sel-btn{color:#8a3b34;border-color:#ecd4d1;background:#fcf3f2}
+
+/* 各表单里的尺寸跟同一行的输入框对齐,不要出现"下拉比输入框矮一截" */
+.fld .sel,.cap-field .sel{display:flex;width:100%}
+.fld .sel-btn{padding:7px 9px;font-size:13.5px;line-height:1.6;border-radius:7px;color:var(--ink)}
+.cap-field .sel-btn{padding:6px 9px;font-size:12.5px;line-height:1.6;color:var(--ink)}
+.set-field .sel-btn{padding:5px 9px;font-size:12.5px;line-height:1.6;color:var(--ink)}
+
+/* 弹层:fixed 挂 body,父级 overflow 裁不到它 */
+.sel-pop{
+  position:fixed;z-index:110;max-height:280px;overflow:auto;
+  background:var(--panel);border:1px solid var(--line-2);border-radius:8px;
+  box-shadow:0 14px 34px rgba(25,25,20,.14),0 2px 6px rgba(25,25,20,.06);
+  padding:4px;opacity:0;visibility:hidden;transform:translateY(-3px);
+  transition:opacity .12s var(--ease),transform .12s var(--ease),visibility 0s linear .12s;
+}
+.sel-pop.on{opacity:1;visibility:visible;transform:none;
+  transition:opacity .12s var(--ease),transform .12s var(--ease),visibility 0s}
+.sel-opt{
+  display:flex;align-items:center;gap:10px;width:100%;padding:6px 9px;border-radius:5px;
+  font-size:12.5px;color:var(--ink-2);text-align:left;line-height:1.5;
+}
+.sel-opt:hover,.sel-opt.kb{background:#f2f1ec;color:var(--ink)}
+.sel-opt[aria-selected="true"]{color:var(--ink);font-weight:600}
+.sel-opt[aria-selected="true"]::after{content:"✓";margin-left:auto;font-size:11px;
+  font-weight:400;color:var(--ink-3)}
+.sel-opt:disabled{opacity:.45;cursor:default}
+.sel-empty{padding:7px 9px;font-size:12px;color:var(--ink-3)}
+
+/* 复选框:方框 + 对勾都自己画(系统那个蓝色勾不跟主题走) */
+input[type="checkbox"]{
+  -webkit-appearance:none;appearance:none;
+  width:14px;height:14px;flex:0 0 auto;margin:0;padding:0;
+  border:1px solid #c9c9c1;border-radius:4px;background:#fff center/9px 9px no-repeat;
+  cursor:pointer;vertical-align:-2px;
+  transition:background-color .14s var(--ease),border-color .14s var(--ease);
+}
+input[type="checkbox"]:hover{border-color:#b0b0a8}
+input[type="checkbox"]:checked{
+  background-color:var(--ink);border-color:var(--ink);
+  background-image:url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12'%3E%3Cpath d='M2.4 6.3 4.8 8.7 9.7 3.6' fill='none' stroke='%23fdfcf9' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+}
+input[type="checkbox"]:focus-visible{outline:2px solid #c3c3ba;outline-offset:2px}
+input[type="checkbox"]:disabled{opacity:.5;cursor:default}
+input[type="radio"]{
+  -webkit-appearance:none;appearance:none;
+  width:14px;height:14px;flex:0 0 auto;margin:0;border:1px solid #c9c9c1;border-radius:50%;
+  background:#fff;cursor:pointer;vertical-align:-2px;
+}
+input[type="radio"]:checked{border-color:var(--ink);
+  background:radial-gradient(circle at 50% 50%,var(--ink) 0 3.2px,#fff 3.6px)}
+
+/* 数字框不要系统上下箭头(和等宽读数打架) */
+input[type="number"]{-moz-appearance:textfield;appearance:textfield}
+input[type="number"]::-webkit-inner-spin-button,
+input[type="number"]::-webkit-outer-spin-button{-webkit-appearance:none;margin:0}
+
+/* 文本域右下角那个系统三角也去掉:还能拖,只是不再画一个默认小图标 */
+textarea::-webkit-resizer{background:transparent;border:0}
+
+/* 主操作按钮:全站同一套(墨色实心)。以前只有个别 ID 单独补了样式,
+   于是"保存定义"看起来像一行普通文字 —— 这就是要收口的地方。 */
+button.primary{
+  background:var(--ink);color:#fdfcf9;border:1px solid var(--ink);
+  border-radius:6px;padding:4px 12px;font-size:12.5px;font-weight:600;
+  transition:background .14s var(--ease),border-color .14s var(--ease);
+}
+button.primary:hover{background:#000;border-color:#000}
+button.primary:focus-visible{outline:2px solid #c3c3ba;outline-offset:2px}
+button.primary:disabled{opacity:.55;cursor:default}
+/* 同一行里的次要按钮跟主按钮等高:一高一矮看着像没对齐 */
+button.primary + .ghost, .ghost + button.primary{padding-top:4px;padding-bottom:4px}
+
+/* ============================================================
    五 · 窄屏
    ============================================================ */
 @media (max-width:1240px){

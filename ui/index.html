@@ -309,7 +309,7 @@
           </div>
           <div class="set-form" id="rules-form"></div>
           <div class="set-foot">
-            <button id="rules-save">保存这一域</button>
+            <button class="primary" id="rules-save">保存这一域</button>
             <button class="ghost" id="rules-reload">重新载入</button>
             <span id="rules-msg"></span>
             <span class="grow"></span>
@@ -319,7 +319,7 @@
       </div>
     </section>
 
-    <!-- 自动化（周期巡检） -->
+    <!-- 周期巡检 -->
     <section class="view" id="view-automation">
       <section class="panel">
         <div class="panel-head">
@@ -405,7 +405,7 @@
             <label class="check"><input type="checkbox" id="auto-enabled" checked><span>启用</span></label>
             <span class="grow"></span>
             <button class="ghost" id="auto-reset" type="button">清空</button>
-            <button id="auto-save" type="button">保存规则</button>
+            <button class="primary" id="auto-save" type="button">保存规则</button>
           </div>
           <div class="note" id="auto-msg"></div>
         </div>
@@ -434,7 +434,7 @@
           <div class="auto-form-foot">
             <span class="grow"></span>
             <button class="ghost" id="appr-reset" type="button">清空</button>
-            <button id="appr-save" type="button">保存为自定义策略</button>
+            <button class="primary" id="appr-save" type="button">保存为自定义策略</button>
           </div>
           <div class="note" id="appr-msg"></div>
         </div>
@@ -479,7 +479,7 @@
           <div class="auto-form-foot">
             <span class="grow"></span>
             <button class="ghost" id="prof-reset" type="button">清空</button>
-            <button id="prof-save" type="button">保存定义</button>
+            <button class="primary" id="prof-save" type="button">保存定义</button>
           </div>
           <div class="note" id="prof-msg"></div>
         </div>
@@ -532,7 +532,7 @@
                     <span class="grow"></span>
                     <button class="ghost" type="button" id="cap-btn-market">从市场导入</button>
                     <button class="ghost" type="button" id="cap-btn-gen">用大模型创建</button>
-                    <button type="button" id="cap-btn-new">＋ 新建</button>
+                    <button type="button" class="primary" id="cap-btn-new">＋ 新建</button>
                   </div>
                   <div class="cap-aux" id="cap-aux"></div>
                   <div class="cap-list" id="cap-list"></div>
@@ -551,7 +551,7 @@
               <span class="cap-count" id="model-stat"></span>
               <span class="grow"></span>
               <button class="ghost" type="button" id="model-btn-test">测试当前</button>
-              <button type="button" id="model-btn-new">＋ 接入一家</button>
+              <button type="button" class="primary" id="model-btn-new">＋ 接入一家</button>
             </div>
             <div class="note" id="model-note"></div>
             <div class="cap-list" id="model-list"></div>
@@ -559,7 +559,7 @@
           </div>
 
           <div class="set-foot" id="set-foot">
-            <button id="set-save">保存并生效</button>
+            <button class="primary" id="set-save">保存并生效</button>
             <button class="ghost" id="set-reset">放弃改动</button>
             <span id="set-msg"></span>
           </div>
@@ -614,7 +614,7 @@
     <div class="modal-actions">
       <button class="ghost" id="scope-cancel">关闭</button>
       <button class="ghost" id="scope-batch">批量加入</button>
-      <button id="scope-save">加入授权池</button>
+      <button class="primary" id="scope-save">加入授权池</button>
     </div>
     <div class="err" id="scope-err"></div>
   </div>
@@ -629,7 +629,7 @@
       只用只读方法、全程留痕 —— 但「要不要动手」这道确认就没有了。</p>
     <div class="modal-actions">
       <button class="ghost" id="warn-cancel">保持当前策略</button>
-      <button id="warn-ok">我已了解，开启</button>
+      <button class="primary" id="warn-ok">我已了解，开启</button>
     </div>
   </div>
 </div>

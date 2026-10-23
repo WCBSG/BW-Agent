@@ -51,6 +51,258 @@ function el(tag, cls, text) {
   return n;
 }
 
+/* ============ 统一控件:自绘下拉 ============
+   原生 <select> 的弹层在 Windows 上由系统画(蓝底高亮、系统箭头),CSS 改不动,
+   和这套纸白界面不是一路。这里保留原生 select 当"值的真相"——
+   代码里读 .value、监听 change、disabled 全都照旧 —— 只在它旁边画一个同款按钮,
+   弹层挂到 body 上(fixed),这样父级的 overflow:auto 裁不到它。
+
+   为什么不用框架/现成组件:整个前端只有这一个交互件需要自绘,
+   为它引一个依赖不划算;四十行的事件处理就够了。 */
+const SEL_ALL = new Set();           // 所有被接管的下拉(每 250ms 对齐一次显示值)
+const SEL_OPEN = { sel: null, btn: null, pop: null, opts: [], idx: -1 };
+/* 键盘选中/取消时,浏览器还会补一个 click —— 不挡住就会"开了又关"。
+   用时间窗而不是标志位:标志位还得找地方清,时间窗自己过期。 */
+let SEL_SUPPRESS_CLICK = 0;
+
+function selPopNode() {
+  if (SEL_OPEN.pop) return SEL_OPEN.pop;
+  const pop = el('div', 'sel-pop');
+  pop.setAttribute('role', 'listbox');
+  /* 弹层里的按下不要抢走按钮的焦点,否则键盘操作会断在中间 */
+  pop.addEventListener('pointerdown', (e) => e.preventDefault());
+  document.body.appendChild(pop);
+  SEL_OPEN.pop = pop;
+  return pop;
+}
+
+function selClose() {
+  if (!SEL_OPEN.sel) return;
+  if (SEL_OPEN.pop) SEL_OPEN.pop.classList.remove('on');
+  if (SEL_OPEN.btn) SEL_OPEN.btn.setAttribute('aria-expanded', 'false');
+  SEL_OPEN.sel = null;
+  SEL_OPEN.btn = null;
+  SEL_OPEN.opts = [];
+  SEL_OPEN.idx = -1;
+}
+
+/* 把原生 select 的当前值画到按钮上。定时器会轮询它 ——
+   代码里 `sel.value = x` 是直接赋值,不会触发 change,没有别的办法能听见。 */
+function selSync(sel) {
+  const wrap = sel && sel._selWrap;
+  if (!wrap) return;
+  const btn = wrap.querySelector('.sel-btn');
+  const label = btn && btn.querySelector('.sel-label');
+  if (!btn || !label) return;
+  const cur = sel.selectedIndex >= 0 ? sel.options[sel.selectedIndex] : null;
+  const text = cur ? cur.textContent : '(无可选项)';
+  if (label.textContent !== text) label.textContent = text;
+  wrap.classList.toggle('warn', sel.classList.contains('warn'));
+  if (btn.disabled !== !!sel.disabled) btn.disabled = !!sel.disabled;
+  const title = sel.title || text;
+  if (btn.title !== title) btn.title = title;
+}
+
+function selHighlight(i) {
+  const { opts } = SEL_OPEN;
+  if (!opts.length) return;
+  if (i < 0) i = 0;
+  if (i >= opts.length) i = opts.length - 1;
+  SEL_OPEN.idx = i;
+  opts.forEach((o, k) => o.classList.toggle('kb', k === i));
+  const cur = opts[i];
+  if (cur && cur.scrollIntoView) cur.scrollIntoView({ block: 'nearest' });
+}
+
+function selCommit(sel, i) {
+  if (!sel || i < 0 || i >= sel.options.length) return;
+  const btn = SEL_OPEN.btn;
+  const changed = sel.selectedIndex !== i;
+  sel.selectedIndex = i;
+  selSync(sel);
+  selClose();
+  if (changed) sel.dispatchEvent(new Event('change', { bubbles: true }));
+  if (btn && document.body.contains(btn)) btn.focus();
+}
+
+function selOpen(sel, btn) {
+  const pop = selPopNode();
+  pop.innerHTML = '';
+  const opts = [];
+  for (let i = 0; i < sel.options.length; i++) {
+    const o = sel.options[i];
+    const b = el('button', 'sel-opt', o.textContent);
+    b.type = 'button';
+    b.setAttribute('role', 'option');
+    b.setAttribute('aria-selected', i === sel.selectedIndex ? 'true' : 'false');
+    b.disabled = !!o.disabled;
+    b.addEventListener('click', () => selCommit(sel, i));
+    pop.appendChild(b);
+    opts.push(b);
+  }
+  if (!opts.length) pop.appendChild(el('div', 'sel-empty', '没有可选项'));
+  SEL_OPEN.sel = sel;
+  SEL_OPEN.btn = btn;
+  SEL_OPEN.opts = opts;
+  SEL_OPEN.idx = sel.selectedIndex;
+  btn.setAttribute('aria-expanded', 'true');
+
+  /* 先算好位置再亮出来:先显示再挪会闪一下 */
+  pop.style.visibility = 'hidden';
+  pop.classList.add('on');
+  const r = btn.getBoundingClientRect();
+  const w = Math.max(140, Math.round(r.width));
+  const h = pop.getBoundingClientRect().height;
+  let left = Math.round(r.left);
+  left = Math.max(8, Math.min(left, window.innerWidth - w - 8));
+  const roomBelow = window.innerHeight - r.bottom - 8;
+  const top = (h <= roomBelow || r.top < h)
+    ? Math.round(r.bottom + 4)
+    : Math.round(r.top - h - 4);
+  pop.style.width = w + 'px';
+  pop.style.left = left + 'px';
+  pop.style.top = Math.max(8, Math.min(top, window.innerHeight - h - 8)) + 'px';
+  pop.style.visibility = '';
+  selHighlight(sel.selectedIndex);
+}
+
+function selKey(e, sel, btn) {
+  const open = SEL_OPEN.sel === sel;
+  if (!open) {
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+      e.preventDefault();
+      selOpen(sel, btn);
+    }
+    /* Enter / 空格交给浏览器变成一次 click(按钮本来就该这样),
+       这里再处理一次就会"开了又关"。 */
+    return;
+  }
+  if (e.key === 'Escape') { e.preventDefault(); selClose(); btn.focus(); return; }
+  if (e.key === 'Enter' || e.key === ' ') {
+    e.preventDefault();
+    SEL_SUPPRESS_CLICK = Date.now() + 400;
+    selCommit(sel, SEL_OPEN.idx);
+    return;
+  }
+  if (e.key === 'ArrowDown') { e.preventDefault(); selHighlight(SEL_OPEN.idx + 1); return; }
+  if (e.key === 'ArrowUp') { e.preventDefault(); selHighlight(SEL_OPEN.idx - 1); return; }
+  if (e.key === 'Home') { e.preventDefault(); selHighlight(0); return; }
+  if (e.key === 'End') { e.preventDefault(); selHighlight(SEL_OPEN.opts.length - 1); return; }
+  if (e.key === 'Tab') { selClose(); return; }
+  /* 敲字母跳到那一项:二十条模型通道时靠上下箭头太慢 */
+  if (e.key.length === 1) {
+    const ch = e.key.toLowerCase();
+    const n = SEL_OPEN.opts.length;
+    for (let k = 1; k <= n; k++) {
+      const j = (SEL_OPEN.idx + k) % n;
+      if (SEL_OPEN.opts[j].textContent.trim().toLowerCase().startsWith(ch)) {
+        selHighlight(j);
+        break;
+      }
+    }
+  }
+}
+
+function enhanceSelect(sel) {
+  if (!sel || sel.tagName !== 'SELECT' || sel._selWrap) return;
+  const wrap = el('div', 'sel');
+  sel.parentNode.insertBefore(wrap, sel);
+  wrap.appendChild(sel);
+  sel.classList.add('sel-native');
+  sel.setAttribute('tabindex', '-1');
+  sel.setAttribute('aria-hidden', 'true');
+
+  const btn = el('button', 'sel-btn');
+  btn.type = 'button';
+  btn.setAttribute('role', 'combobox');
+  btn.setAttribute('aria-haspopup', 'listbox');
+  btn.setAttribute('aria-expanded', 'false');
+  btn.appendChild(el('span', 'sel-label'));
+  const caret = el('span', 'sel-caret');
+  caret.innerHTML = '<svg viewBox="0 0 10 6" aria-hidden="true"><path d="M1 1l4 4 4-4"/></svg>';
+  btn.appendChild(caret);
+  wrap.appendChild(btn);
+
+  sel._selWrap = wrap;
+  SEL_ALL.add(sel);
+  selSync(sel);
+
+  btn.addEventListener('click', (e) => {
+    e.preventDefault();
+    if (sel.disabled) return;
+    if (Date.now() < SEL_SUPPRESS_CLICK) return;   /* 刚用键盘选过,别把补发的 click 当第二次点击 */
+    if (SEL_OPEN.sel === sel) selClose();
+    else selOpen(sel, btn);
+  });
+  btn.addEventListener('keydown', (e) => selKey(e, sel, btn));
+
+  /* 点标签也要能开:原来 <label> 会自动激活里面那个 select,
+     现在 select 被藏起来了,不补这一下就会出现"点标题没反应"。 */
+  const labels = [];
+  const outer = sel.closest('label');
+  if (outer) labels.push(outer);
+  if (sel.id) {
+    for (const l of document.querySelectorAll('label[for="' + sel.id.replace(/"/g, '\\"') + '"]')) {
+      labels.push(l);
+    }
+  }
+  for (const lab of labels) {
+    lab.addEventListener('click', (e) => {
+      if (e.target === btn || btn.contains(e.target)) return;
+      if (e.target.closest('button, a, input, textarea, select')) return;
+      e.preventDefault();
+      if (sel.disabled) return;
+      btn.focus();
+      if (SEL_OPEN.sel !== sel) selOpen(sel, btn);
+    });
+  }
+}
+
+function enhanceSelects(root) {
+  const scope = root || document;
+  if (!scope.querySelectorAll) return;
+  for (const s of scope.querySelectorAll('select:not(.sel-native)')) enhanceSelect(s);
+}
+
+/* 点别处 / 滚动 / 改窗口大小就收起来 —— 弹层是 fixed 的,
+   不能像普通下拉那样跟着页面走 */
+document.addEventListener('pointerdown', (e) => {
+  if (!SEL_OPEN.sel) return;
+  if (SEL_OPEN.pop && SEL_OPEN.pop.contains(e.target)) return;
+  if (SEL_OPEN.btn && SEL_OPEN.btn.contains(e.target)) return;
+  selClose();
+}, true);
+window.addEventListener('resize', selClose);
+window.addEventListener('scroll', selClose, true);
+
+/* 显示值对齐:定时器比"改造每个赋值点"可靠 —— 代码里给 select 赋值的地方不止一处,
+   漏一个就会出现"值变了、按钮上还是旧的"。十来个节点,250ms 一次可以忽略不计。
+   (不做 document.hidden 跳过:后台标签页里值也会变,回来时应该是新的) */
+setInterval(() => {
+  for (const s of SEL_ALL) selSync(s);
+  /* 切视图会整块换掉 DOM:弹层挂在 body 上,不跟着走就会留在原地 ——
+     按钮已经不在文档里(或被隐藏)就收起来。 */
+  if (SEL_OPEN.sel && (!SEL_OPEN.sel.isConnected ||
+      !SEL_OPEN.btn || !SEL_OPEN.btn.isConnected ||
+      SEL_OPEN.btn.getClientRects().length === 0)) {
+    selClose();
+  }
+}, 250);
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden) for (const s of SEL_ALL) selSync(s);
+});
+
+/* 动态插入的下拉(模型表单里的"协议")自动接管 */
+new MutationObserver((muts) => {
+  for (const m of muts) {
+    for (const n of m.addedNodes) {
+      if (!n || n.nodeType !== 1) continue;
+      if (n.tagName === 'SELECT') enhanceSelect(n);
+      else if (n.querySelector) enhanceSelects(n);
+    }
+  }
+}).observe(document.body, { childList: true, subtree: true });
+
 function atBottom() {
   return stream.scrollHeight - stream.scrollTop - stream.clientHeight < 80;
 }
@@ -2929,7 +3181,7 @@ function capsRenderForm(model) {
   box.appendChild(grid);
 
   const foot = el('div', 'cap-foot');
-  const save = el('button', null, '保存并生效');
+  const save = el('button', 'primary', '保存并生效');
   save.type = 'button';
   save.id = 'cap-save';
   save.addEventListener('click', capsSave);
@@ -3333,7 +3585,7 @@ function modelsRenderForm(m) {
   box.appendChild(hint);
 
   const foot = el('div', 'cap-foot');
-  const save = el('button', null, '保存并生效');
+  const save = el('button', 'primary', '保存并生效');
   save.type = 'button';
   save.id = 'model-save';
   save.addEventListener('click', modelsSave);
@@ -4339,6 +4591,7 @@ document.addEventListener('keydown', (e) => {
 /* ============ 启动 ============ */
 (async () => {
   initTheme();
+  enhanceSelects();          /* 静态下拉先接管;之后动态插入的由 MutationObserver 接管 */
   try {
     renderStatus(await api('/api/status'));
   } catch (e) {

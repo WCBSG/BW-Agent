@@ -426,7 +426,14 @@ build\agent.exe run skill_我的技能
 | 规则 / 能力文件 | 「规则」页按域改检测口径（保存即热加载）；技能页、工具页、MCP 页左侧就是各自的文件列表（`skills\*.md` / `tools\*.json` / `mcp.json`），点文件名就地改，JSON 先校验、自动留 `.bak`；技能页与 MCP 页都有市场入口，MCP 还能「用大模型创建」一条服务器配置 |
 
 界面上还有两处常驻入口：`Ctrl+K` 搜索（任务 / 运行 / 发现 / 资产 / 视图，只搜已落盘的数据），
-以及左栏的「自动化」——有规则在跑时角标会亮。
+以及左栏的「周期巡检」——有规则在跑时角标会亮。
+
+界面里的原生控件一律自绘，不跟随系统默认：Windows 上的 `<select>` 弹层是系统菜单
+（蓝底高亮 + 系统箭头），复选框的勾也是系统画的，和这套纸白界面不是一路。
+做法是**保留原生 `<select>` 当"值的真相"**（代码里读 `.value`、监听 `change` 都不变），
+在它旁边画同款按钮，弹层挂到 `body` 上（`position:fixed`，不被滚动容器裁掉）；
+复选框用 `appearance:none` + 内联 SVG 对勾；主操作按钮统一 `.primary`（墨色实心）。
+所以换配色、换字号时不会留下"这一处还是系统样"。
 
 界面与后端只通过 HTTP + SSE 通信，事件协议是三册合同的六个事件
 （`message_start / block_start / block_delta / block_stop / tool_status / message_stop`），
