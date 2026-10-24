@@ -1188,9 +1188,12 @@ function onMessageStop(e) {
     if (rsteps > 0) extra = ` · ${msteps} 步模型 / ${rsteps} 步直接执行`;
     else if (msteps > 0) extra = ` · ${msteps} 步均由模型决策`;
     if (llmS >= 0.5) extra += ` · 其中模型 ${llmS.toFixed(1)}s`;
-    line.textContent = `消息结束 · 停止原因 ${e.stopReason} · 调用技能/工具 ${msg.steps} 次 · 耗时 ${seconds}s` + extra;
+    /* 显示人话的停止原因:stopDetail 是循环判定出来的("模型不可用:…"),
+       stopReason 只是协议值(end_turn),拿它给用户看等于什么都没说。 */
+    const detail = e.stopDetail || e.stopReason;
+    line.textContent = `消息结束 · 停止原因 ${detail} · 调用技能/工具 ${msg.steps} 次 · 耗时 ${seconds}s` + extra;
     msg.body.appendChild(line);
-    if ($('trace-hint')) $('trace-hint').textContent = `${msg.steps} 步 / ${seconds}s / ${e.stopReason}`;
+    if ($('trace-hint')) $('trace-hint').textContent = `${msg.steps} 步 / ${seconds}s / ${detail}`;
     if (current === msg) current = null;
     if (live === msg) live = null;
     endTurn();

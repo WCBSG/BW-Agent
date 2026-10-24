@@ -71,7 +71,7 @@ typedef struct {
   json_t *steps;             /* 结构化留痕:每步 action/observation */
   int step_count;
   int stop_code;             /* 停止原因编码 */
-  char stop_reason[128];     /* 停止原因(人话) */
+  char stop_reason[320];     /* 停止原因(人话) */
 } loop_state_t;
 
 /* 停止原因:智能体不是跑到步数上限才停,而是"有理由地停" */

@@ -189,13 +189,21 @@ static void ev_tool_status(sse_ctx_t *c, const char *tool_use_id,
   buf_free(&b);
 }
 
-static void ev_message_stop(sse_ctx_t *c, const char *stop_reason, const loop_state_t *st) {
+static void ev_message_stop(sse_ctx_t *c, const char *stop_reason, const char *detail,
+                            const loop_state_t *st) {
   buf_t b;
   buf_init(&b);
   buf_puts(&b, "{\"type\":\"message_stop\",\"messageId\":");
   buf_json_str(&b, c->message_id);
   buf_puts(&b, ",\"stopReason\":");
   buf_json_str(&b, stop_reason);
+  /* stopReason 是协议层的收尾类型(end_turn / refusal),给程序看的;
+     stopDetail 才是"这一轮为什么停"的人话(模型不可用:…)。界面显示后者 ——
+     以前拿协议值当人话显示,于是永远是 end_turn。 */
+  if (detail && *detail) {
+    buf_puts(&b, ",\"stopDetail\":");
+    buf_json_str(&b, detail);
+  }
   /* 耗时以这里为准:界面切走、刷新、换会话之后还能从转录里读回同一个数 */
   buf_printf(&b, ",\"durationMs\":%lld,\"waitMs\":%lld",
              c->t_start ? now_ms() - c->t_start : 0, c->wait_ms);
@@ -2041,16 +2049,12 @@ static void h_chat(const http_req_t *req, http_res_t *res) {
     }
   }
 
-  /* 收尾把"为什么停"也播出去 —— 这是智能体和脚本的区别,得让评审看见 */
+  /* 收尾:只把块关掉,不往正文里塞"——— 本轮循环结束 ———"这类记账行 ——
+     它会被当成智能体说的话渲染进气泡,而"为什么停"本来就有专门的落点
+     (message_stop 的 stopDetail,界面上的收尾行)。 */
   t_close_tool(&ctx);
-  buf_t b;
-  buf_init(&b);
-  buf_printf(&b, "\n\n——— 本轮循环结束:共 %d 步,停止原因:%s ———\n",
-             st.step_count, reason);
-  t_put_text(&ctx, b.data);
-  buf_free(&b);
   t_close_text(&ctx);
-  ev_message_stop(&ctx, stop, &st);
+  ev_message_stop(&ctx, stop, reason, &st);
 
   buf_free(&st.transcript);
   if (st.steps) json_free(st.steps);

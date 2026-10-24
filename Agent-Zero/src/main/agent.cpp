@@ -856,6 +856,11 @@ int agent_run_turn(agent_t *a, const char *user_text, loop_state_t *st) {
         st->stop_code = STOP_ERROR;
         snprintf(st->stop_reason, sizeof(st->stop_reason), "模型不可用:%s",
                  (why && *why) ? why : "没有可用的模型配置");
+        /* 长原因会被 snprintf 截断:从末尾退到 UTF-8 字符边界,
+           不然界面上最后半个汉字会变成乱码方块。 */
+        size_t n = strlen(st->stop_reason);
+        size_t keep = u8_prefix(st->stop_reason, n);
+        if (keep < n) st->stop_reason[keep] = 0;
       }
       buf_t n;
       buf_init(&n);

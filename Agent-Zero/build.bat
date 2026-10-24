@@ -128,7 +128,16 @@ rem Product file name is kept in product.name (UTF-8) so this script stays ASCII
 set "APPNAME="
 for /f "usebackq delims=" %%n in ("product.name") do set "APPNAME=%%n"
 if not defined APPNAME set "APPNAME=WebSecAgent"
-copy /y build\agent%SUFFIX%.exe "build\!APPNAME!%SUFFIX%.exe" >nul
+copy /y build\agent%SUFFIX%.exe "build\!APPNAME!%SUFFIX%.exe" >nul 2>nul
+if errorlevel 1 (
+    rem 程序正在运行时 Windows 会锁住镜像文件:这时 copy 静默失败,
+    rem 产物还是旧的那一份 —— 必须说出来,否则"构建成功"是假的。
+    echo.
+    echo [FAILED] cannot overwrite build\!APPNAME!%SUFFIX%.exe
+    echo          The program is probably still running. Close it first, then rebuild.
+    echo          Fresh binary is at build\agent%SUFFIX%.exe
+    exit /b 1
+)
 
 echo.
 echo [DONE] %MODE% build: build\!APPNAME!%SUFFIX%.exe  ^(build\agent%SUFFIX%.exe^)
