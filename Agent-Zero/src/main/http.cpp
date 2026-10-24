@@ -390,7 +390,10 @@ int http_serve(const char *bind_ip, int port, http_handler_t handler, void *ud) 
     return -1;
   }
   int one = 1;
-  setsockopt(g_listen, SOL_SOCKET, SO_REUSEADDR, (const char *)&one, sizeof(one));
+  /* Windows 上 SO_REUSEADDR 的语义和 POSIX 相反:它允许别人/自己被"抢占式"重复绑定
+     同一端口 —— 另一个进程先占了 8765,我们再 bind 也可能成功,结果两个服务抢同一端口。
+     要用 SO_EXCLUSIVEADDRUSE:端口被别人占着就老老实实失败,交给上层换端口。 */
+  setsockopt(g_listen, SOL_SOCKET, SO_EXCLUSIVEADDRUSE, (const char *)&one, sizeof(one));
 
   memset(&g_bound, 0, sizeof(g_bound));
   g_bound.sin_family = AF_INET;

@@ -81,6 +81,10 @@ static const char *instance_file(char *out, size_t cap) {
 static int port_free(int port) {
   SOCKET s = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
   if (s == INVALID_SOCKET) return 0;
+  /* 和 http_serve 用同一把尺子:SO_EXCLUSIVEADDRUSE 下"能绑"才叫真空闲。
+     用 SO_REUSEADDR 探会得出"这端口没人用"的错误结论(Windows 允许抢占式重绑)。 */
+  int one = 1;
+  setsockopt(s, SOL_SOCKET, SO_EXCLUSIVEADDRUSE, (const char *)&one, sizeof(one));
   struct sockaddr_in a;
   memset(&a, 0, sizeof(a));
   a.sin_family = AF_INET;
@@ -91,8 +95,10 @@ static int port_free(int port) {
   return ok;
 }
 
-/* 这个端口上是不是我们自己:连上去要一份首页,认里头的 bw-token。
-   只读前 4KB —— 首页是静态模板,令牌写在 <meta> 里,一定落在这段。 */
+/* 这个端口上是不是我们自己:问 /api/health,只认 "app":"bwagent-zero"。
+   为什么不用首页里的 bw-token:同机可能还跑着同源的另一份实现,它们首页里也有 bw-token,
+   只认令牌会把别人的服务当成自己的(实测踩过:叫前台叫到了另一个程序)。
+   /api/health 免令牌、只回答"我是谁",正好当身份牌。 */
 static int probe_ours(int port) {
   if (port <= 0 || port > 65535) return 0;
   SOCKET s = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
@@ -131,7 +137,7 @@ static int probe_ours(int port) {
   nb = 0;
   ioctlsocket(s, FIONBIO, &nb);
 
-  const char *req = "GET / HTTP/1.0\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n";
+  const char *req = "GET /api/health HTTP/1.0\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n";
   send(s, req, (int)strlen(req), 0);
 
   DWORD tv_ms = 900;
@@ -143,11 +149,11 @@ static int probe_ours(int port) {
     if (n <= 0) break;
     total += n;
     buf[total] = 0;                 /* 边收边判,别在没结尾的缓冲上 strstr */
-    if (strstr(buf, "bw-token")) break;
+    if (strstr(buf, "\"bwagent-zero\"")) break;
   }
   buf[total] = 0;
   closesocket(s);
-  return total > 0 && strstr(buf, "bw-token") != NULL;
+  return total > 0 && strstr(buf, "\"bwagent-zero\"") != NULL;
 }
 
 static int read_mapped_port(void) {
@@ -275,9 +281,18 @@ int instance_running_port(int wait_ms) {
     if (port > 0 && probe_ours(port)) return port;
   }
 
-  /* 记录丢了(被人删了 / 上一版没写过):按默认端口段扫一遍,只认自家首页 */
+  /* 记录丢了(被人删了 / 上一版没写过):按默认端口段扫一遍,只认自家探针 */
   for (int p = 8765; p <= 8775; p++) {
     if (probe_ours(p)) return p;
+  }
+  return 0;
+}
+
+int instance_pick_free_port(int from, int to) {
+  wsa_guard wsa;
+  if (!wsa.ok) return 0;
+  for (int p = from; p <= to; p++) {
+    if (port_free(p)) return p;
   }
   return 0;
 }

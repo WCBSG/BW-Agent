@@ -713,15 +713,19 @@ int app_main(int argc, char **argv) {
     const char *domain = getenv("DAS_TARGET");
     int ok = 0;
     printf("  数据目录 : %s\\\n\n", app_data_dir());
-    for (int try_port = 8765; try_port <= 8775; try_port++) {
-      int rc = serve_run(domain, try_port, 1);
-      if (rc == 0) { ok = 1; break; }
-      if (rc == 2) {           /* 端口被占用:换一个继续 */
-        printf("\n  端口 %d 已被占用,改用 %d ……\n\n", try_port, try_port + 1);
-        continue;
-      }
-      break;                   /* 其它错误不再重试 */
+    /* 先挑一个能绑的端口,再起服务:serve_run 会铺数据、开窗口、挂托盘,
+       绑不上再回头重来等于把整套初始化跑第二遍(全局状态和 WebView2 都不支持重入,
+       实测第二遍会直接崩掉 —— 表现就是"双击后窗口一闪就没了")。 */
+    int port = instance_pick_free_port(8765, 8775);
+    if (port <= 0) {
+      printf("\n  8765-8775 都已被占用,无法启动。\n"
+             "  关掉占用这些端口的程序再试,或用 `agent.exe serve <域名> <端口>` 指定一个空闲端口。\n\n");
+      log_error("启动失败:8765-8775 全部被占用");
+      net_shutdown();
+      return 1;
     }
+    if (port != 8765) log_info("默认端口 8765 被占用,改用 %d", port);
+    if (serve_run(domain, port, 1) == 0) ok = 1;
     net_shutdown();
     if (!ok) {
       printf("\n  启动失败。请把上面的提示截图反馈。\n");

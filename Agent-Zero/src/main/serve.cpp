@@ -1439,7 +1439,10 @@ static void h_health(const http_req_t *req, http_res_t *res) {
   (void)req;
   buf_t b;
   buf_init(&b);
-  buf_printf(&b, "{\"ok\":true,\"service\":\"网站安全巡检智能体(C 版)\",\"pid\":%lu}",
+  /* app 字段是"这台机器上还有谁"的判据:同机可能装着同源的另一份实现,
+     它们的首页里也有 bw-token —— 只认令牌会把别人的服务当成自己的。 */
+  buf_printf(&b,
+             "{\"ok\":true,\"app\":\"bwagent-zero\",\"service\":\"网站安全巡检智能体(C 版)\",\"pid\":%lu}",
              (unsigned long)GetCurrentProcessId());
   http_res_json(res, 200, b.data);
   buf_free(&b);
@@ -2477,6 +2480,12 @@ int serve_run(const char *domain, int port, int open_ui) {
   }
 
   int serve_rc = http_serve(NULL, port, router, NULL);
+  if (serve_rc != 0) {
+    /* 端口占不到就别只说"服务已停止" —— 双击启动时这句话会一闪而过,
+       用户只看到"窗口自己关了"。原因必须写进日志和控制台。 */
+    log_error("HTTP 服务启动失败:%s", http_last_error());
+    printf("  %s\n", http_last_error());
+  }
   instance_unpublish();             /* 这个端口不再由我们监听,记录先撤掉 */
 
   sched_stop();

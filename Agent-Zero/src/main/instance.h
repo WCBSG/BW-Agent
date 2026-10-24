@@ -7,7 +7,8 @@
  * 判据分两层:
  *   · 命名互斥量 —— 管"谁在跑"(进程结束/崩溃时系统自动释放,不会留死锁)
  *   · 数据目录下的 instance.json —— 记"在哪个端口"
- * 端口只信探活:能连上、并且首页带 bw-token 才算自己人(避免撞上别的程序)。
+ * 端口只信探活:问 /api/health,认 "app":"bwagent-zero" 才算自己人
+ * (同机可能有同源的另一份实现,它们首页里也有 bw-token —— 只认令牌会认错人)。
  */
 #ifndef AGENT_INSTANCE_H
 #define AGENT_INSTANCE_H
@@ -32,5 +33,11 @@ int instance_running_port(int wait_ms);
 
 /* 上一次判定的说明(写日志用) */
 const char *instance_note(void);
+
+/* 在 [from, to] 里找一个能绑的端口,返回 0 表示全被占用。
+   为什么要"先挑再起服务":serve_run 会铺数据、开窗口、挂托盘,
+   绑不上再回头重来等于把整套初始化跑第二遍(全局状态与 WebView2 都不支持重入)。
+   先挑好端口,只跑一次,失败就是失败。 */
+int instance_pick_free_port(int from, int to);
 
 #endif /* AGENT_INSTANCE_H */
