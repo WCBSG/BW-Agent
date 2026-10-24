@@ -817,14 +817,18 @@ function mdToHtml(src) {
   return out.join('');
 }
 
-/* 把一个文本块渲染成 Markdown;渲染过就打个记号,避免重复解析 */
+/* 把一个文本块渲染成 Markdown;渲染过就打个记号,避免重复解析。
+   带"[第 N 步 · 思考]"前缀的那一段不进正文,而是变成过程区的一行 ——
+   和 VS Code 里的样子一样:过程是一条条"想了什么 / 调了什么",正文单独成段。 */
 function renderMdBlock(b) {
   if (!b || !b.node || b.mdDone) return;
   b.mdDone = true;
   const t = (b.text || '').trim();
-  const m = /^\[第\s*(\d+)\s*步\s*·\s*思考\]\s*([\s\S]*)$/.exec(t);
+  const m = /^\[第\s*\d+\s*步\s*·\s*思考\]\s*([\s\S]*)$/.exec(t);
   if (m) {
-    renderThink(b.node, m[1], m[2]);
+    addThinkRow(b.msg, m[1]);
+    b.node.remove();
+    b.node = null;
   } else {
     b.node.classList.add('md');
     b.node.innerHTML = mdToHtml(b.text || '');
@@ -832,19 +836,49 @@ function renderMdBlock(b) {
   scrollBottom();
 }
 
-/* 思考块:默认收成一行(和主流 agent 一样),点开看全文 */
-function renderThink(node, step, text) {
-  node.classList.add('think');
-  node.innerHTML = '';
-  const head = el('div', 'think-head');
-  head.appendChild(el('span', 'chev', '›'));
-  head.appendChild(el('span', 'think-label', '思考'));
-  head.appendChild(el('span', 'think-step', '第 ' + step + ' 步'));
+/* ---------- 过程区:思考与工具按发生顺序排成一条时间线 ----------
+   主流 agent(VS Code / Copilot)的做法:过程默认展开、字是灰的,
+   一眼能看出"它想了什么、动了哪个工具",又不会盖过最终结论。 */
+function ensureProc(m) {
+  if (m.proc) return m.proc;
+  const node = el('div', 'proc open');
+  const head = el('div', 'proc-head');
+  head.appendChild(el('span', 'proc-chev', '›'));
+  const label = el('span', 'proc-label', '正在思考…');
+  head.appendChild(label);
   node.appendChild(head);
-  const body = el('div', 'think-body');
-  body.innerHTML = mdToHtml(text || '');
+  const body = el('div', 'proc-body');
   node.appendChild(body);
   head.addEventListener('click', () => node.classList.toggle('open'));
+  m.body.insertBefore(node, m.body.firstChild);
+  m.proc = { node, head, body, label, rows: 0 };
+  return m.proc;
+}
+
+const PROC_ICONS = {
+  think: '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 2.2c1.4 0 2.5.8 2.9 2 .3 0 .6-.1.9-.1 1.4 0 2.4 1 2.4 2.3 0 .9-.5 1.6-1.2 2 .1.3.1.5.1.8 0 1.4-1.1 2.4-2.5 2.4-.5 0-1-.2-1.4-.5-.4.6-1.1 1-1.9 1-1 0-1.8-.6-2.1-1.4-.3.1-.6.2-.9.2-1.3 0-2.3-1-2.3-2.2 0-.9.5-1.6 1.2-2-.1-.2-.1-.5-.1-.8 0-1.3 1-2.3 2.3-2.3.4 0 .8.1 1.1.3C6.8 2.6 7.3 2.2 8 2.2Z" fill="none" stroke="currentColor" stroke-width="1.1"/></svg>',
+  tool: '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2.5 4.2h4l1 1.2h5.9c.5 0 .9.4.9.9v5.2c0 .5-.4.9-.9.9H2.5a.9.9 0 0 1-.9-.9V5.1c0-.5.4-.9.9-.9Z" fill="none" stroke="currentColor" stroke-width="1.1"/></svg>',
+};
+
+function procRow(m, kind, textHtml) {
+  const p = ensureProc(m);
+  const row = el('div', 'proc-row ' + kind);
+  const ic = el('span', 'proc-ico');
+  ic.innerHTML = PROC_ICONS[kind] || PROC_ICONS.think;
+  row.appendChild(ic);
+  const txt = el('div', 'proc-txt');
+  txt.innerHTML = textHtml;
+  row.appendChild(txt);
+  p.body.appendChild(row);
+  p.rows++;
+  return row;
+}
+
+function addThinkRow(m, text) {
+  const t = String(text || '').trim();
+  if (!t) return;                       /* 空思考不占行 */
+  procRow(m, 'think', mdToHtml(t));
+  scrollBottom();
 }
 
 /* ============ 事件流渲染 ============ */
@@ -959,21 +993,11 @@ function getBlock(m, index) {
   return (m && m.blocks[index]) || null;
 }
 
-/* 工具卡片挂哪儿:紧跟在思考块后面时,收进那个思考块里 ——
-   主流 agent 的过程是"一段思考,里面夹着它调了什么",而不是一排平铺的卡片。 */
-function toolHost(m) {
-  const last = m.body.lastElementChild;
-  if (last && last.classList.contains('think')) {
-    return last.querySelector('.think-body') || last;
-  }
-  return m.body;
-}
-
 function onBlockStart(e, m) {
   if (!m) return;
   if (e.blockType === 'tool_use') {
     noteActivity(m);              /* 开始调工具了:不是"模型卡住",换成工具卡片的进度 */
-    const card = el('div', 'tool');
+    const card = el('div', 'tool proc-tool');
     const head = el('div', 'tool-head');
     const dot = el('span', 'dot running');
     head.appendChild(dot);
@@ -988,7 +1012,8 @@ function onBlockStart(e, m) {
     card.appendChild(args);
     const out = el('div', 'tool-out');
     card.appendChild(out);
-    toolHost(m).appendChild(card);
+    /* 工具卡是过程区的一行,和思考排在一条时间线上 */
+    ensureProc(m).body.appendChild(card);
     m.blocks[e.index] = { kind: 'tool_use', node: card, dot, note, args, out, name: e.toolName };
     if (e.toolUseId) m.tools[e.toolUseId] = m.blocks[e.index];
     m.steps++;
@@ -996,7 +1021,7 @@ function onBlockStart(e, m) {
   } else {
     const n = el('div', 'md');
     m.body.appendChild(n);
-    m.blocks[e.index] = { kind: 'text', node: n, text: '', shown: 0 };
+    m.blocks[e.index] = { kind: 'text', node: n, text: '', shown: 0, msg: m };
   }
 }
 
@@ -1117,7 +1142,17 @@ function onBlockDelta(e, m) {
     dirtyBlocks.add(b);
     scheduleFlush();
   } else if (e.delta.type === 'input_json_delta') {
-    b.args.textContent = e.delta.partialJson || '';
+    const raw = e.delta.partialJson || '';
+    b.args.textContent = raw;
+    /* 参数可能是半截 JSON(流式),能读出目标就先显示目标 ——
+       过程行的可读性全靠这个,不然只看到一个工具名。 */
+    if (b.note) {
+      try {
+        const a = JSON.parse(raw);
+        const t = a.target || a.url || a.path || a.name || a.host || '';
+        if (t) b.note.textContent = String(t).slice(0, 80);
+      } catch (err) { /* 还没解析完,等下一个 delta */ }
+    }
   }
 }
 
@@ -1209,6 +1244,11 @@ function onMessageStop(e, m) {
   const seconds = (ms / 1000).toFixed(1);
   const back = () => {
     for (const k of Object.keys(msg.blocks || {})) renderMdBlock(msg.blocks[k]);
+    if (msg.proc) {
+      msg.proc.label.textContent = '已完成思考';
+      msg.proc.node.classList.remove('running');
+      if (!msg.proc.rows) msg.proc.node.remove();     /* 全程没思考也没调工具:不留空壳 */
+    }
     const line = el('div', 'stopline');
     /* 把耗时的账摊开:快可能是"没在问模型",慢可能是"模型在憋" —— 两者都该看见 */
     const msteps = Number(e.modelSteps) || 0;
@@ -1243,7 +1283,7 @@ function syncComposer() {
   const on = RUNNING.has(BW_SID);
   busy = on;
   const btn = $('btn-send');
-  if (btn) { btn.disabled = false; btn.textContent = on ? '排队发送' : '执行'; }
+  if (btn) { btn.disabled = false; btn.textContent = '执行'; }
   const q = $('q');
   if (q) q.disabled = false;
   /* 停止:只在"有东西在跑"的时候出现 —— 和主流 agent 一样,
@@ -1253,14 +1293,25 @@ function syncComposer() {
     stop.hidden = !on;
     if (on) { stop.disabled = false; stop.textContent = '停止'; }
   }
-  const hint = $('compose-hint');
+  renderQueued();
+}
+
+/* 排队中的话,以"灰色的用户气泡"贴在消息流末尾 ——
+   它在队列里就是一条待发的消息,放在输入框附近反而不像消息。
+   真正发出去时先撤掉灰条,再按正常气泡插进去。 */
+function renderQueued() {
+  for (const n of Array.from(stream.querySelectorAll('.msg.queued'))) n.remove();
   const list = QUEUED.get(BW_SID) || [];
-  if (hint) {
-    if (on && list.length) { hint.hidden = false; hint.textContent = `这一轮还在跑，已排队 ${list.length} 条，结束后自动发出`; }
-    else hint.hidden = true;
+  if (!list.length) return;
+  for (const text of list) {
+    const wrap = el('div', 'msg user queued');
+    const b = el('div', 'body');
+    b.appendChild(el('div', null, text));
+    wrap.appendChild(b);
+    wrap.appendChild(el('span', 'queued-tag', '排队中 · 这一轮结束后发出'));
+    stream.appendChild(wrap);
   }
-  /* 排队里的下一句:这条对话空下来了就接着发 */
-  if (!on && list.length) setTimeout(() => flushQueued(BW_SID), 0);
+  scrollBottom();
 }
 
 function setBusy(on) {                /* 兼容旧调用点 */
@@ -1289,18 +1340,16 @@ function queueSend(sid, text) {
   const list = QUEUED.get(sid) || [];
   list.push(text);
   QUEUED.set(sid, list);
-  if (sid === BW_SID) {
-    const hint = $('compose-hint');
-    if (hint) { hint.hidden = false; hint.textContent = `这一轮还在跑，已排队 ${list.length} 条，结束后自动发出`; }
-  }
+  renderQueued();
 }
 function flushQueued(sid) {
   const list = QUEUED.get(sid);
-  if (!list || !list.length) { QUEUED.delete(sid); return; }
+  if (!list || !list.length) { QUEUED.delete(sid); renderQueued(); return; }
   /* 不在这个会话上就留着:等切回去再发(attachLive 会调这里) */
-  if (sid !== BW_SID || RUNNING.has(sid)) { syncComposer(); return; }
+  if (sid !== BW_SID || RUNNING.has(sid)) { renderQueued(); return; }
   const next = list.shift();
   if (!list.length) QUEUED.delete(sid);
+  renderQueued();
   send(next);
 }
 
@@ -2112,6 +2161,7 @@ async function openChat(sid) {
   if ($('task-title')) $('task-title').textContent = (title || '巡检会话').slice(0, 30);
   attachLive(sid);            /* 这一轮还没结束就把它接上,别让"正在执行"看丢 */
   syncComposer();             /* 输入框按这条对话自己的状态来 */
+  flushQueued(sid);           /* 这条对话下如果有排队没发的,接着发 */
   scrollBottom(true);
 }
 
