@@ -42,8 +42,10 @@ int res_exists(const char *name) {
   return embed_lookup(name, &d, &l);
 }
 
-/* 把内置 data/<子目录>/ 铺到数据目录:配置类缺了才补,可执行文件每次都覆盖 */
-static int spill_dir(const char *res_prefix, const char *dst_dir) {
+/* 把内置 data/<子目录>/ 铺到数据目录。
+   always=1:每次覆盖(可执行文件、工具声明 —— 它们是程序的一部分,版本换了就得跟着换);
+   always=0:缺了才补(规则、技能说明 —— 这些是给人改的,不能把人的改动冲掉)。 */
+static int spill_dir(const char *res_prefix, const char *dst_dir, int always) {
   int written = 0;
   int total = embed_count();
   size_t plen = strlen(res_prefix);
@@ -60,8 +62,7 @@ static int spill_dir(const char *res_prefix, const char *dst_dir) {
     char dst[MAX_PATH * 2];
     snprintf(dst, sizeof(dst), "%s\\%s", dst_dir, rel);
 
-    int is_bin = str_endswith(rel, ".exe") || str_endswith(rel, ".dll");
-    if (!is_bin && file_size(dst) >= 0) continue;
+    if (!always && file_size(dst) >= 0) continue;
     char parent[MAX_PATH * 2];
     path_dir_of(dst, parent, sizeof(parent));
     ensure_dir(parent);
@@ -77,17 +78,18 @@ int res_bootstrap_data_dir(void) {
   char path[MAX_PATH * 2];
   app_data_path(path, sizeof(path), "rules");
   ensure_dir(path);
-  written += spill_dir("data/rules/", path);
+  written += spill_dir("data/rules/", path, 0);
 
-  /* 工具声明、技能目录、MCP 清单:同样随 exe 打包,
-     首次运行时铺到数据目录 —— 使用者打开就能改,改完不用重新编译。 */
+  /* 工具声明随 exe 走:它是"程序有哪些能力"的一部分,版本换了必须跟着换 —— 
+     旧版残留的声明(比如还指着已不存在的 exe)会让新实现悄悄失效。
+     要做自己的工具,放到数据目录的 tools\ 之外(见 docs/工具协议.md)。 */
   app_data_path(path, sizeof(path), "tools");
   ensure_dir(path);
-  written += spill_dir("data/tools/", path);
+  written += spill_dir("data/tools/", path, 1);
 
   app_data_path(path, sizeof(path), "skills");
   ensure_dir(path);
-  written += spill_dir("data/skills/", path);
+  written += spill_dir("data/skills/", path, 0);
 
   app_data_path(path, sizeof(path), "mcp.json");
   if (file_size(path) < 0) {

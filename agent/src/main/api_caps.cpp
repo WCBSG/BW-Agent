@@ -101,9 +101,9 @@ void api_caps(const http_req_t *req, http_res_t *res) {
         }
         buf_puts(&prompt,
             "。\n"
-            "要复用本机已有的命令行程序时,先查:用内置工具 es_search(Everything),"
-            "query 填如 \"nuclei.exe\" 或 \"ext:exe python\",命中的路径写进 source 与 entry.path;"
-            "查不到就不要编造路径。\n用户需求:");
+            "要复用本机已有的命令行程序时,先查这台机器上到底有没有:没有检索工具就直说,"
+            "让用户自己填路径;命中的路径写进 source 与 entry.path;查不到就不要编造路径。\n"
+            "用户需求:");
       } else if (str_ieq(kind, "mcp")) {
         buf_puts(&prompt,
             "你在写一条 Model Context Protocol(MCP)服务器配置,会被放进 mcp.json 的 mcpServers 里。\n"
