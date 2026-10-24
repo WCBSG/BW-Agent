@@ -2014,7 +2014,15 @@ static void h_chat(const http_req_t *req, http_res_t *res) {
     stop = "end_turn";
   }
 
-  if (store_count(g_store, "runs") == runs_before) {
+  /* 运行记录只记"真的动手了"的那一轮:调过工具,或落了页面/发现。
+     纯问答(你好、复述、问能力)不该在"巡检历史"里留一条 0 页 0 工具的空记录 ——
+     那是把聊天记录冒充成巡检。
+     例外:别人(周期巡检/技能)已经在这一轮里建过 run,就不再补一条。 */
+  int pages_delta = store_count(g_store, "assets") - assets_before;
+  int fresh_delta = store_count(g_store, "findings") - findings_before;
+  int did_work = (ctx.tool_seq > 0) || pages_delta > 0 || fresh_delta > 0;
+
+  if (did_work && store_count(g_store, "runs") == runs_before) {
     /* 这一轮用了哪个技能?记到运行记录上 ——
        列表里写"证据与覆盖核对"显然比写"对话"更有用。 */
     char scope[48] = "chat";
@@ -2041,12 +2049,10 @@ static void h_chat(const http_req_t *req, http_res_t *res) {
     }
     char *rid = store_run_start(g_store, g_task, label, scope);
     if (rid) {
-      int pages = store_count(g_store, "assets") - assets_before;
-      int fresh = store_count(g_store, "findings") - findings_before;
-      if (pages < 0) pages = 0;
-      if (fresh < 0) fresh = 0;
+      int pages = pages_delta > 0 ? pages_delta : 0;
+      int fresh = fresh_delta > 0 ? fresh_delta : 0;
       store_run_finish(g_store, rid, st.stop_code == STOP_ERROR ? "failed" : "done",
-                       pages, net_http_calls() - calls_before_chat, fresh,
+                       pages, ctx.tool_seq, fresh,
                        st.stop_code == STOP_ERROR ? reason : "");
       free(rid);
     }
