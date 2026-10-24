@@ -822,6 +822,9 @@ function mdToHtml(src) {
    和 VS Code 里的样子一样:过程是一条条"想了什么 / 调了什么",正文单独成段。 */
 function renderMdBlock(b) {
   if (!b || !b.node || b.mdDone) return;
+  /* 工具卡不是 markdown:收尾时这里会被再调一遍,
+     以前没拦工具块,于是卡片被当成文本节点清空 —— 工具调用就是这么"消失"的。 */
+  if (b.kind === 'tool_use') return;
   b.mdDone = true;
   const t = (b.text || '').trim();
   const m = /^\[第\s*\d+\s*步\s*·\s*思考\]\s*([\s\S]*)$/.exec(t);
