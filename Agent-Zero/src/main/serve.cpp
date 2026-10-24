@@ -36,7 +36,7 @@
 #include "skills.h"
 #include "store.h"
 #include "tools.h"
-#include "thread_store.h"
+#include "session_store.h"
 #include "tray.h"
 #include "ui.h"
 #include "webview.h"
@@ -85,9 +85,12 @@ typedef struct {
   int aborted;
   char session[128];         /* 这一条流属于哪个会话(事件的 sessionId 用它) */
   buf_t answer;              /* 本轮说给用户的最终话(要落进会话转录) */
-  json_t *proc;              /* 本轮的过程(思考/工具),随转录一起落盘 ——
-                                切走再切回来、重开历史对话,过程不能凭空消失 */
+  int turn;                  /* 这一轮在会话 turns[] 里的下标(落盘用);<0 表示没记 */
+  int step_seq;              /* 已经往 steps[] 写过几项(下一次追加的下标) */
+  int step_index;            /* 当前这一步的下标(工具跑完补结果用) */
+  long long step_t0;         /* 当前这一步开始的毫秒时刻(算每步耗时) */
   long long t_start;         /* 这一轮开始的毫秒时刻 —— 耗时由后端算,界面只负责显示 */
+  long long first_byte_ms;   /* 从开始到模型吐出第一个字的毫秒数(感知延迟) */
   long long wait_ms;         /* 其中"等用户点允许/拒绝"的毫秒数,不算模型响应 */
   long long llm_ms;          /* 其中真正花在模型请求上的毫秒数(用于解释"时快时慢") */
 } sse_ctx_t;
@@ -276,13 +279,14 @@ static void hook_thinking(void *ud, const char *text) {
   t_put_text(c, b.data);
   t_close_text(c);            /* 说完就收块,正文另起一块 */
   buf_free(&b);
-  /* 同时记进"本轮过程":转录里也要能重放出来 */
-  if (c->proc) {
+  /* 同步记进会话:重开这条对话时,过程要能原样铺回来 */
+  if (c->turn >= 0) {
     json_t *it = j_obj();
-    j_set_str(it, "kind", "think");
+    j_set_str(it, "type", "think");
     j_set_str(it, "text", text);
-    j_set_num(it, "step", c->step + 1);
-    j_add(c->proc, it);
+    j_set_num(it, "at", (double)(now_ms() - c->t_start));
+    c->step_seq++;
+    sess_turn_add_step(c->session, c->turn, it);
   }
 }
 
@@ -303,16 +307,22 @@ static void hook_action(void *ud, const char *tool, json_t *args, const char *re
 
   char *dump = args ? json_dump(args) : NULL;
   ev_block_delta_json(c, c->index, dump ? dump : "{}");
-  /* 记进本轮过程:工具名 + 参数摘要,转录重放时才能还原这一行 */
-  if (c->proc) {
+  /* 同步记进会话:工具名 + 参数(结构化保留,界面自己决定怎么显示)。
+     工具一决定调用就写一条,哪怕它随后失败/卡住 —— 历史里也要有这一笔。 */
+  c->step_index = -1;
+  if (c->turn >= 0) {
     json_t *it = j_obj();
-    j_set_str(it, "kind", "tool");
+    j_set_str(it, "type", "tool");
     j_set_str(it, "name", tool ? tool : "");
-    j_set_str(it, "id", c->tool_use_id);
-    j_set_str(it, "args", dump ? dump : "{}");
-    j_set_num(it, "step", c->step);
-    j_add(c->proc, it);
+    j_set_str(it, "step_id", c->tool_use_id);
+    j_set(it, "args", args ? j_clone(args) : j_obj());
+    j_set_str(it, "status", "running");
+    j_set_num(it, "at", (double)(now_ms() - c->t_start));
+    /* 下标自己数:回读文件算"我是第几条"既慢又容易算错(踩过一次) */
+    c->step_index = c->step_seq++;
+    sess_turn_add_step(c->session, c->turn, it);
   }
+  c->step_t0 = now_ms();
   if (dump) free(dump);
 
   /* 状态说明可能比动作先到(agent.c 在"决定要做"时就广播了一次状态),
@@ -349,21 +359,32 @@ static void hook_observation(void *ud, const char *tool, tool_result_t *r) {
   sse_ctx_t *c = g_sse;
   if (!c) return;
   const char *txt = (r && r->text) ? r->text : "";
-  ev_tool_status(c, c->tool_use_id, (r && r->is_error) ? "error" : "done", txt);
+  const char *status = (r && r->is_error) ? "error" : "done";
+  ev_tool_status(c, c->tool_use_id, status, txt);
   t_close_tool(c);
-  /* 把结果摘要补进过程条目:重放时工具行后面那句话就是它 */
-  if (c->proc) {
-    for (int i = j_len(c->proc) - 1; i >= 0; i--) {
-      json_t *it = j_at(c->proc, i);
-      if (strcmp(j_s(it, "id", ""), c->tool_use_id) != 0) continue;
-      buf_t line;
-      buf_init(&line);
-      for (const char *p = txt; *p && *p != '\n' && line.len < 160; p++) buf_putc_(&line, *p);
-      j_set_str(it, "note", line.data ? line.data : "");
-      j_set_str(it, "status", (r && r->is_error) ? "error" : "done");
-      buf_free(&line);
-      break;
+  /* 给这一步补上结果:首行进 note(界面显示这一行),
+     完整正文超过阈值就落成产物文件,消息里只留引用(否则会话文件会爆)。 */
+  if (c->turn >= 0 && c->step_index >= 0) {
+    buf_t line;
+    buf_init(&line);
+    for (const char *p = txt; *p && *p != '\n' && line.len < 200; p++) buf_putc_(&line, *p);
+    sess_step_patch(c->session, c->turn, c->step_index, "note", j_str(line.data ? line.data : ""));
+    sess_step_patch(c->session, c->turn, c->step_index, "status", j_str(status));
+    if (c->step_t0) {
+      sess_step_patch(c->session, c->turn, c->step_index, "duration_ms",
+                      j_num((double)(now_ms() - c->step_t0)));
     }
+    if (strlen(txt) > 2000) {
+      char tag[64];
+      snprintf(tag, sizeof(tag), "step-%d", c->step_index);
+      char *rel = sess_artifact_write(c->session, tag, txt, strlen(txt));
+      if (rel) {
+        sess_step_patch(c->session, c->turn, c->step_index, "artifact", j_str(rel));
+        free(rel);
+      }
+    }
+    buf_free(&line);
+    c->step_index = -1;
   }
 }
 
@@ -388,6 +409,7 @@ static void hook_delta(void *ud, const char *text) {
   sse_ctx_t *c = g_sse;
   if (!c || !text || !*text) return;
   if (c->tool_open) t_close_tool(c);
+  if (!c->first_byte_ms && c->t_start) c->first_byte_ms = now_ms() - c->t_start;
   t_put_text(c, text);
 }
 
@@ -1492,7 +1514,7 @@ static void h_health(const http_req_t *req, http_res_t *res) {
   /* app 字段是"这台机器上还有谁"的判据:同机可能装着同源的另一份实现,
      它们的首页里也有 bw-token —— 只认令牌会把别人的服务当成自己的。 */
   buf_printf(&b,
-             "{\"ok\":true,\"app\":\"bwagent-zero\",\"service\":\"网站安全巡检智能体(C 版)\",\"pid\":%lu}",
+             "{\"ok\":true,\"app\":\"bwagent-zero\",\"service\":\"BlueWhiteAgent(C 版)\",\"pid\":%lu}",
              (unsigned long)GetCurrentProcessId());
   http_res_json(res, 200, b.data);
   buf_free(&b);
@@ -1883,17 +1905,19 @@ static void h_chat(const http_req_t *req, http_res_t *res) {
   ctx.t_start = now_ms();
   snprintf(ctx.session, sizeof(ctx.session), "%s", sid[0] ? sid : g_session);
   buf_init(&ctx.answer);
-  ctx.proc = j_arr();          /* 本轮过程:思考与工具,收尾时随转录落盘 */
+  ctx.turn = -1;               /* 还没写进会话:写完才有效 */
+  ctx.step_index = -1;
+  providers_reset_tokens();
   EnterCriticalSection(&g_lock);
   snprintf(ctx.message_id, sizeof(ctx.message_id), "msg-%04d", ++g_turn_seq);
   LeaveCriticalSection(&g_lock);
   ev_message_start(&ctx);
 
-  /* 会话转录:先记"用户说了什么"。这样即使这一轮中途崩掉,
-     历史里也不会只剩半句话 —— 用户回看时能看出是从哪儿断的。
-     结构按主流 Agent 的做法来:消息有稳定 id、序号、父指针,内容是块数组。 */
+  /* 会话记录:先写"用户说了什么" + "这次请求是怎么发的"。
+     一轮就是一个 turn —— 请求与响应成对存,而不是混在一条 message 里。
+     这样即使这一轮中途崩掉,历史里也能看出它是从哪儿断的。 */
   {
-    thread_ensure(sid, NULL);
+    sess_ensure(sid, NULL);
     json_t *blocks = j_arr();
     json_t *b = j_obj();
     j_set_str(b, "type", "text");
@@ -1907,12 +1931,15 @@ static void h_chat(const http_req_t *req, http_res_t *res) {
     } else {
       json_free(att_list);
     }
-    json_t *meta = j_obj();
-    if (target[0]) j_set_str(meta, "target", target);
-    j_set(meta, "client", j_str("web"));
-    json_t *msg = thread_append(sid, "user", blocks, NULL, NULL);
-    json_free(msg);
-    json_free(meta);
+    json_t *request = j_obj();
+    j_set_str(request, "model", providers_active_id());
+    j_set_str(request, "model_name", providers_display_name());
+    j_set_str(request, "approval", approval_active_id());
+    j_set_num(request, "max_steps", MAX_STEPS_DEFAULT);
+    j_set_num(request, "tools", tools_count());
+    if (target[0]) j_set_str(request, "target", target);
+    ctx.turn = sess_begin_turn(sid, blocks, request);
+    ctx.step_index = -1;
   }
   store_set_chat(sid);
 
@@ -1967,7 +1994,6 @@ static void h_chat(const http_req_t *req, http_res_t *res) {
   int runs_before = store_count(g_store, "runs");
   int assets_before = store_count(g_store, "assets");
   int findings_before = store_count(g_store, "findings");
-  int calls_before_chat = net_http_calls();
 
   loop_state_t st;
   memset(&st, 0, sizeof(st));
@@ -2103,47 +2129,33 @@ static void h_chat(const http_req_t *req, http_res_t *res) {
   buf_free(&st.transcript);
   if (st.steps) json_free(st.steps);
 
-  /* 会话转录:再记"智能体说了什么",以及这一轮为什么停 ——
-     点开历史对话时,能原样看到当时的结论,而不是只有一条运行记录。
-     正文是一块 text,停止原因与步数进事件流:两者用途不同,不该混在一条里。 */
+  /* 收尾:把这一轮的结论、停止原因、耗时与用量一次写进会话。 */
   {
-    json_t *blocks = j_arr();
-    /* 过程块放最前:思考与工具是这一轮的"怎么做的",正文是"得出什么"。
-       落盘之后切走再切回来、或者明天再打开这条对话,过程都还在。 */
-    if (ctx.proc && j_len(ctx.proc) > 0) {
-      json_t *pb = j_obj();
-      j_set_str(pb, "type", "process");
-      j_set(pb, "items", ctx.proc);       /* 所有权交给块 */
-      j_add(blocks, pb);
-      ctx.proc = NULL;
-    }
-    json_t *b = j_obj();
-    j_set_str(b, "type", "text");
-    j_set_str(b, "text", ctx.answer.data ? ctx.answer.data : "");
-    j_add(blocks, b);
-
-    json_t *usage = j_obj();
-    j_set_num(usage, "steps", st.step_count);
-    j_set_num(usage, "http_calls", net_http_calls() - calls_before_chat);
-    j_set_str(usage, "stop_reason", reason);
-    /* 耗时一并落盘:换会话/关掉再打开,读数还是同一个 */
-    j_set_num(usage, "duration_ms", ctx.t_start ? now_ms() - ctx.t_start : 0);
-    j_set_num(usage, "wait_ms", ctx.wait_ms);
-
-    json_t *msg = thread_append(sid, "assistant", blocks, usage, NULL);
-    json_free(msg);
-
-    json_t *ev = j_obj();
-    j_set_str(ev, "type", "turn_end");
-    j_set_str(ev, "stop_reason", reason);
-    j_set_num(ev, "steps", st.step_count);
-    j_set_num(ev, "stop_code", st.stop_code);
-    if (target[0]) j_set_str(ev, "target", target);
-    thread_append_event(sid, ev);
+    long long total = ctx.t_start ? now_ms() - ctx.t_start : 0;
+    json_t *resp = j_obj();
+    j_set_str(resp, "text", ctx.answer.data ? ctx.answer.data : "");
+    j_set_str(resp, "stop_reason", stop);
+    j_set_str(resp, "stop_detail", reason);
+    j_set_num(resp, "stop_code", st.stop_code);
+    j_set_num(resp, "steps", st.step_count);
+    j_set_num(resp, "tool_calls", ctx.tool_seq);
+    j_set_num(resp, "llm_ms", (double)ctx.llm_ms);
+    j_set_num(resp, "first_byte_ms", (double)ctx.first_byte_ms);
+    j_set_num(resp, "duration_ms", (double)total);
+    j_set_num(resp, "wait_ms", (double)ctx.wait_ms);
+    json_t *tokens = j_obj();
+    int tp = 0, tc = 0;
+    providers_last_tokens(&tp, &tc);
+    j_set_num(tokens, "prompt", tp);
+    j_set_num(tokens, "completion", tc);
+    j_set(resp, "tokens", tokens);
+    const char *status = st.stop_code == STOP_ERROR ? "error"
+                        : (st.stop_code == STOP_CANCELLED ? "aborted" : "complete");
+    if (ctx.turn >= 0) sess_turn_finish(sid, ctx.turn, resp, status);
+    else json_free(resp);
   }
   store_set_chat("");
   buf_free(&ctx.answer);
-  if (ctx.proc) json_free(ctx.proc);   /* 没进转录(异常/空过程)时别漏 */
   LeaveCriticalSection(&slot->lock);
   refresh_status_cache();
 }
@@ -2238,28 +2250,35 @@ static char *attach_read(const char *sid, const char *id, size_t cap, size_t *ou
    ?run=RUN-0001 时返回"这次运行"的详情与它所属的会话 —— 老记录没有会话,
    也能点进去看当时的统计与发现,而不是掉进一个笼统的历史页。 */
 static void h_chats(const http_req_t *req, http_res_t *res) {
-  /* 归档/取消归档:记在 chats 集合里(id 就是那条运行/会话的编号)。
-     换浏览器、换标签页都还在 —— 归档是用户的决定,不该只活在一个页面里。 */
+  /* 归档/取消归档/固定:记进会话文件(补丁形式,不重写整份)。 */
   if (strcmp(req->method, "POST") == 0) {
     json_t *body = req->body ? json_parse(req->body) : NULL;
     const char *action = body ? j_s(body, "action", "") : "";
     const char *id = body ? j_s(body, "id", "") : "";
-    if (!id[0] || (!str_ieq(action, "archive") && !str_ieq(action, "unarchive"))) {
+    const char *sid = body ? j_s(body, "sid", "") : "";
+    /* 输入状态:草稿 / 附件 / 审批策略 / 模型,关掉页面再回来还是原样 */
+    if (str_ieq(action, "input") && sid[0]) {
+      json_t *input = j_get(body, "input");
+      sess_set_input(sid, input ? j_clone(input) : j_obj());
       if (body) json_free(body);
-      http_res_json(res, 400, "{\"ok\":false,\"error\":\"需要 id 与 action(archive/unarchive)\"}");
+      http_res_json(res, 200, "{\"ok\":true}");
       return;
     }
-    int on = str_ieq(action, "archive") ? 1 : 0;
-    int pinned = (int)j_n(body, "pinned", -1);
-    json_t *cur = thread_get(id);
-    int cur_pinned = cur ? (int)j_b(cur, "pinned", 0) : 0;
-    json_free(cur);
-    thread_set_flags(id, on, pinned >= 0 ? pinned : cur_pinned);
+    if (!id[0] || (!str_ieq(action, "archive") && !str_ieq(action, "unarchive") &&
+                   !str_ieq(action, "pin") && !str_ieq(action, "unpin"))) {
+      if (body) json_free(body);
+      http_res_json(res, 400, "{\"ok\":false,\"error\":\"需要 id 与 action\"}");
+      return;
+    }
+    int archived = str_ieq(action, "archive") ? 1 : (str_ieq(action, "unarchive") ? 0 : -1);
+    int pinned = str_ieq(action, "pin") ? 1 : (str_ieq(action, "unpin") ? 0 : -1);
+    sess_set_flags(id, archived, pinned);
     if (body) json_free(body);
     json_t *root = j_obj();
     j_set_bool(root, "ok", 1);
     j_set_str(root, "id", id);
-    j_set_bool(root, "archived", on);
+    j_set_bool(root, "archived", archived > 0);
+    j_set_bool(root, "pinned", pinned > 0);
     char *text = json_dump(root);
     http_res_json(res, 200, text);
     free(text);
@@ -2270,8 +2289,7 @@ static void h_chats(const http_req_t *req, http_res_t *res) {
   char arch[8];
   http_query(req, "archived", arch, sizeof(arch), "");
   if (arch[0]) {
-    /* 归档状态现在存在会话 meta 里,按 id 拼成 {id: archived} 给界面用 */
-    json_t *all = thread_list();
+    json_t *all = sess_list();
     json_t *items = j_arr();
     for (int i = 0; i < j_len(all); i++) {
       json_t *m = j_at(all, i);
@@ -2309,24 +2327,24 @@ static void h_chats(const http_req_t *req, http_res_t *res) {
     return;
   }
 
+  /* 读一条会话:整个会话对象原样给出去(头 + turns[]),
+     界面按 turns 渲染 —— 请求/响应成对,过程与用量都在里面。 */
   char sid[64];
   http_query(req, "sid", sid, sizeof(sid), "");
   if (sid[0]) {
-    json_t *msgs = thread_messages(sid, 0);
-    json_t *meta = thread_get(sid);
+    json_t *sess = sess_get(sid);
     json_t *root = j_obj();
     j_set_bool(root, "ok", 1);
     j_set_str(root, "id", sid);
-    j_set_str(root, "title", j_s(meta, "title", ""));
-    j_set(root, "messages", msgs);
-    json_free(meta);
+    j_set_str(root, "title", j_s(sess, "title", ""));
+    j_set(root, "session", sess ? sess : j_obj());
     char *text = json_dump(root);
     http_res_json(res, 200, text);
     free(text);
     json_free(root);
     return;
   }
-  json_t *list = thread_list();
+  json_t *list = sess_list();
   json_t *root = j_obj();
   j_set_bool(root, "ok", 1);
   j_set(root, "items", list);
@@ -2461,7 +2479,7 @@ int serve_run(const char *domain, int port, int open_ui) {
   snprintf(g_data_dir, sizeof(g_data_dir), "%s", ddir);
   g_store = store_open(g_data_dir);
   /* 对话存储:<数据目录>\chat\<对话id>.jsonl */
-  thread_store_init(g_data_dir);
+  sess_init(g_data_dir);
   /* 授权池先load:边界必须在任何请求之前就位。
      首次升级时池子是空的 —— 把启动参数里的域名当作第一条授权收进去,
      否则老用户一升级就"什么都不能查",会以为程序坏了。 */
@@ -2501,7 +2519,7 @@ int serve_run(const char *domain, int port, int open_ui) {
   refresh_status_cache();
 
   printf("════════════════════════════════════════════════════════\n");
-  printf("  网站安全巡检智能体(C 版) · 后端服务已启动\n");
+  printf("  BlueWhiteAgent(C 版) · 后端服务已启动\n");
   printf("════════════════════════════════════════════════════════\n");
   printf("  界面地址 : http://127.0.0.1:%d/\n", port);
   printf("  决策模型 : %s\n", providers_display_name());
@@ -2528,7 +2546,7 @@ int serve_run(const char *domain, int port, int open_ui) {
   if (open_ui) {
     /* 先挂托盘,再开窗口 —— 顺序反了的话,窗口一关就找不到"留在托盘"这条路,
        程序会当场退出(托盘还没建好)。 */
-    tray_start(port, "网站安全巡检智能体");
+    tray_start(port, "BlueWhiteAgent");
     /* 界面宿主:优先用本进程自己的 WebView2 窗口(观感与"应用窗口"一致,
        但窗口归我们管);这台机器没装运行时/启动失败时,退回系统 Edge 的
        --app 窗口 —— 宁可外观差一点,也不能让人双击没反应。 */
@@ -2536,7 +2554,7 @@ int serve_run(const char *domain, int port, int open_ui) {
     int force_browser = ui_mode && str_ieq(ui_mode, "browser");
     int ok = 0;
     if (!force_browser) {
-      ok = (webview_start(port, "网站安全巡检智能体") == 0);
+      ok = (webview_start(port, "BlueWhiteAgent") == 0);
       if (!ok) log_warn("WebView2 窗口起不来,退回系统 Edge 的 --app 窗口");
     }
     if (!ok) ui_open_url_async(port);

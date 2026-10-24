@@ -429,6 +429,30 @@ typedef struct {
   int done;          /* 见到 [DONE]:这一轮已经收完,不必再等对端关连接 */
 } sse_parser_t;
 
+/* 最近一次调用的用量:界面要能显示"这轮花了多少 token"。
+   各家字段名不同(OpenAI:prompt/completion,Anthropic:input/output),
+   统一收在这里,调用方只读两个整数。 */
+static int g_last_prompt_tokens = 0;
+static int g_last_completion_tokens = 0;
+
+void providers_reset_tokens(void) { g_last_prompt_tokens = 0; g_last_completion_tokens = 0; }
+void providers_last_tokens(int *prompt, int *completion) {
+  if (prompt) *prompt = g_last_prompt_tokens;
+  if (completion) *completion = g_last_completion_tokens;
+}
+
+static void capture_usage(json_t *o) {
+  json_t *u = j_get(o, "usage");
+  if (!u) u = j_get(o, "metrics");           /* 恒脑那类网关 */
+  if (!u) return;
+  int pi = (int)j_n(u, "prompt_tokens", -1);
+  if (pi < 0) pi = (int)j_n(u, "input_tokens", -1);
+  int co = (int)j_n(u, "completion_tokens", -1);
+  if (co < 0) co = (int)j_n(u, "output_tokens", -1);
+  if (pi >= 0) g_last_prompt_tokens = pi;
+  if (co >= 0) g_last_completion_tokens = co;
+}
+
 static void emit_text(sse_parser_t *p, const char *t) {
   if (!t || !*t) return;
   p->any = 1;
@@ -437,6 +461,7 @@ static void emit_text(sse_parser_t *p, const char *t) {
 
 static void parse_event(sse_parser_t *p, json_t *o) {
   if (!o) return;
+  capture_usage(o);
   if (p->kind == PROVIDER_DAS) {
     json_t *data = j_get(o, "data");
     const char *content = j_s(data, "content", NULL);

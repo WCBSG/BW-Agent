@@ -130,7 +130,7 @@ static void render_md(report_t *r, buf_t *out) {
       buf_puts(out, "\n");
     }
   }
-  buf_puts(out, "---\n\n本报告由网站安全巡检智能体生成。所有请求都限制在授权域名内,"
+  buf_puts(out, "---\n\n本报告由 BlueWhiteAgent 生成。所有请求都限制在授权域名内,"
                 "只用只读方法,全程审计留痕;结论均附原始响应摘录,可回查。\n");
 }
 
@@ -268,7 +268,7 @@ static void render_html(report_t *r, buf_t *out) {
       }
     }
   }
-  buf_puts(out, "<div class=\"foot\">本报告由网站安全巡检智能体生成。所有请求都限制在授权域名内,"
+  buf_puts(out, "<div class=\"foot\">本报告由 BlueWhiteAgent 生成。所有请求都限制在授权域名内,"
                 "只用只读方法(GET / HEAD / OPTIONS),全程审计留痕;结论均附原始响应摘录,可回查。</div>");
   buf_puts(out, "</body></html>");
 }
@@ -465,7 +465,7 @@ static void render_docx(report_t *r, buf_t *out) {
       }
     }
   }
-  docx_para(x, "本报告由网站安全巡检智能体生成。所有请求都限制在授权域名内,只用只读方法,"
+  docx_para(x, "本报告由 BlueWhiteAgent 生成。所有请求都限制在授权域名内,只用只读方法,"
                "全程审计留痕;结论均附原始响应摘录,可回查。", 17, 0, 0);
   x += "<w:sectPr><w:pgSz w:w=\"11906\" w:h=\"16838\"/>"
        "<w:pgMar w:top=\"1134\" w:right=\"1134\" w:bottom=\"1134\" w:left=\"1134\"/></w:sectPr>";

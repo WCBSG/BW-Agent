@@ -267,7 +267,7 @@ static void build_prompt(buf_t *out, agent_t *a, const char *user_text,
                          json_t *observations, const char *scope_note) {
   int used_steps = observations ? j_len(observations) : 0;
   buf_puts(out,
-      "你是「网站安全巡检智能体」的决策内核:自主判断下一步,不跑固定流程。\n\n"
+      "你是「BlueWhiteAgent」的决策内核:自主判断下一步,不跑固定流程。\n\n"
       "## 判断(一步一动作,拿到结果我会再问你一次)\n"
       "1. 先定意图:巡检 / 复测 / 出报告 / 只是提问。\n"
       "2. 观察结果够下结论就直接 final,不为凑步数再跑。\n"

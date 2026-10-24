@@ -21,12 +21,12 @@ BEGIN
   BEGIN
     BLOCK "080404b0"
     BEGIN
-      VALUE "CompanyName",      "网站安全巡检智能体"
-      VALUE "FileDescription",  "网站安全巡检智能体(双击即启动)"
+      VALUE "CompanyName",      "BlueWhiteAgent"
+      VALUE "FileDescription",  "BlueWhiteAgent"
       VALUE "FileVersion",      "1.0.0.0"
-      VALUE "InternalName",     "SecInspectAgent"
-      VALUE "OriginalFilename", "网站安全巡检智能体.exe"
-      VALUE "ProductName",      "网站安全巡检智能体"
+      VALUE "InternalName",     "BlueWhiteAgent"
+      VALUE "OriginalFilename", "BlueWhiteAgent.exe"
+      VALUE "ProductName",      "BlueWhiteAgent"
       VALUE "ProductVersion",   "1.0.0.0"
     END
   END

@@ -78,7 +78,7 @@ int t_agent_info(tool_ctx_t *ctx, json_t *args, tool_result_t *out) {
 
   buf_t t;
   buf_init(&t);
-  buf_puts(&t, "网站安全巡检智能体 · 本机信息\n");
+  buf_puts(&t, "BlueWhiteAgent · 本机信息\n");
   buf_printf(&t, "  数据目录 : %s\n", app_data_dir());
   buf_printf(&t, "  当前模型 : %s(%d 家已配置,%d 家可用)\n",
              providers_display_name(), providers_count(), providers_ready_count());

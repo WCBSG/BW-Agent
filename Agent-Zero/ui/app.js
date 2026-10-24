@@ -13,7 +13,7 @@
 /* 窗口标题带上端口:同一个数据目录只允许一个服务(见 src/instance.cpp),
    但调试时可能用 --multi 开着多个;单实例的第二次启动也靠标题里的端口
    精确定位"哪个窗口连的是哪个后端",不至于把别的实例的窗口拎到前台。 */
-document.title = '网站安全巡检智能体 · ' + location.port;
+document.title = 'BlueWhiteAgent · ' + location.port;
 
 const $ = (id) => document.getElementById(id);
 const stream = $('stream');
@@ -1810,7 +1810,7 @@ async function renderRecent() {
   box.innerHTML = '';
   const meta = $('recent-meta');
   if (meta) {
-    const total = items.reduce((a, c) => a + (Number(c.message_count) || 0), 0);
+    const total = items.reduce((a, c) => a + (Number(c.turn_count ?? c.message_count) || 0), 0);
     meta.textContent = items.length ? `${items.length} 个对话 · ${total} 条消息` : '还没有记录';
   }
   if (!items.length) {
@@ -1822,7 +1822,7 @@ async function renderRecent() {
     card.type = 'button';
     const top = el('span', 'rtop');
     top.appendChild(el('span', 'tg', c.id || '—'));
-    top.appendChild(el('span', 'rst', `${Number(c.message_count) || 0} 条`));
+    top.appendChild(el('span', 'rst', `${Number(c.turn_count ?? c.message_count) || 0} 轮`));
     card.appendChild(top);
     card.appendChild(el('span', 'nm', c.title || '未命名对话'));
     card.appendChild(el('span', 'rmeta', (c.updated_at || '').slice(0, 10) === new Date().toISOString().slice(0, 10)
@@ -1906,7 +1906,7 @@ function chatRow(m) {
 
   const r2 = el('span', 'r2');
   r2.appendChild(el('span', 'sub',
-    `${m.message_count || 0} 条 · ${fmtTime(m.updated_at || m.created_at)}`));
+    `${m.turn_count ?? m.message_count ?? 0} 轮 · ${fmtTime(m.updated_at || m.created_at)}`));
   row.appendChild(r2);
 
   /* 归档/取回:悬停才出现，不抢注意力 */
@@ -2125,6 +2125,68 @@ async function openRun(runId) {
 
 /* 打开某一次历史对话:把后端落下来的转录原样铺回中间，
    并且把当前会话切到它 —— 接着往下说，就是在这条对话上继续。 */
+/* 一轮对话在界面上长这样:
+   用户气泡 → 过程卡(思考/工具时间线) → 结论 → 收尾行(停止原因/步数/耗时/用量)。
+   数据来自会话里的 turn:请求与响应成对,不是"两条独立消息"。 */
+function renderTurn(t) {
+  const user = t.user || {};
+  const blocks = Array.isArray(user.blocks) ? user.blocks : [];
+  const utext = blocks.filter((b) => b.type === 'text').map((b) => b.text || '').join('\n');
+  const atts = [];
+  for (const b of blocks) if (b.type === 'attachment') atts.push(...(b.items || []));
+
+  const uwrap = el('div', 'msg user');
+  const ub = el('div', 'body');
+  ub.appendChild(el('div', null, utext || '（只说附件）'));
+  for (const a of atts) {
+    const chip = el('span', 'attach-chip');
+    chip.appendChild(el('span', 'nm', a.id || a.name || '附件'));
+    chip.appendChild(el('b', null, a.kind === 'image' ? '图片' : '文本'));
+    ub.appendChild(chip);
+  }
+  uwrap.appendChild(ub);
+  stream.appendChild(uwrap);
+
+  const wrap = el('div', 'msg agent');
+  const req = t.request || {};
+  const modelName = req.model_name || req.model || '';
+  wrap.appendChild(el('div', 'who', '智能体' + (modelName ? ' · ' + modelName : '')));
+  const body = el('div', 'body');
+
+  const steps = Array.isArray(t.steps) ? t.steps : [];
+  if (steps.length) body.appendChild(procCard(steps.map((s) => ({
+    kind: s.type === 'tool' ? 'tool' : 'think',
+    text: s.text,
+    name: s.name,
+    args: s.args && typeof s.args === 'object' ? JSON.stringify(s.args) : (s.args || ''),
+    note: s.note,
+    status: s.status,
+  }))));
+
+  const resp = t.response || {};
+  const mdBody = el('div', 'md');
+  mdBody.innerHTML = mdToHtml(resp.text || (t.status === 'running' ? '（这一轮还在跑）' : '(这一轮没有给出结论)'));
+  body.appendChild(mdBody);
+
+  if (t.status !== 'running' && (resp.stop_detail || resp.stop_reason)) {
+    const detail = resp.stop_detail || resp.stop_reason;
+    const dur = Number(resp.duration_ms) || 0;
+    const waited = Number(resp.wait_ms) || 0;
+    const secs = dur > 0 ? ((Math.max(0, dur - waited)) / 1000).toFixed(1) + 's' : '';
+    const tk = resp.tokens || {};
+    let extra = '';
+    if (Number(resp.tool_calls) > 0) extra += ` · 调用工具 ${resp.tool_calls} 次`;
+    if (Number(tk.prompt) || Number(tk.completion)) {
+      extra += ` · ${tk.prompt || 0} → ${tk.completion || 0} tokens`;
+    }
+    body.appendChild(el('div', 'stopline',
+      '停止原因 ' + detail + (resp.steps ? ' · ' + resp.steps + ' 步' : '') +
+      (secs ? ' · 耗时 ' + secs : '') + extra));
+  }
+  wrap.appendChild(body);
+  stream.appendChild(wrap);
+}
+
 async function openChat(sid) {
   if (!sid) { switchView('history'); loadView('history'); return; }
   closeSheet();
@@ -2139,72 +2201,26 @@ async function openChat(sid) {
     resetStream('这条对话打不开', String((e && e.message) || e));
     return;
   }
-  const msgs = r.messages || [];
-  if (!msgs.length) {
-    resetStream('这条对话没有留下转录', '可能这一轮当时还没跑完，或者是旧版本产生的运行记录。');
+  const sess = r.session || {};
+  const turns = Array.isArray(sess.turns) ? sess.turns : [];
+  if (!turns.length) {
+    resetStream('这条对话还没有内容', '说第一句话，过程和结论就会出现在这里。');
     attachLive(sid);
     syncComposer();
     return;
   }
   stream.innerHTML = '';
-  let title = '';
-  for (const m of msgs) {
-    /* 新结构:正文在 blocks[] 里(text / attachment),停止原因在 usage 里。
-       老数据只有 m.text,这里一并兼容 —— 迁移前后的会话都能打开。 */
-    const blocks = Array.isArray(m.blocks) ? m.blocks : null;
-    const textOf = (x) => {
-      if (!blocks) return x.text || '';
-      return blocks.filter((b) => b.type === 'text').map((b) => b.text || '').join('\n');
-    };
-    const attsOf = (x) => {
-      if (!blocks) return x.attachments || [];
-      const out = [];
-      for (const b of blocks) if (b.type === 'attachment') out.push(...(b.items || []));
-      return out;
-    };
-    const usage = m.usage || {};
-    const stop = m.stop || usage.stop_reason || '';
-    const steps = m.steps || usage.steps || 0;
-    /* 耗时也存在转录里:重开这条对话,读数和当时看到的是同一个 */
-    const dur = Number(usage.duration_ms) || 0;
-    const waited = Number(usage.wait_ms) || 0;
-    const secs = dur > 0 ? ((Math.max(0, dur - waited)) / 1000).toFixed(1) + 's' : '';
-
-    if (m.role === 'user') {
-      const utext = textOf(m);
-      if (!title && utext) title = utext;
-      const wrap = el('div', 'msg user');
-      const ub = el('div', 'body');
-      ub.appendChild(el('div', null, utext || '（只说附件）'));
-      for (const a of attsOf(m)) {
-        const chip = el('span', 'attach-chip');
-        chip.appendChild(el('span', 'nm', a.id || a.name || '附件'));
-        chip.appendChild(el('b', null, a.kind === 'image' ? '图片' : '文本'));
-        ub.appendChild(chip);
-      }
-      wrap.appendChild(ub);
-      stream.appendChild(wrap);
-    } else if (m.role === 'assistant') {
-      const wrap = el('div', 'msg agent');
-      wrap.appendChild(el('div', 'who', '智能体 · ' + (usage.target || m.target || '')));
-      const body = el('div', 'body');
-      /* 过程块(思考 + 工具)先铺回来:这一段以前只活在直播里,切走就没了 */
-      const proc = blocks ? blocks.find((b) => b && b.type === 'process') : null;
-      if (proc && Array.isArray(proc.items) && proc.items.length) {
-        body.appendChild(procCard(proc.items));
-      }
-      const mdBody = el('div', 'md');
-      mdBody.innerHTML = mdToHtml(textOf(m) || '(这一轮没有给出结论)');
-      body.appendChild(mdBody);
-      if (stop) {
-        body.appendChild(el('div', 'stopline',
-          '停止原因 ' + stop + (steps ? ' · ' + steps + ' 步' : '') + (secs ? ' · 耗时 ' + secs : '')));
-      }
-      wrap.appendChild(body);
-      stream.appendChild(wrap);
-    }
+  for (const t of turns) renderTurn(t);
+  if ($('task-title')) $('task-title').textContent = (sess.title || '巡检会话').slice(0, 30);
+  /* 草稿与审批策略跟着会话走:上次没发出去的话,回来还在 */
+  const input = sess.input || {};
+  if ($('q') && typeof input.draft === 'string') {
+    $('q').value = input.draft;
+    $('q').style.height = 'auto';
   }
-  if ($('task-title')) $('task-title').textContent = (title || '巡检会话').slice(0, 30);
+  if (input.approval && APPR.items.some((x) => x.id === input.approval) && input.approval !== APPR.active) {
+    applyApproval(input.approval).catch(() => {});
+  }
   attachLive(sid);            /* 这一轮还没结束就把它接上,别让"正在执行"看丢 */
   syncComposer();             /* 输入框按这条对话自己的状态来 */
   flushQueued(sid);           /* 这条对话下如果有排队没发的,接着发 */
@@ -2783,9 +2799,28 @@ async function applyApproval(id) {
     APPR.active = r.active;
     await renderApprovals();
     renderStatus(await api('/api/status'));
+    saveInputState(true);
   } catch (e) {
     console.warn(e.message);
   }
+}
+
+/* 输入状态(草稿/附件/审批策略/模型)跟着会话存:关掉窗口再回来还是原样。
+   写盘要防抖 —— 每敲一个字就发一次请求是自找麻烦。 */
+let inputSaveTimer = 0;
+function saveInputState(now) {
+  if (!BW_SID) return;
+  const push = () => {
+    const draft = ($('q') && $('q').value) || '';
+    const approval = (APPR && APPR.active) || '';
+    api('/api/chats', {
+      method: 'POST',
+      body: JSON.stringify({ action: 'input', sid: BW_SID, input: { draft, approval, model: '', attachments: [] } })
+    }).catch(() => {});
+  };
+  clearTimeout(inputSaveTimer);
+  if (now) push();
+  else inputSaveTimer = setTimeout(push, 600);
 }
 
 /* 顶栏切换:选到"全部允许"要先过一次警告 */
@@ -4639,6 +4674,9 @@ if (stopBtn) {
 }
 
 const ta = $('q');
+
+/* 草稿跟着会话存(防抖写盘);切回一条对话时由 openChat 填回 */
+if (ta) ta.addEventListener('input', () => saveInputState(false));
 
 /* ---------- / 命令补全 ----------
    主流 agent 产品的做法:输入 / 就列出能直接跑的能力,选中即补全。

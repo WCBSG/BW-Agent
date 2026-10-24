@@ -279,7 +279,7 @@ int app_main(int argc, char **argv) {
   /* 调试版才有:自检、正则验枪口、网络基准。发布版不带这些 —— 
      它们对使用者没有用处,却要把 selftest.cpp 整个编进来。 */
   if (str_ieq(cmd, "selftest")) {
-    printf("网站安全巡检智能体(C 版)· 自检\n");
+    printf("BlueWhiteAgent(C 版)· 自检\n");
     printf("程序目录: %s\n", app_dir());
     int rc = selftest_run();
     net_shutdown();
@@ -693,11 +693,11 @@ int app_main(int argc, char **argv) {
     /* 双击 exe 走的就是这里(零参数)。
        目标用户"什么都不懂":不要让他看命令行参数 —— 直接在控制台说清三件事,
        然后把服务起起来、把界面打开;端口被占用就自动换一个。 */
-    SetConsoleTitleW(L"网站安全巡检智能体 —— 关掉本窗口即停止");
+    SetConsoleTitleW(L"BlueWhiteAgent —— 关掉本窗口即停止");
 
     printf("\n");
     printf("  ╔══════════════════════════════════════════════════════════╗\n");
-    printf("  ║            网站安全巡检智能体(C 版)                      ║\n");
+    printf("  ║  BlueWhiteAgent · 网站安全巡检智能体                     ║\n");
     printf("  ╚══════════════════════════════════════════════════════════╝\n");
     printf("\n");
     printf("  正在启动,界面窗口会自动打开 ……\n");

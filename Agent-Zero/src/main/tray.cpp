@@ -34,7 +34,7 @@ static void reopen_ui(void) {
      托盘菜单里点了「打开界面」,就必须给出一个能用的窗口。 */
   if (webview_active()) { webview_show(); return; }
   if (g_port > 0) {
-    if (webview_start(g_port, "网站安全巡检智能体") == 0) { webview_show(); return; }
+    if (webview_start(g_port, "BlueWhiteAgent") == 0) { webview_show(); return; }
     ui_open_url_async(g_port);
   }
 }
@@ -105,7 +105,7 @@ static void add_icon(void) {
   if (!g_icon) g_icon = LoadIconW(NULL, MAKEINTRESOURCEW(32512));   /* IDI_APPLICATION */
   nid.hIcon = g_icon;
   /* szTip 是宽字符数组:中文提示直接写宽字面量,别走窄字符串 */
-  wcsncpy_s(nid.szTip, 128, L"网站安全巡检智能体", _TRUNCATE);
+  wcsncpy_s(nid.szTip, 128, L"BlueWhiteAgent", _TRUNCATE);
   Shell_NotifyIconW(NIM_ADD, &nid);
 }
 

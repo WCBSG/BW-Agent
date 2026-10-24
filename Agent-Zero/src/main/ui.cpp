@@ -297,10 +297,10 @@ static BOOL CALLBACK find_ours_proc(HWND h, LPARAM lp) {
   wchar_t title[256];
   if (GetWindowTextW(h, title, 256) <= 0) return TRUE;
   /* 只认"整个标题就是产品名"的窗口,不做前缀匹配 ——
-     VS Code 打开本项目时标题是「网站安全巡检智能体 (127.0.0.1:18845) - 网络安全作品赛」,
+     VS Code 打开本项目时标题是「BlueWhiteAgent (127.0.0.1:18845) - 网络安全作品赛」,
      前缀匹配会把编辑器当成界面窗口拎到前台(踩过这个坑)。
      带端口的新标题由 find_app_window 精确匹配,这里只管老页面。 */
-  if (wcscmp(title, L"网站安全巡检智能体") != 0 &&
+  if (wcscmp(title, L"BlueWhiteAgent") != 0 &&
       wcscmp(title, L"网站安全巡检") != 0) {
     return TRUE;
   }
@@ -314,19 +314,19 @@ static HWND find_app_window(int port) {
   h = FindWindowW(L"BwAgentNativeWnd", NULL);          /* 老版本(原生窗口)还在跑时也认 */
   if (h) return h;
 
-  /* 页面加载后 app.js 会把标题改成「网站安全巡检智能体 · <端口>」。
+  /* 页面加载后 app.js 会把标题改成「BlueWhiteAgent · <端口>」。
      先按端口精确找:多实例时各自的窗口标题不同,不会拎错。
      注意必须看 IsWindowVisible:Edge 关掉窗口后进程可能还在,
      同名的隐藏窗口会让"该新开一个"被误判成"已经唤到前台"。 */
   wchar_t want[128];
-  swprintf(want, 128, L"网站安全巡检智能体 · %d", port);
+  swprintf(want, 128, L"BlueWhiteAgent · %d", port);
   h = FindWindowW(L"Chrome_WidgetWin_1", want);      /* Edge/Chrome 的顶层类 */
   if (h && IsWindowVisible(h)) return h;
   h = FindWindowW(NULL, want);
   if (h && IsWindowVisible(h)) return h;
 
   /* 老版本页面(标题里没有端口)只能按名字认 —— 至少比"重新开一个"强 */
-  h = FindWindowW(NULL, L"网站安全巡检智能体");
+  h = FindWindowW(NULL, L"BlueWhiteAgent");
   if (h && IsWindowVisible(h)) return h;
   h = FindWindowW(NULL, L"网站安全巡检");
   if (h && IsWindowVisible(h)) return h;

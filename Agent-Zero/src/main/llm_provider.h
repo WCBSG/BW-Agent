@@ -61,6 +61,10 @@ int  providers_ready_count(void);
 /* 当前实际会用的那一家(界面顶栏、命令行横幅都显示它);
    一家可用的都没有时返回"还没接模型"。 */
 const char *providers_display_name(void);
+
+/* 最近一次调用的用量(取不到就是 0) */
+void providers_last_tokens(int *prompt, int *completion);
+void providers_reset_tokens(void);
 const char *provider_kind_name(int kind);
 int  provider_kind_from_name(const char *name);
 const char *providers_path(void);
