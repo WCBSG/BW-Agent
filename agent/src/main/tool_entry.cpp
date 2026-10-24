@@ -25,6 +25,9 @@ typedef struct {
   char *url;
   char protocol[16];  /* argv / json-stdio / json */
   int timeout_ms;
+  /* 参数要不要加引号。默认加(防注入);把参数直接拼成查询串的程序
+     (Everything 的 es.exe)要写 "quote": false,否则引号会进查询、搜不到东西。 */
+  int quote;
 } entry_t;
 
 static std::vector<entry_t *> g_entries;
@@ -205,6 +208,8 @@ int tool_entry_parse(json_t *spec, const char *origin) {
   e->timeout_ms = timeout_ms;
   if (e->timeout_ms < 1000) e->timeout_ms = 1000;
   if (e->timeout_ms > 600000) e->timeout_ms = 600000;
+  /* 默认加引号;声明里显式写 "quote": false 才按裸值拼 */
+  e->quote = (en && en->type == J_OBJ && j_b(en, "quote", 1) == 0) ? 0 : 1;
 
   if (!proto || !*proto) proto = j_s(spec, "protocol", "");
   if (!proto[0]) proto = str_ieq(e->type, "http") ? "json" : "json-stdio";
@@ -226,7 +231,11 @@ int tool_entry_parse(json_t *spec, const char *origin) {
 /* ================= 参数展开:$name / ${name} =================
    与外部命令工具同一套规则:字符串参数加引号并按 cmd 规则转义,
    避免使用者填进来的值拼出第二条命令。 */
-static void expand_argv(buf_t *out, const char *tmpl, json_t *args) {
+/* 参数展开。quote=1(默认)时加引号并转义 cmd 元字符 —— 参数是外部输入,
+   拼进命令行就是注入面。quote=0 时按裸值拼,但仍剔除元字符:
+   Everything 的 es.exe 会把参数直接拼成查询串,引号会变成查询的一部分导致搜不到;
+   而剔除元字符保住了"拼不出第二条命令"这条底线。 */
+static void expand_argv(buf_t *out, const char *tmpl, json_t *args, int quote) {
   for (const char *p = tmpl; *p; p++) {
     if (*p != '$') {
       buf_putc_(out, *p);
@@ -270,15 +279,25 @@ static void expand_argv(buf_t *out, const char *tmpl, json_t *args) {
       continue;
     }
     if (v && v->type == J_STR) {
-      buf_putc_(out, '"');
-      for (const char *s = v->str; *s; s++) {
-        if (*s == '"' || *s == '\\' || *s == '&' || *s == '|' || *s == '<' ||
-            *s == '>' || *s == '^' || *s == '%') {
-          buf_putc_(out, '\\');
+      if (quote) {
+        buf_putc_(out, '"');
+        for (const char *s = v->str; *s; s++) {
+          if (*s == '"' || *s == '\\' || *s == '&' || *s == '|' || *s == '<' ||
+              *s == '>' || *s == '^' || *s == '%') {
+            buf_putc_(out, '\\');
+          }
+          buf_putc_(out, *s);
         }
-        buf_putc_(out, *s);
+        buf_putc_(out, '"');
+      } else {
+        for (const char *s = v->str; *s; s++) {
+          if (*s == '"' || *s == '&' || *s == '|' || *s == '<' || *s == '>' ||
+              *s == '^' || *s == '%' || *s == '\r' || *s == '\n') {
+            continue;
+          }
+          buf_putc_(out, *s);
+        }
       }
-      buf_putc_(out, '"');
     } else if (v && (v->type == J_NUM || v->type == J_BOOL)) {
       char tmp[64];
       if (v->type == J_NUM) snprintf(tmp, sizeof(tmp), "%.0f", v->num);
@@ -322,7 +341,7 @@ static char *build_cmdline(const entry_t *e, json_t *args) {
   for (int i = 0; arr && i < j_len(arr); i++) {
     json_t *v = j_at(arr, i);
     buf_putc_(&b, ' ');
-    if (v && v->type == J_STR) expand_argv(&b, v->str, args);
+    if (v && v->type == J_STR) expand_argv(&b, v->str, args, e->quote);
   }
   json_free(arr);
   return buf_take(&b);

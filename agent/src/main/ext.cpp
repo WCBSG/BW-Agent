@@ -22,6 +22,10 @@ typedef struct {
   int timeout_ms;
   int allow;
   int readonly;          /* 声明里的 readonly:审批「允许只读」据此放行 */
+  /* 参数要不要加引号。默认加(防注入);有些程序把命令行参数直接拼成查询串,
+     加了引号反而搜不到东西(Everything 的 es.exe 就是这样)——
+     这种工具在 entry 里写 "quote": false。 */
+  int quote;
   char *source_file;
 } ext_tool_t;
 
@@ -229,7 +233,11 @@ int ext_run_capture(const char *cmdline, const char *workdir, int timeout_ms,
 }
 
 /* ---------- 参数替换:$name / ${name} ---------- */
-static void expand_cmd(buf_t *out, const char *tmpl, json_t *args) {
+/* 参数展开。quote=1(默认)时给值加引号并转义 cmd 元字符 —— 参数是外部输入,
+   拼进命令行就是注入面。quote=0 时按"裸值"拼,但仍把 cmd 元字符剔掉:
+   有些程序(es.exe)会把参数直接拼成查询串,引号会变成查询的一部分导致搜不到,
+   而剔除元字符保住了"拼不出第二条命令"这条底线。 */
+static void expand_cmd(buf_t *out, const char *tmpl, json_t *args, int quote) {
   for (const char *p = tmpl; *p; p++) {
     if (*p != '$') { buf_putc_(out, *p); continue; }
     int braced = (p[1] == '{');
@@ -244,16 +252,26 @@ static void expand_cmd(buf_t *out, const char *tmpl, json_t *args) {
     key[n] = 0;
     json_t *v = args ? j_get(args, key) : NULL;
     if (v && v->type == J_STR) {
-      /* 参数是外部输入:加引号并按 cmd 规则转义,避免拼出第二条命令 */
-      buf_putc_(out, '"');
-      for (const char *s = v->str; *s; s++) {
-        if (*s == '"' || *s == '\\' || *s == '&' || *s == '|' || *s == '<' ||
-            *s == '>' || *s == '^' || *s == '%') {
-          buf_putc_(out, '\\');
+      if (quote) {
+        /* 参数是外部输入:加引号并按 cmd 规则转义,避免拼出第二条命令 */
+        buf_putc_(out, '"');
+        for (const char *s = v->str; *s; s++) {
+          if (*s == '"' || *s == '\\' || *s == '&' || *s == '|' || *s == '<' ||
+              *s == '>' || *s == '^' || *s == '%') {
+            buf_putc_(out, '\\');
+          }
+          buf_putc_(out, *s);
         }
-        buf_putc_(out, *s);
+        buf_putc_(out, '"');
+      } else {
+        for (const char *s = v->str; *s; s++) {
+          if (*s == '"' || *s == '&' || *s == '|' || *s == '<' || *s == '>' ||
+              *s == '^' || *s == '%' || *s == '\r' || *s == '\n') {
+            continue;      /* 元字符直接剔掉:既进不了命令解析,也不会破坏查询 */
+          }
+          buf_putc_(out, *s);
+        }
       }
-      buf_putc_(out, '"');
     } else if (v && (v->type == J_NUM || v->type == J_BOOL)) {
       char tmp[64];
       if (v->type == J_NUM) snprintf(tmp, sizeof(tmp), "%.0f", v->num);
@@ -800,7 +818,7 @@ static int ext_tool_run(tool_ctx_t *ctx, const char *ext_name, json_t *args,
   }
   buf_t cmd;
   buf_init(&cmd);
-  expand_cmd(&cmd, t->command, args);
+  expand_cmd(&cmd, t->command, args, t->quote);
   char *text = NULL;
   int code = -1;
   int rc = run_capture(cmd.data, t->workdir[0] ? t->workdir : NULL, t->timeout_ms, &text, &code);
@@ -1061,144 +1079,6 @@ static int safe_stem(const char *name, char *out, size_t cap, char *err, size_t 
     return -1;
   }
   return 0;
-}
-
-int ext_save_skill(const char *name, const char *title, const char *purpose,
-                   const char *when, const char *tools, const char *body,
-                   const char *command, int allow, int timeout_ms,
-                   char *err, size_t errcap) {
-  char stem[MAX_PATH];
-  if (safe_stem(name, stem, sizeof(stem), err, errcap) != 0) return -1;
-  if (!str_startswith(stem, "skill_")) {
-    if (err) snprintf(err, errcap, "技能名要以 skill_ 开头(决策时按名字调用)");
-    return -1;
-  }
-  char dir[MAX_PATH * 2], path[MAX_PATH * 4];
-  ext_dir(dir, sizeof(dir), "skills");
-  ensure_dir(dir);
-  char sub[MAX_PATH * 2];
-  snprintf(sub, sizeof(sub), "%s\\%s", dir, stem);
-  ensure_dir(sub);
-  snprintf(path, sizeof(path), "%s\\SKILL.md", sub);
-
-  buf_t b;
-  buf_init(&b);
-  buf_puts(&b, "\xEF\xBB\xBF");           /* BOM:记事本能认出 UTF-8 */
-  buf_puts(&b, "---\r\n");
-  buf_printf(&b, "name: %s\r\n", stem);
-  buf_printf(&b, "title: %s\r\n", title && *title ? title : stem);
-  buf_printf(&b, "purpose: %s\r\n", purpose ? purpose : "");
-  buf_printf(&b, "when: %s\r\n", when ? when : "");
-  buf_printf(&b, "tools: %s\r\n", tools ? tools : "");
-  if (command && *command) {
-    buf_printf(&b, "command: %s\r\n", command);
-    buf_printf(&b, "timeout_ms: %d\r\n", timeout_ms > 0 ? timeout_ms : 20000);
-    buf_printf(&b, "allow: %s\r\n", allow ? "true" : "false");
-  }
-  buf_puts(&b, "---\r\n\r\n");
-  if (body && *body) buf_puts(&b, body);
-  else buf_printf(&b, "【%s】%s\r\n\r\n什么时候用:%s\r\n",
-                  title && *title ? title : stem, purpose ? purpose : "",
-                  when ? when : "");
-  int rc = file_write_all(path, b.data, b.len);
-  buf_free(&b);
-  if (rc != 0) {
-    if (err) snprintf(err, errcap, "写入失败:%s", path);
-    return -1;
-  }
-  return 0;
-}
-
-int ext_save_tool(const char *name, const char *description, const char *command,
-                  const char *schema, const char *kind, int allow, int timeout_ms,
-                  char *err, size_t errcap) {
-  char stem[MAX_PATH];
-  if (safe_stem(name, stem, sizeof(stem), err, errcap) != 0) return -1;
-  if (!command || !*command) {
-    if (err) snprintf(err, errcap, "外部工具必须有一条要执行的命令");
-    return -1;
-  }
-  char dir[MAX_PATH * 2], path[MAX_PATH * 4];
-  ext_dir(dir, sizeof(dir), "tools");
-  ensure_dir(dir);
-  snprintf(path, sizeof(path), "%s\\%s.json", dir, stem);
-
-  json_t *o = j_obj();
-  j_set_str(o, "name", stem);
-  j_set_str(o, "description", description ? description : "外部工具(界面创建)");
-  j_set_str(o, "command", command);
-  j_set_str(o, "kind", kind && *kind ? kind : "外部工具");
-  j_set_num(o, "timeout_ms", timeout_ms > 0 ? timeout_ms : 20000);
-  j_set_bool(o, "allow", allow ? 1 : 0);
-  if (schema && *schema) {
-    json_t *sc = json_parse(schema);
-    if (sc) j_set(o, "schema", sc);
-    else {
-      json_free(o);
-      if (err) snprintf(err, errcap, "参数定义(JSON Schema)不是合法 JSON");
-      return -1;
-    }
-  } else {
-    j_set(o, "schema", j_obj());
-  }
-  char *text = json_dump_pretty(o);
-  int rc = text ? file_write_all(path, text, strlen(text)) : -1;
-  free(text);
-  json_free(o);
-  if (rc != 0) {
-    if (err) snprintf(err, errcap, "写入失败:%s", path);
-    return -1;
-  }
-  return 0;
-}
-
-static int delete_file_quiet(const char *path) {
-  if (!path || !*path) return -1;
-  if (file_size(path) < 0) return -1;
-  wchar_t *w = u8_to_w(path);
-  if (!w) return -1;
-  BOOL ok = DeleteFileW(w);
-  free(w);
-  return ok ? 0 : -1;
-}
-
-int ext_delete_skill(const char *name, char *err, size_t errcap) {
-  if (!name || !*name) {
-    if (err) snprintf(err, errcap, "缺少名称");
-    return -1;
-  }
-  /* 先按已载入的找(拿到真实路径),再按名字兜底拼一个 */
-  for (int i = 0; i < g_eskill_count; i++) {
-    if (str_ieq(g_eskills[i].name, name)) {
-      if (delete_file_quiet(g_eskills[i].source_file) == 0) return 0;
-      break;
-    }
-  }
-  char dir[MAX_PATH * 2], path[MAX_PATH * 4];
-  ext_dir(dir, sizeof(dir), "skills");
-  snprintf(path, sizeof(path), "%s\\%s\\SKILL.md", dir, name);
-  if (delete_file_quiet(path) == 0) return 0;
-  if (err) snprintf(err, errcap, "没找到这个技能的文件(内置技能本来就没有文件可删)");
-  return -1;
-}
-
-int ext_delete_tool(const char *name, char *err, size_t errcap) {
-  if (!name || !*name) {
-    if (err) snprintf(err, errcap, "缺少名称");
-    return -1;
-  }
-  for (int i = 0; i < g_etool_count; i++) {
-    if (str_ieq(g_etools[i].name, name)) {
-      if (delete_file_quiet(g_etools[i].source_file) == 0) return 0;
-      break;
-    }
-  }
-  char dir[MAX_PATH * 2], path[MAX_PATH * 4];
-  ext_dir(dir, sizeof(dir), "tools");
-  snprintf(path, sizeof(path), "%s\\%s.json", dir, name);
-  if (delete_file_quiet(path) == 0) return 0;
-  if (err) snprintf(err, errcap, "没找到这个工具的文件(内置工具不可删除)");
-  return -1;
 }
 
 /* 重新加载:先清场,再按磁盘重新登记。

@@ -3400,11 +3400,12 @@ if (rulesSaveBtn) rulesSaveBtn.addEventListener('click', rulesSave);
 const rulesReloadBtn = $('rules-reload');
 if (rulesReloadBtn) rulesReloadBtn.addEventListener('click', () => renderRulesView(true).catch(() => {}));
 
-/* ============ 技能 / 工具：图形化管理 ============
-   加一个能力不该要求会写 front-matter、会拼 JSON。这里把同一份落盘文件用表单生成，
-   并提供"用大模型起草"和"从市场导入"两条更省事的路。 */
+/* ============ 技能 / 工具：清单 + 直接改文件 ============
+   加一个能力就是往数据目录里放一个文件,所以这里不提供"图形化表单":
+   表单只能表达一部分字段,填出来的东西和手写的不一致,最后两份格式谁也说不清。
+   清单负责"有哪些、干什么用",编辑交给文件编辑器 —— 改的就是程序真正读的那份。 */
 
-const CAP = { kind: 'skill', data: null, editing: null };
+const CAP = { kind: 'skill', data: null };
 
 function capApi(body) {
   return api('/api/caps', { method: 'POST', body: JSON.stringify(body) });
@@ -3413,7 +3414,7 @@ function capApi(body) {
 async function capsOpen(kind) {
   const changed = CAP.kind !== kind;
   CAP.kind = kind;
-  if (changed) { CAP.data = null; CAP.editing = null; }
+  if (changed) CAP.data = null;
   if (!CAP.data) {
     try { CAP.data = await api('/api/caps'); }
     catch (e) { CAP.data = { skills: [], tools: [] }; }
@@ -3426,9 +3427,9 @@ async function capsOpen(kind) {
       ? `共 ${st.skills || 0} 个（技能包 ${st.extSkills || 0}）`
       : `共 ${st.tools || 0} 个（外部 ${st.extTools || 0} · MCP ${st.mcpTools || 0}）`;
   }
+  state.__capFileList = null;      /* 清单可能刚变过,文件列表重新取 */
   capsShowList();
   capsRenderList();
-  capsRenderForm(CAP.editing);
   refreshHBars();
 }
 
@@ -3734,12 +3735,6 @@ function capsRenderList() {
     edit.type = 'button';
     edit.addEventListener('click', () => capsEditExisting(x));
     act.appendChild(edit);
-    if (x.source === '外部' || x.source === '技能包' || x.customized) {
-      const del = el('button', null, '删除');
-      del.type = 'button';
-      del.addEventListener('click', () => capsDelete(x));
-      act.appendChild(del);
-    }
     row.appendChild(act);
     box.appendChild(row);
   }
@@ -3770,24 +3765,16 @@ async function capFileOf(x) {
 async function capsEditExisting(x) {
   const file = await capFileOf(x);
   if (file) { showCapFile(file); return; }
-  /* 找不到文件(比如内置技能还没导出)时退回表单,至少能改说明文字 */
-  if (CAP.kind === 'skill') {
-    CAP.editing = {
-      name: x.name || '', title: x.title || '', purpose: x.purpose || '',
-      when: x.when || '', tools: x.tools || '', body: x.body || '',
-      command: x.command || '', allow: !!x.allow, timeout_ms: 20000
-    };
-  } else {
-    CAP.editing = {
-      name: x.name || '', description: x.extDescription || x.description || '',
-      command: x.command || '', schema: x.schema || '', kind: x.kind || '',
-      allow: x.allow !== undefined ? !!x.allow : true,
-      timeout_ms: x.timeout_ms || 20000
-    };
+  /* 内置能力的实现是 C++ 里的,没有可编辑的说明文件就会走到这里 —— 
+     如实说清,不要退回去用一个改不了行为的表单糊弄过去。 */
+  const box = $('cap-list');
+  if (box) {
+    const tip = el('div', 'cap-hint',
+      `「${x.name}」没有对应的可编辑文件(它是内置实现)。要找它的定义,看程序里的 src\\main;` +
+      '要加自己的,用上面的「新建」或直接往数据目录里放文件。');
+    box.insertBefore(tip, box.firstChild);
+    setTimeout(() => tip.remove(), 8000);
   }
-  capsRenderForm(CAP.editing);
-  const panel = $('cap-edit');
-  if (panel) panel.scrollIntoView({ block: 'nearest' });
 }
 
 function capField(label, id, value, opts) {
@@ -3818,283 +3805,75 @@ function capField(label, id, value, opts) {
   return wrap;
 }
 
-function capsRenderForm(model) {
-  const box = $('cap-edit');
-  if (!box) return;
-  box.innerHTML = '';
-  if (!model) { box.classList.remove('on'); return; }
-  box.classList.add('on');
-
-  const grid = el('div', 'cap-grid');
-  if (CAP.kind === 'skill') {
-    grid.appendChild(capField('名称（skill_ 开头）', 'cap-name', model.name, { ph: 'skill_my_check' }));
-    grid.appendChild(capField('标题', 'cap-title', model.title, { ph: '自定义检查' }));
-    grid.appendChild(capField('解决什么问题', 'cap-purpose', model.purpose, { wide: true, ph: '一句话说明' }));
-    grid.appendChild(capField('什么时候该用', 'cap-when', model.when, { wide: true, ph: '用户提出…时' }));
-    grid.appendChild(capField('用到的工具（逗号分隔）', 'cap-tools', model.tools, { wide: true, ph: 'site_crawl,sensitive_file_probe' }));
-    grid.appendChild(capField('做法说明（给模型看）', 'cap-body', model.body, { wide: true, area: true, rows: 6 }));
-    grid.appendChild(capField('额外执行的命令（可留空）', 'cap-command', model.command, { wide: true, ph: 'powershell -NoProfile -File ...' }));
-    grid.appendChild(capField('允许执行命令', 'cap-allow', model.allow, { check: true }));
-    grid.appendChild(capField('命令超时（毫秒）', 'cap-timeout', model.timeout_ms || 20000, { num: true }));
-  } else {
-    grid.appendChild(capField('名称', 'cap-name', model.name, { ph: 'my_check' }));
-    grid.appendChild(capField('类型', 'cap-kind', model.kind, { ph: '外部工具' }));
-    grid.appendChild(capField('说明（模型据此决定用不用）', 'cap-desc', model.description, { wide: true }));
-    grid.appendChild(capField('命令（参数用 $参数名 占位）', 'cap-command', model.command, { wide: true, ph: 'powershell -NoProfile -Command "..."' }));
-    grid.appendChild(capField('参数定义（JSON Schema）', 'cap-schema', model.schema, { wide: true, area: true, rows: 4, ph: '{"type":"object","properties":{...}}' }));
-    grid.appendChild(capField('允许执行命令', 'cap-allow', model.allow, { check: true }));
-    grid.appendChild(capField('超时（毫秒）', 'cap-timeout', model.timeout_ms || 20000, { num: true }));
-  }
-  box.appendChild(grid);
-
-  const foot = el('div', 'cap-foot');
-  const save = el('button', 'primary', '保存并生效');
-  save.type = 'button';
-  save.id = 'cap-save';
-  save.addEventListener('click', capsSave);
-  foot.appendChild(save);
-  const cancel = el('button', 'ghost', '取消');
-  cancel.type = 'button';
-  cancel.addEventListener('click', () => { CAP.editing = null; capsRenderForm(null); });
-  foot.appendChild(cancel);
-  const msg = el('span', 'cap-msg');
-  msg.id = 'cap-msg';
-  foot.appendChild(msg);
-  box.appendChild(foot);
-}
-
-function capsCollect() {
-  const val = (id) => { const n = $(id); return n ? n.value : ''; };
-  const chk = (id) => { const n = $(id); return n ? !!n.checked : false; };
-  if (CAP.kind === 'skill') {
-    return {
-      action: 'save_skill', name: val('cap-name').trim(), title: val('cap-title').trim(),
-      purpose: val('cap-purpose').trim(), when: val('cap-when').trim(),
-      tools: val('cap-tools').trim(), body: val('cap-body'),
-      command: val('cap-command').trim(), allow: chk('cap-allow') ? 1 : 0,
-      timeout_ms: Number(val('cap-timeout')) || 20000
-    };
-  }
-  return {
-    action: 'save_tool', name: val('cap-name').trim(), description: val('cap-desc').trim(),
-    command: val('cap-command').trim(), schema: val('cap-schema').trim(),
-    kind: val('cap-kind').trim(), allow: chk('cap-allow') ? 1 : 0,
-    timeout_ms: Number(val('cap-timeout')) || 20000
-  };
-}
-
-async function capsSave() {
-  const msg = $('cap-msg');
-  const btn = $('cap-save');
-  if (btn) btn.disabled = true;
-  if (msg) msg.textContent = '正在保存…';
-  try {
-    const r = await capApi(capsCollect());
-    CAP.data = await api('/api/caps');
-    CAP.editing = null;
-    capsRenderForm(null);
-    capsRenderList();
-    if ($('cap-msg')) $('cap-msg').textContent = '';
-    const st = CAP.data.stats || {};
-    if ($('cap-stat')) {
-      $('cap-stat').textContent = CAP.kind === 'skill'
-        ? `共 ${st.skills || 0} 个（技能包 ${st.extSkills || 0}）`
-        : `共 ${st.tools || 0} 个（外部 ${st.extTools || 0} · MCP ${st.mcpTools || 0}）`;
-    }
-    void r;
-  } catch (e) {
-    if ($('cap-msg')) $('cap-msg').textContent = '保存失败：' + ((e && e.message) || e);
-  } finally {
-    if (btn) btn.disabled = false;
-  }
-}
-
-async function capsDelete(x) {
-  if (!window.confirm('确定删除「' + (x.name || '') + '」？数据目录里的定义文件会被删掉。')) return;
-  try {
-    await capApi({ action: CAP.kind === 'skill' ? 'delete_skill' : 'delete_tool', name: x.name });
-    CAP.data = await api('/api/caps');
-    CAP.editing = null;
-    capsRenderList();
-    capsRenderForm(null);
-  } catch (e) {
-    window.alert('删除失败：' + ((e && e.message) || e));
-  }
-}
-
-/* —— 辅助面板：用大模型创建 / 从市场导入 —— */
-function capsAux(kind) {
-  const box = $('cap-aux');
-  if (!box) return;
-  box.innerHTML = '';
-  box.classList.add('on');
-  const inner = el('div', 'cap-aux-box');
-
-  if (kind === 'gen') {
-    inner.appendChild(el('h4', null, '用大模型创建'));
-    inner.appendChild(el('p', null,
-      '写一句你想要的能力，模型会产出一份草稿；模型不可用时给一份可直接改的模板。草稿不会自动保存，你确认后才落盘。'));
-    const row = el('div', 'cap-aux-row');
-    const inp = el('input');
-    inp.id = 'cap-brief';
-    inp.placeholder = CAP.kind === 'skill' ? '例如：检查站点是否把 .git 目录暴露出来' : '例如：调用本机 nmap 做一次端口探测';
-    row.appendChild(inp);
-    const go = el('button', null, '生成草稿');
-    go.type = 'button';
-    row.appendChild(go);
-    inner.appendChild(row);
-    const msg = el('div', 'cap-aux-msg');
-    msg.id = 'cap-aux-msg';
-    inner.appendChild(msg);
-
-    go.addEventListener('click', async () => {
-      const brief = inp.value.trim();
-      if (!brief) { inp.focus(); return; }
-      go.disabled = true;
-      msg.textContent = '正在生成…';
-      try {
-        const r = await capApi({ action: 'draft', kind: CAP.kind, brief });
-        const d = r.draft || {};
-        CAP.editing = CAP.kind === 'skill'
-          ? { name: d.name || '', title: d.title || '', purpose: d.purpose || '',
-              when: d.when || '', tools: d.tools || '', body: d.body || '',
-              command: '', allow: false, timeout_ms: 20000 }
-          : { name: d.name || '', description: d.description || '', command: d.command || '',
-              schema: typeof d.schema === 'string' ? d.schema : JSON.stringify(d.schema || {}, null, 2),
-              kind: '', allow: false, timeout_ms: d.timeout_ms || 20000 };
-        capsRenderForm(CAP.editing);
-        msg.textContent = r.fromModel ? '已按你的描述生成草稿，确认后点「保存并生效」。'
-                                      : ('用了模板（' + (r.note || '模型不可用') + '），改完再保存。');
-      } catch (e) {
-        msg.textContent = '生成失败：' + ((e && e.message) || e);
-      } finally {
-        go.disabled = false;
-      }
-    });
-  } else {
-    inner.appendChild(el('h4', null, '从市场导入'));
-    inner.appendChild(el('p', null,
-      '粘贴一份技能（Markdown）或工具（JSON），或者填一个 http(s) 地址下载。内容会先填进表单，确认后才保存。'));
-    const row = el('div', 'cap-aux-row');
-    const inp = el('input');
-    inp.id = 'cap-url';
-    inp.placeholder = 'https://…/skill_xxx.md';
-    row.appendChild(inp);
-    const go = el('button', null, '下载');
-    go.type = 'button';
-    row.appendChild(go);
-    inner.appendChild(row);
-    const ta = el('textarea');
-    ta.id = 'cap-paste';
-    ta.rows = 6;
-    ta.placeholder = '或者直接把内容粘到这里：\n---\nname: skill_xxx\ntitle: …\n---\n\n正文…';
-    inner.appendChild(ta);
-    const row2 = el('div', 'cap-aux-row');
-    const usePaste = el('button', null, '用这段内容');
-    usePaste.type = 'button';
-    row2.appendChild(usePaste);
-    const links = el('span', 'cap-aux-msg');
-    links.innerHTML = '市场：<a href="https://skillsmp.com/zh" target="_blank" rel="noopener noreferrer">Skill 市场 ↗</a> · ' +
-                      '<a href="https://gc.das-ai.com/marketplace/tools/mcp" target="_blank" rel="noopener noreferrer">MCP 工具 ↗</a>';
-    row2.appendChild(links);
-    inner.appendChild(row2);
-    const msg = el('div', 'cap-aux-msg');
-    msg.id = 'cap-aux-msg';
-    inner.appendChild(msg);
-
-    const fill = (text, source) => {
-      const parsed = capParseImport(text);
-      if (!parsed) { msg.textContent = '没认出格式：技能要有 --- 开头的 front-matter，工具要是一段 JSON。'; return; }
-      CAP.editing = parsed;
-      capsRenderForm(CAP.editing);
-      msg.textContent = '已从' + source + '读入，确认后点「保存并生效」。';
-    };
-
-    go.addEventListener('click', async () => {
-      const url = inp.value.trim();
-      if (!url) { inp.focus(); return; }
-      go.disabled = true;
-      msg.textContent = '正在下载…';
-      try {
-        const r = await capApi({ action: 'fetch', url });
-        fill(r.text || '', '下载内容');
-      } catch (e) {
-        msg.textContent = '下载失败：' + ((e && e.message) || e);
-      } finally {
-        go.disabled = false;
-      }
-    });
-    usePaste.addEventListener('click', () => {
-      const text = ta.value.trim();
-      if (!text) { ta.focus(); return; }
-      fill(text, '粘贴内容');
-    });
-  }
-
-  const close = el('button', 'ghost', '收起');
-  close.type = 'button';
-  close.style.marginTop = '8px';
-  close.addEventListener('click', () => { box.classList.remove('on'); box.innerHTML = ''; });
-  inner.appendChild(close);
-  box.appendChild(inner);
-}
-
-/* 市场里的两种格式：技能的 front-matter Markdown、工具的 JSON */
-function capParseImport(text) {
-  const raw = String(text || '').replace(/^\uFEFF/, '');
-  const t = raw.trim();
-  if (!t) return null;
-
-  if (CAP.kind === 'skill') {
-    const m = /^---\r?\n([\s\S]*?)\r?\n---/.exec(t);
-    const f = {};
-    let body = t;
-    if (m) {
-      for (const line of m[1].split(/\r?\n/)) {
-        const i = line.indexOf(':');
-        if (i < 0) continue;
-        f[line.slice(0, i).trim().toLowerCase()] = line.slice(i + 1).trim();
-      }
-      body = t.slice(m[0].length).trim();
-    }
-    return {
-      name: f.name || '', title: f.title || '', purpose: f.purpose || '',
-      when: f.when || '', tools: f.tools || '', body,
-      command: f.command || '', allow: String(f.allow || '').toLowerCase() === 'true',
-      timeout_ms: Number(f.timeout_ms) || 20000
-    };
-  }
-
-  let j = null;
-  try { j = JSON.parse(t); } catch { return null; }
-  if (Array.isArray(j)) j = j[0];
-  if (!j || typeof j !== 'object') return null;
-  return {
-    name: j.name || '', description: j.description || '', command: j.command || '',
-    schema: typeof j.schema === 'string' ? j.schema : JSON.stringify(j.schema || {}, null, 2),
-    kind: j.kind || '', allow: !!j.allow, timeout_ms: Number(j.timeout_ms) || 20000
-  };
-}
-
+/* 新建 = 造一份带模板的文件,然后直接进文件编辑器。
+   只问一个名字:其余字段留空模板,人照着改 —— 
+   不再有"表单收一份、文件收一份"的两套数据。 */
 function capsBind() {
   const mk = $('cap-btn-new');
-  if (mk) {
-    mk.addEventListener('click', () => {
-      CAP.editing = CAP.kind === 'skill'
-        ? { name: 'skill_', title: '', purpose: '', when: '', tools: '', body: '',
-            command: '', allow: false, timeout_ms: 20000 }
-        : { name: '', description: '', command: '', schema:
-            '{\n  "type": "object",\n  "properties": {\n    "target": { "type": "string" }\n  },\n  "required": ["target"]\n}',
-            kind: '', allow: false, timeout_ms: 20000 };
-      capsRenderForm(CAP.editing);
-      const n = $('cap-name');
-      if (n) { n.focus(); n.select(); }
+  if (!mk) return;
+  mk.addEventListener('click', async () => {
+    const isSkill = CAP.kind === 'skill';
+    const name = await askText({
+      title: isSkill ? '新建技能' : '新建工具',
+      desc: isSkill
+        ? '会在数据目录的 skills\\<名字>\\SKILL.md 建一份说明,保存后模型就能选到它。'
+        : '会在数据目录的 tools\\<名字>\\<名字>.json 建一份声明,保存后有权限调用它。',
+      value: isSkill ? 'skill_' : '',
+      placeholder: isSkill ? 'skill_my_check' : 'my_check',
+      empty: '名字不能为空',
     });
+    if (!name) return;
+    const clean = name.trim().replace(/[^A-Za-z0-9_\-]/g, '');
+    if (!clean) { window.alert('名字只能用字母、数字、下划线和连字符'); return; }
+
+    const base = isSkill ? 'SKILL.md' : clean + '.json';
+    const path = (isSkill ? 'skills\\' + clean + '\\' : 'tools\\' + clean + '\\') + base;
+    const tpl = isSkill
+      ? `---
+name: ${clean}
+title: 
+purpose: 
+when: 
+tools: 
+---
+
+# ${clean}
+
+判据:
+- 
+`
+      : `{
+  "name": "${clean}",
+  "kind": "自建",
+  "readonly": true,
+  "description": "一句话说明它做什么、什么时候用",
+  "source": "~/tools/${clean}/${clean}.exe",
+  "schema": {
+    "type": "object",
+    "properties": {
+      "target": { "type": "string" }
+    },
+    "required": ["target"],
+    "additionalProperties": false
+  },
+  "entry": {
+    "type": "exec",
+    "path": "~/tools/${clean}/${clean}.exe",
+    "args": ["$target"],
+    "protocol": "argv",
+    "timeout_ms": 20000
   }
-  const gen = $('cap-btn-gen');
-  if (gen) gen.addEventListener('click', () => capsAux('gen'));
-  const mkt = $('cap-btn-market');
-  if (mkt) mkt.addEventListener('click', () => capsAux('market'));
+}
+`;
+    try {
+      await api('/api/config', { method: 'POST', body: JSON.stringify({ name: path, content: tpl }) });
+    } catch (e) {
+      window.alert('建文件失败：' + ((e && e.message) || e));
+      return;
+    }
+    state.__capFileList = null;
+    showCapFile(path);
+  });
 }
 capsBind();
 
