@@ -7,7 +7,7 @@ models.json
 .cache/
 
 # ---------- 构建产物(每次 build.bat 都会重新生成) ----------
-agent/build/*
+Agent-Zero/build/*
 
 # ---------- 排障程序的产物(源码在 exp\/ 里,留源码) ----------
 exp/*.exe
@@ -21,12 +21,12 @@ exp/*.txt
 #   tools/   工具声明与工具 exe(<名字>/<名字>.json + <名字>.exe)
 #   mcp.json 默认 MCP 清单
 # 模型密钥在 models.json 里,不入库(见上面单独一行)
-agent/data/*
-!agent/data/rules/
-!agent/data/skills/
-!agent/data/tools/
-!agent/data/mcp.json
-!agent/data/WebView2Loader.dll
+Agent-Zero/data/*
+!Agent-Zero/data/rules/
+!Agent-Zero/data/skills/
+!Agent-Zero/data/tools/
+!Agent-Zero/data/mcp.json
+!Agent-Zero/data/WebView2Loader.dll
 
 # ---------- 编辑器/系统噪声 ----------
 Thumbs.db
@@ -36,3 +36,6 @@ desktop.ini
 
 # 靶场与命题材料(不随仓库分发)
 网络安全/
+
+# 独立重写版(仅作对照,不随仓库分发)
+Agent/

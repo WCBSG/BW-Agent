@@ -115,8 +115,9 @@ DAS_APP_SECRET=...
 DAS_USER_APP_KEY=...
 ```
 
-配好后由大模型负责"决策"；**没有配置或断网时自动降级为本地规则路由**，功能仍然可用，
-界面上会如实写明当前是哪种模式。无论如何，结论都来自程序的判定与规则，模型只决定"下一步查什么"。
+配好后由大模型负责"决策"；模型没配或调不通时，这一轮会就地停下并说明原因（不会用关键词
+规则凑一段像模像样的结论），界面上如实标注是哪一条通道失败。无论如何，结论都来自程序的判定与规则，
+模型只决定"下一步查什么"。
 
 ---
 
@@ -596,15 +597,15 @@ agent\build\agent.exe run skill_我的技能
     │   ├─ main.cpp               入口:零参数启动 / selftest / run / tool / chat / serve / rules
     │   ├─ selftest.cpp           自检套件(基础件/JSON/决策/技能/循环),`agent-dev.exe selftest` 跑的就是它
     │   ├─ agent.cpp              循环:决策、执行、观察、反思、收敛
-    │   ├─ ext.cpp ext.h          扩展层:外部工具、技能包、MCP 客户端(都在数据目录里读)
+    │   ├─ ext.cpp ext.h          扩展层:技能包(数据目录里的 SKILL.md)+ MCP 客户端
     │   ├─ skills.cpp skills_closure.cpp 技能:检查类 + 收尾类(复测/报告/证据核对)
-    │   ├─ tools.cpp              工具:12 个(8 个面向被检目标 + 4 个本机读/受限写)
+    │   ├─ tools.cpp tool_entry.cpp 工具注册表与执行:19 个工具(取数/落点/检测/证据/本机)
     │   ├─ rules.cpp rules_domains.cpp 规则层:按域读写 + 三级查找
     │   ├─ res.cpp embed.h        资源层:磁盘优先、exe 内置兜底
     │   ├─ webutil.cpp            通用网页处理:指纹、归一、响应头、链接、URL 参数
-    │   ├─ net.cpp                取数通道:WinHTTP + 授权/限速/审计
+    │   ├─ net.cpp                取数通道:WinHTTP + 授权/只读/限速/审计
     │   ├─ llm_provider.cpp       模型接入层:三类协议(OpenAI 兼容 / Anthropic / 恒脑)、models.json
-    │   ├─ llm.cpp                决策与提问:调 provider、解析动作、本地规则降级
+    │   ├─ llm.cpp                决策:调 provider、解析动作;模型不通就如实停下,不做规则兜底
     │   ├─ thread_store.cpp       对话存储:threads/<id>/{meta,messages,events} + 索引流水
     │   ├─ webview.cpp webview2_min.h 界面宿主:WebView2 窗口(加载器内嵌、运行时自找、失败退回 Edge)
     │   ├─ ui.cpp tray.cpp        退回系统 Edge 的 --app 窗口 + 托盘常驻
@@ -614,17 +615,16 @@ agent\build\agent.exe run skill_我的技能
     │   ├─ api_config.cpp api_models.cpp api_caps.cpp 接口分域实现(serve_ctx.h 借出存储与状态刷新)
     │   ├─ json.cpp common.cpp    自写 JSON、缓冲、编码、时间、路径、数据目录解析
     │   └─ app.rc                 图标与版本信息(UTF-8,windres 用 --codepage=65001)
-    ├─ ui/                        界面源码(index.html / app.css / app.js / logo.ico),编译时打进 exe
+    ├─ ui/                        界面源码(index.html / app.css / app.js / logo.png / favicon.ico),编译时打进 exe
     ├─ data/                      出厂数据(规则/技能/工具声明/默认 MCP),构建时打进 exe
     ├─ src/tools/                 工具实现:一个工具一个 .cpp
-    │   ├─ toolhost.cpp           工具宿主(app.exe toolhost):按请求里的 tool 字段分派
     │   ├─ tool_common.cpp        公共手法:取数、URL 归一、软 404 校准
     │   ├─ tool_api.h             各工具入口与公共手法的声明
-    │   └─ fs_read.cpp fs_write.cpp ... 15 个工具各自的实现
+    │   └─ dir_probe.cpp http_get.cpp ... 19 个工具各自的实现(main/toolhost.cpp 是宿主)
     ├─ tools/                     构建期小工具
     │   ├─ mkres.cpp              把界面、出厂数据与 WebView2 加载器转成 C++ 数组编进 exe
     │   └─ gen_webview2_min.js    从官方 SDK 头里抽出用到的那几个接口(生成 src\main\webview2_min.h)
-    └─ data/                      出厂数据:rules/(6 个域) skills/ tools/bw_tools/(宿主+声明) mcp.json
+    └─ data/                      出厂数据:rules/(6 个域) skills/ tools/bw_tools/(19 个工具声明) mcp.json
                                    WebView2Loader.dll(微软官方加载器,构建时编进 exe)
 ```
 
@@ -690,4 +690,4 @@ WebView2 的**浏览器数据目录放在用户数据目录下**（`%USERPROFILE
 - 落点探测按默认清单（36 个）与目录清单（29 个）进行，不做字典爆破；未命中不代表绝对没有其他路径
 - 注入验证只做布尔差分与错误回显判定，属于"是否存在"级别的确认，不做进一步利用
 - 单次巡检按 2 QPS 限速，站点较多时耗时以分钟计
-- 大模型未配置时走本地规则路由，只能覆盖常见意图
+- 大模型未配置时只能靠 `/` 命令和手动点工具，模型这一层不会"猜"着走

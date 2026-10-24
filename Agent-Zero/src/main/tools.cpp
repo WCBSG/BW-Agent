@@ -1,0 +1,521 @@
+/* tools.cpp —— 工具注册表 + 参数校验 + 合规目标解析。
+ *
+ * 工具是最低层的手:一次取数、一次匹配。它们不懂"业务",只负责"做一次动作并把
+ * 结果如实返回"。"这件事该不该做、做完算不算成功"是技能层的事。
+ *
+ * 所有工具都遵守两条纪律:
+ *   1. 只做只读动作(GET/HEAD),不做任何写入、上传、爆破、利用;
+ *   2. 目标必须过授权校验(由 net.c 的合规层兜底,工具自己也再查一次)。
+ *
+ * 例外只有一组:**本机设置类工具**(pool_list / agent_info / settings_get / settings_set)。
+ * 它们读写的是这台机器上的配置,不碰被检目标,所以"只读"这条对它们不适用;
+ * 但反过来管得更严:授权池只读、审批只能收紧、周期规则的目标必须在授权池内,
+ * 每一次写入都留审计 —— 智能体不能靠"改设置"给自己扩权。
+ */
+#include "tools.h"
+#include "tool_api.h"
+#include "regex.h"
+#include "profile.h"
+
+#include "approval.h"
+#include "automation.h"
+#include "embed.h"
+#include "ext.h"
+#include "llm.h"
+#include "llm_provider.h"
+#include "net.h"
+#include "rules.h"
+#include "rules_domains.h"
+#include "skills.h"
+#include "store.h"
+#include "tool_entry.h"
+#include "webutil.h"
+
+#include <ctype.h>
+
+static tool_t *g_tools = NULL;      /* 内置表 + 外部追加项 */
+static int g_force_builtin = 0;     /* 自检模式:一律走进程内实现(见 tools_set_force_builtin) */
+static int g_tool_count = 0;
+static int g_tool_cap = 0;
+
+
+/* ================= 工具声明从数据目录装载 =================
+   为什么不再把 12 个工具的说明与参数形状写在这个文件里:
+     声明是**给人改的**(改措辞、加参数、临时停用),实现才是要编译的代码。
+     把声明搬进 agent\data\tools\<name>.json 之后,想调一句话不用重新构建;
+     更关键的是,"有哪些能力"变成了一份可以打包、可以对比、可以 diff 的数据。
+
+   一个声明长这样(见 agent/data/tools/ 下的 json):
+     { "name": "...", "kind": "内置", "readonly": true,
+       "impl": "site_crawl",            <- 指向下面的通用实现表
+       "source": "...", "description": "...", "schema": { ... } }
+
+   没写 impl、改写 command 的文件是**外部命令工具**,由 ext.cpp 负责 —— 两种声明
+   可以放在同一个目录里,各认各的字段,不会互相干扰。 */
+
+typedef int (*tool_fn)(tool_ctx_t *, json_t *, tool_result_t *);
+
+/* 通用实现表:声明里的 impl 就是这里的键。
+   加一个新工具 = 在 data\tools\ 放一份声明 + 在这里加一个实现(或什么都不加,
+   直接用已有的实现换一套参数与措辞)。 */
+typedef struct {
+  const char *impl;
+  tool_fn run;
+} prim_t;
+
+#if defined(TOOL_ENTRY)
+/* 工具进程编译时用 -DTOOL_ENTRY=<函数名>:
+   这张表里只有它自己 —— 这个 exe 里没有别的工具,也就不会去链接别的实现。 */
+static const prim_t g_prims[] = {
+    {"self", TOOL_ENTRY},
+};
+#else
+static const prim_t g_prims[] = {
+    {"pool_list", t_pool_list},
+    {"agent_info", t_agent_info},
+    {"settings_get", t_settings_get},
+    {"settings_set", t_settings_set},
+    {"sensitive_scan", t_sensitive_scan},
+    {"password_check", t_password_check},
+    {"site_crawl", t_site_crawl},
+    {"sensitive_file_probe", t_sensitive_file_probe},
+    {"dir_probe", t_dir_probe},
+    {"page_diff", t_page_diff},
+    {"nuclei_scan", t_nuclei_scan},
+    {"sqli_probe", t_sqli_probe},
+    {"asset_list", t_asset_list},
+    {"http_get", t_http_get},
+    {"record_finding", t_record_finding},
+    {"fs_read", fs_tool_read},
+    {"fs_list", fs_tool_list},
+    {"fs_write", fs_tool_write},
+};
+#endif
+
+static tool_fn prim_find(const char *impl) {
+  if (!impl || !*impl) return NULL;
+  for (size_t i = 0; i < sizeof(g_prims) / sizeof(g_prims[0]); i++) {
+    if (str_ieq(g_prims[i].impl, impl)) return g_prims[i].run;
+  }
+  return NULL;
+}
+
+/* 追加一条(内部用):字符串都拷一份 —— 声明文本读完就 free,不能留悬空指针 */
+static int tool_push(const char *name, const char *desc, const char *kind, const char *src,
+                     int readonly, tool_fn run) {
+  if (!name || !*name || !run) return -1;
+  if (tools_find(name)) return -1;
+  if (g_tool_count >= g_tool_cap) {
+    g_tool_cap = g_tool_cap ? g_tool_cap * 2 : 32;
+    g_tools = (tool_t *)xrealloc(g_tools, sizeof(tool_t) * (size_t)g_tool_cap);
+  }
+  tool_t *t = &g_tools[g_tool_count++];
+  memset(t, 0, sizeof(*t));
+  t->name = xstrdup(name);
+  t->description = xstrdup(desc && *desc ? desc : name);
+  t->schema = xstrdup("{\"type\":\"object\",\"properties\":{}}");
+  t->kind = xstrdup(kind && *kind ? kind : "内置");
+  t->source_url = xstrdup(src ? src : "");
+  t->readonly = readonly ? 1 : 0;
+  t->run = run;
+  return 0;
+}
+
+/* 这条声明是不是 exe 里打包的出厂声明:名字能在内置资源里找到就算。
+   为什么按名字而不是按路径判:出厂声明首次运行就被铺到数据目录,
+   之后两者在磁盘上长得一模一样 —— 只有"程序里有没有它"能分出"自带"与"自己加的"。 */
+static int is_factory_decl(const char *name) {
+  char key[MAX_PATH];
+  snprintf(key, sizeof(key), "data/tools/bw_tools/%s.json", name);
+  const char *data = NULL;
+  size_t len = 0;
+  return embed_lookup(key, &data, &len);
+}
+
+/* 解析一份声明。返回 1 = 收下了(或明确判定不属于这里),0 = 文件有问题。 */
+/* 登记一条声明:外置入口优先,其次是程序内实现(impl 命中 g_prims)。 */
+static int tool_load_spec_text(const char *text, const char *origin) {
+  json_t *o = json_parse(text);
+  if (!o || o->type != J_OBJ) { json_free(o); return 0; }
+
+  const char *name = j_s(o, "name", "");
+  if (!name[0]) { json_free(o); return 0; }
+
+  const char *impl = j_s(o, "impl", "");
+  json_t *en = j_get(o, "entry");
+  if (!impl[0] && en && en->type == J_OBJ && str_ieq(j_s(en, "type", ""), "builtin")) {
+    impl = j_s(en, "impl", "");
+  }
+
+  const char *kind = j_s(o, "kind", "内置");
+  tool_fn run = NULL;
+
+  if (j_b(o, "allow", 1) && tool_entry_parse(o, origin) == 1) {
+    run = tool_entry_run;
+  } else {
+    run = prim_find(impl);
+    /* 既没有可用的 entry 入口,也没有同名的进程内实现:这份声明就是废的
+       (旧版的 command 型协议已删除,只能写成 entry)。 */
+    if (!run) { json_free(o); return 1; }
+  }
+
+  if (tool_push(name, j_s(o, "description", ""), kind, j_s(o, "source", ""),
+                (int)j_b(o, "readonly", 0), run) == 0) {
+    json_t *sc = j_get(o, "schema");
+    char *schema_txt = sc ? json_dump(sc) : NULL;
+    tool_t *tool = tools_find(name);
+    if (tool) {
+      tool->external = is_factory_decl(name) ? 0 : 1;
+      if (schema_txt) {
+        free((void *)tool->schema);
+        tool->schema = schema_txt;
+        /* 所有权已经跟着表走了:再 free 一次就是悬空指针,
+           下次重载整表清场时二次释放 —— 表现为"点保存后服务直接消失"。 */
+        schema_txt = NULL;
+      }
+    }
+    free(schema_txt);
+  }
+  json_free(o);
+  return 1;
+}
+
+/* 从 <数据目录>\tools\<目录>\<名字>.json 装载(一个目录一个工具) */
+static int load_specs_dir(const char *dir) {
+  int n = 0;
+  std::vector<std::string> subs = fs_list_dirs(dir);
+  for (const std::string &sub : subs) {
+    char subdir[MAX_PATH * 2];
+    snprintf(subdir, sizeof(subdir), "%s\\%s", dir, sub.c_str());
+    std::vector<std::string> inner = fs_list_files(subdir, ".json");
+    for (const std::string &f : inner) {
+      char full[MAX_PATH * 2];
+      snprintf(full, sizeof(full), "%s\\%s", subdir, f.c_str());
+      size_t len = 0;
+      char *text = file_read_all(full, &len);
+      if (!text) continue;
+      n += tool_load_spec_text(text, full);
+      free(text);
+    }
+  }
+  return n;
+}
+
+/* 兜底:数据目录里一份声明都没有(第一次运行还没铺开、或者被人清空了),
+   直接用 exe 里打包的那份。这样"数据化"不会变成"少了文件就少一半能力"。 */
+static int load_specs_embed(void) {
+  int total = embed_count();
+  int n = 0;
+  for (int i = 0; i < total; i++) {
+    const char *nm = embed_name_at(i);
+    if (!nm || strncmp(nm, "data/tools/", 11) != 0) continue;
+    const char *data = NULL;
+    size_t len = 0;
+    if (!embed_lookup(nm, &data, &len)) continue;
+    n += tool_load_spec_text(data, nm);
+  }
+  return n;
+}
+
+/* 内置工具的条数 —— 外部工具追加在它后面 */
+void tools_init(void) {
+  /* 幂等:agent_create 也会调它。如果不判重,第二次调用会把外部工具(MCP/外置工具)
+     的注册结果全部抹掉 —— 界面与提示词里就会"少"掉用户自己加的能力。 */
+  static int inited = 0;
+  if (inited) return;
+  inited = 1;
+
+  char dir[MAX_PATH * 2];
+  app_data_path(dir, sizeof(dir), "tools");
+  ensure_dir(dir);
+  int n = load_specs_dir(dir);
+  if (n == 0) {
+    log_warn("[工具] 数据目录里没有可用的工具声明(%s),改用 exe 内置的那份", dir);
+    n = load_specs_embed();
+  }
+  log_info("[工具] 已装载 %d 个声明式工具(声明来自 %s)", n, dir);
+}
+
+/* 清空工具表。声明文件是能力的唯一来源,所以"重新加载"就整表重来:
+   只减外部的话,改过名的、删掉的声明会在表里留下残影。 */
+void tools_reset_all(void) {
+  for (int i = 0; i < g_tool_count; i++) {
+    free((void *)g_tools[i].name);
+    free((void *)g_tools[i].description);
+    free((void *)g_tools[i].schema);
+    free((void *)g_tools[i].kind);
+    free((void *)g_tools[i].source_url);
+    memset(&g_tools[i], 0, sizeof(tool_t));
+  }
+  g_tool_count = 0;
+}
+
+/* 按磁盘上的声明重新装载(用户在界面里改完工具声明后调)。
+   入口注册表也要一起清 —— 否则删掉的声明还能从旧入口跑起来。 */
+int tools_reload_specs(void) {
+  tools_reset_all();
+  tool_entry_reset();
+  char dir[MAX_PATH * 2];
+  app_data_path(dir, sizeof(dir), "tools");
+  ensure_dir(dir);
+  int n = load_specs_dir(dir);
+  if (n == 0) n = load_specs_embed();
+  log_info("[工具] 已重新装载 %d 个声明式工具", n);
+  return n;
+}
+
+/* 追加外部工具(用户在数据目录里定义的命令工具 / MCP 提供的工具)。
+   内置的永远排在前面,同名不覆盖内置(tools_find 先命中内置)。 */
+int tools_register_external(const char *name, const char *description,
+                            const char *schema_json, const char *kind,
+                            const char *source_url, int readonly,
+                            int (*run)(tool_ctx_t *, json_t *, tool_result_t *)) {
+  if (!name || !*name || !run) return -1;
+  if (tools_find(name)) return -1;     /* 重名就不加,内置优先 */
+  if (g_tool_count >= g_tool_cap) {
+    g_tool_cap = g_tool_cap ? g_tool_cap * 2 : 32;
+    g_tools = (tool_t *)xrealloc(g_tools, sizeof(tool_t) * (size_t)g_tool_cap);
+  }
+  tool_t *t = &g_tools[g_tool_count++];
+  memset(t, 0, sizeof(*t));
+  t->name = xstrdup(name);
+  t->description = xstrdup(description ? description : "外部工具");
+  t->schema = xstrdup(schema_json && *schema_json ? schema_json
+                                                : "{\"type\":\"object\",\"properties\":{}}");
+  t->kind = xstrdup(kind && *kind ? kind : "外部工具");
+  t->source_url = xstrdup(source_url ? source_url : "");
+  t->readonly = readonly ? 1 : 0;
+  t->external = 1;
+  t->run = run;
+  return 0;
+}
+
+int tools_count(void) { return g_tool_count; }
+
+/* 外置工具(用户自己加的声明)条数。MCP 单独统计,不重复计入。 */
+int tools_count_external(void) {
+  int n = 0;
+  for (int i = 0; i < g_tool_count; i++) {
+    if (g_tools[i].external && !str_startswith(g_tools[i].name, "mcp__")) n++;
+  }
+  return n;
+}
+
+int tools_is_readonly(const char *name) {
+  tool_t *t = tools_find(name ? name : "");
+  return t ? (t->readonly != 0) : 0;
+}
+
+tool_t *tools_get(int index) {
+  return (index >= 0 && index < g_tool_count) ? &g_tools[index] : NULL;
+}
+
+tool_t *tools_find(const char *name) {
+  for (int i = 0; i < g_tool_count; i++) {
+    if (str_ieq(g_tools[i].name, name)) return &g_tools[i];
+  }
+  return NULL;
+}
+
+json_t *tools_decl_json(void) {
+  json_t *arr = j_arr();
+  for (int i = 0; i < g_tool_count; i++) {
+    tool_t *t = &g_tools[i];
+    json_t *o = j_obj();
+    j_set_str(o, "name", t->name);
+    j_set_str(o, "description", t->description);
+    json_t *schema = json_parse(t->schema);
+    j_set(o, "input_schema", schema ? schema : j_obj());
+    j_set_str(o, "kind", t->kind);
+    j_set_str(o, "source_url", t->source_url);
+    j_add(arr, o);
+  }
+  return arr;
+}
+
+void tools_manifest(buf_t *out) {
+  for (int i = 0; i < g_tool_count; i++) {
+    tool_t *t = &g_tools[i];
+    /* 每行给"名字 + 参数名 + 一句用途":模型靠这三样就能正确调用。
+       完整说明书留给界面 —— 提示词每步都发,描述写全了会直接把首字节拖成几十秒。 */
+    buf_printf(out, "- %s", t->name);
+    json_t *sc = t->schema && t->schema[0] ? json_parse(t->schema) : NULL;
+    json_t *props = sc ? j_get(sc, "properties") : NULL;
+    if (props && props->type == J_OBJ && props->count > 0) {
+      buf_puts(out, "(");
+      int shown = 0;
+      for (int k = 0; k < props->count && shown < 8; k++) {
+        const char *key = props->keys ? props->keys[k] : NULL;
+        if (!key || !key[0]) continue;
+        if (shown) buf_puts(out, ",");
+        buf_puts(out, key);
+        shown++;
+      }
+      buf_puts(out, ")");
+    }
+    if (sc) json_free(sc);
+    buf_puts(out, " —— ");
+    size_t n = u8_prefix(t->description ? t->description : "", 150);
+    if (n) buf_putn(out, t->description, n);
+    if (t->description && strlen(t->description) > n) buf_puts(out, "…");
+    buf_puts(out, "\n");
+  }
+}
+
+/* ================= 参数校验 ================= */
+int tools_validate(tool_t *t, json_t *args, buf_t *err) {
+  if (!t) {
+    if (err) buf_puts(err, "没有这个工具");
+    return -1;
+  }
+  json_t *schema = json_parse(t->schema);
+  if (!schema) return 0;                       /* 没 schema 就不校验(不该发生) */
+  json_t *required = j_get(schema, "required");
+  int bad = 0;
+  for (int i = 0; i < j_len(required); i++) {
+    json_t *k = j_at(required, i);
+    if (!k || k->type != J_STR) continue;
+    json_t *v = j_get(args, k->str);
+    if (!v || v->type == J_NULL || (v->type == J_STR && (!v->str || !v->str[0]))) {
+      if (err) buf_printf(err, "缺少必填参数 %s", k->str);
+      bad = 1;
+      break;
+    }
+  }
+  if (!bad) {
+    /* 类型粗查:模型偶尔把数字写成字符串,这里只拦住明显不对的 */
+    json_t *props = j_get(schema, "properties");
+    if (props && props->type == J_OBJ) {
+      for (int i = 0; i < props->count; i++) {
+        const char *key = props->keys[i];
+        const char *want = j_s(props->items[i], "type", NULL);
+        json_t *got = j_get(args, key);
+        if (!want || !got || got->type == J_NULL) continue;
+        int ok = (strcmp(want, "string") == 0 && got->type == J_STR) ||
+                 (strcmp(want, "integer") == 0 && got->type == J_NUM) ||
+                 (strcmp(want, "number") == 0 && got->type == J_NUM) ||
+                 (strcmp(want, "boolean") == 0 && got->type == J_BOOL) ||
+                 (strcmp(want, "array") == 0 && got->type == J_ARR) ||
+                 (strcmp(want, "object") == 0 && got->type == J_OBJ);
+        if (!ok) {
+          if (err) buf_printf(err, "参数 %s 类型应为 %s", key, want);
+          bad = 1;
+          break;
+        }
+      }
+    }
+  }
+  json_free(schema);
+  return bad ? -1 : 0;
+}
+
+int tools_run(tool_ctx_t *ctx, const char *name, json_t *args, tool_result_t *out) {
+  memset(out, 0, sizeof(*out));
+  tool_t *t = tools_find(name);
+  if (!t) {
+    out->text = xstrdup("没有这个工具");
+    out->is_error = 1;
+    out->say = xstrdup("这个工具不存在,我换个做法。");
+    return -1;
+  }
+  buf_t err;
+  buf_init(&err);
+  if (tools_validate(t, args, &err) != 0) {
+    out->is_error = 1;
+    buf_t tb;
+    buf_init(&tb);
+    buf_printf(&tb, "参数校验失败:%s", err.data);
+    out->text = buf_take(&tb);
+    buf_t sb;
+    buf_init(&sb);
+    buf_printf(&sb, "参数没给全(%s),这次先不执行。", err.data);
+    out->say = buf_take(&sb);
+    buf_free(&err);
+    return -1;
+  }
+  buf_free(&err);
+  /* 自检跑的是进程内的假网络层(本地桩服务、假响应头),外部工具进程享受不到。
+     所以自检模式下按名字回落到进程内实现 —— 测的是同一份业务判断,不是同一套传输。 */
+  if (g_force_builtin) {
+    tool_fn fn = prim_find(name);
+    if (fn) {
+      ctx->current_tool = name;
+      int brc = fn(ctx, args, out);
+      ctx->current_tool = NULL;
+      if (!out->say) out->say = xstrdup(out->text ? out->text : "");
+      return brc;
+    }
+  }
+  /* 外部扩展(命令行工具 / MCP)的适配器靠 ctx->current_tool 知道这次调的是谁 */
+  ctx->current_tool = name;
+  int rc = t->run(ctx, args, out);
+  ctx->current_tool = NULL;
+  if (!out->say) out->say = xstrdup(out->text ? out->text : "");
+  return rc;
+}
+
+/* 只走程序内实现:独立工具进程(tools\toolhost.cpp)用它。
+   那几个进程里没有注册表,而 tools_run 会按名字找注册表 —— 在工具自己的 exe 里
+   注册表里恰好就是"指向它自己"的入口声明,直接调会自己调自己。 */
+void tools_set_force_builtin(int on) { g_force_builtin = on ? 1 : 0; }
+
+int tools_run_builtin(tool_ctx_t *ctx, const char *name, json_t *args,
+                      tool_result_t *out) {
+  memset(out, 0, sizeof(*out));
+  tool_fn fn = prim_find(name);
+  if (!fn) {
+    out->text = xstrdup("这个工具不在程序内实现表里");
+    out->is_error = 1;
+    out->say = xstrdup("这个工具没有可用的实现,我换个做法。");
+    return -1;
+  }
+  if (!args) args = j_obj();
+
+  ctx->current_tool = name;
+  int rc = fn(ctx, args, out);
+  ctx->current_tool = NULL;
+  return rc;
+}
+
+/* ================= 目标与授权 ================= */
+void target_resolve(buf_t *out, const char *raw, const char *fallback_host) {
+  const char *s = raw;
+  if (!s || !*s) s = fallback_host;
+  if (!s || !*s) return;
+  while (*s == ' ' || *s == '"' || *s == '\'') s++;
+  if (*s == '/') {
+    buf_puts(out, fallback_host ? fallback_host : "");
+    buf_puts(out, s);
+    return;
+  }
+  if (strstr(s, "://")) {
+    buf_puts(out, s);
+  } else {
+    buf_puts(out, "https://");
+    buf_puts(out, s);
+  }
+}
+
+int scope_allows(tool_ctx_t *ctx, const char *url, char **err) {
+  char host[256];
+  net_host_of(url, host, sizeof(host));
+  if (!host[0]) {
+    if (err) *err = xstrdup("URL 里没有主机名");
+    return 0;
+  }
+  if (ctx->domain_count == 0) return 1;      /* 没设范围时不拦(单测与本地靶站用) */
+  for (int i = 0; i < ctx->domain_count; i++) {
+    const char *d = ctx->domains[i];
+    if (str_ieq(host, d)) return 1;
+    size_t lh = strlen(host), ld = strlen(d);
+    if (lh > ld && str_ieq(host + (lh - ld), d) && host[lh - ld - 1] == '.') return 1;
+  }
+  buf_t b;
+  buf_init(&b);
+  buf_printf(&b, "目标 %s 不在授权域名内(授权:%s)", host,
+             ctx->domain_count ? ctx->domains[0] : "未配置");
+  if (err) *err = buf_take(&b);
+  else buf_free(&b);
+  return 0;
+}
+

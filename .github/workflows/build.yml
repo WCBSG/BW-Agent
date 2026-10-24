@@ -28,16 +28,16 @@ jobs:
         run: |
           where g++
           g++ --version
-          call agent\build.bat debug
+          call Agent-Zero\build.bat debug
 
       - name: 自检(技能/工具/规则/审批/授权池/决策循环)
         shell: cmd
-        run: agent\build\agent-dev.exe selftest
+        run: Agent-Zero\build\agent-dev.exe selftest
 
       - name: 冒烟:起服务、查健康、取首页
         shell: pwsh
         run: |
-          $p = Start-Process -FilePath "agent\build\agent-dev.exe" -ArgumentList "serve","example.com","8799","--no-ui" -PassThru
+          $p = Start-Process -FilePath "Agent-Zero\build\agent-dev.exe" -ArgumentList "serve","example.com","8799","--no-ui" -PassThru
           Start-Sleep -Seconds 4
           try {
             $h = @{ Host = "127.0.0.1:8799" }
@@ -52,14 +52,14 @@ jobs:
 
       - name: 额外产出发布版(不带自检)
         shell: cmd
-        run: call agent\build.bat release
+        run: call Agent-Zero\build.bat release
 
       - name: 产出单文件 exe(发布版 + 调试版)
         uses: actions/upload-artifact@v4
         with:
           name: agent-exe
           path: |
-            agent/build/网站安全巡检智能体.exe
-            agent/build/agent.exe
-            agent/build/网站安全巡检智能体-dev.exe
-            agent/build/agent-dev.exe
+            Agent-Zero/build/网站安全巡检智能体.exe
+            Agent-Zero/build/agent.exe
+            Agent-Zero/build/网站安全巡检智能体-dev.exe
+            Agent-Zero/build/agent-dev.exe
