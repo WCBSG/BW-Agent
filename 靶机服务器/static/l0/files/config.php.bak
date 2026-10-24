@@ -1,0 +1,16 @@
+<?php
+/**
+ * 某某区政务服务中心 · 系统配置（部署前备份）
+ */
+return array(
+    'db' => array(
+        'host'     => '10.31.7.15',
+        'port'     => 3306,
+        'name'     => 'qu_zwfw',
+        'user'     => 'qu_app',
+        'password' => 'Qu#Zwfw@2024',
+    ),
+    'cache' => array('host' => '10.31.7.22', 'port' => 6379),
+    'admin' => array('username' => 'admin', 'password' => '123456'),
+    'debug' => true,
+);

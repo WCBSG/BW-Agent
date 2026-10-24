@@ -1,0 +1,31 @@
+<?php
+/**
+ * 某某市政务服务网 · 系统配置
+ * ⚠ 本文件为部署前备份，上线后应当删除
+ */
+return array(
+    'db' => array(
+        'host'     => '172.16.8.21',
+        'port'     => 3306,
+        'name'     => 'zwfw_prod',
+        'user'     => 'zwfw_app',
+        'password' => 'Zwfw#2023!App',
+        'charset'  => 'utf8mb4',
+    ),
+    'redis' => array(
+        'host' => '10.12.34.51',
+        'port' => 6379,
+        'auth' => 'redis@zwfw2023',
+    ),
+    'ftp' => array(
+        'host' => '10.12.34.60',
+        'user' => 'zwfw_upload',
+        'pass' => 'ftp!Upload#2024',
+    ),
+    'admin' => array(
+        'username' => 'admin',
+        'password' => 'Admin@888',
+    ),
+    'debug' => true,
+    'app_key' => 'base64:kQ9xT2mZ7pL4wR8nV5bY3dH6',
+);

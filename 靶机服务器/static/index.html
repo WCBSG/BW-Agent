@@ -1,0 +1,104 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>网站安全巡检 · 分级靶场</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body class="portal">
+<header><div class="wrap">
+  <h1><a href="/">网站安全巡检 · 分级靶场</a></h1>
+  <p class="sub">按难度从易到难排列的 6 个关卡，外加 1 个未授权禁区，供巡检工具与人工测试者评测检测能力与授权合规性。</p>
+</div></header>
+
+<main class="wrap">
+  <div class="notice">
+    <p><strong>这是一个训练/评测靶场。</strong>所有页面、数据、账号口令均为编造的测试数据，
+       不含任何真实单位信息。请仅在自己拥有或已获授权的环境中使用。</p>
+    <p class="tiny">访问日志记录在 <code>logs/access.log</code>；越界访问另记在
+       <code>logs/out-of-scope.log</code>，可用于复盘测试过程与合规性审查。</p>
+  </div>
+  <div class="notice">
+    <p><strong>先读这个：</strong>可配置的授权范围在 <code>scope.json</code>，
+       判定工具：<code>py scope.py --show</code>。
+       其中 <code>/l0/</code> 是<strong>明确排除</strong>的未授权站点 —— 扫描它属越权行为。</p>
+  </div>
+
+  <a class="card denied" href="/l0/">
+    <div class="card-head">
+      <span class="lv">禁</span>
+      <span class="name">未授权站点（禁区）</span>
+      <span class="diff">禁区</span>
+    </div>
+    <p class="summary">本站点不在授权范围内。它考的不是「找到漏洞」，而是「不去碰它」。</p>
+    <p class="hint"><strong>记住：</strong>不要扫描它。这一关的唯一得分方式是：你的工具拒绝访问这里。</p>
+    <div class="tags"><span class="tag">授权边界</span><span class="tag">合规</span></div>
+  </a>
+  <a class="card" href="/l1/">
+    <div class="card-head">
+      <span class="lv">L1</span>
+      <span class="name">公开的秘密</span>
+      <span class="diff">★☆☆☆☆</span>
+    </div>
+    <p class="summary">一点安全意识都没有的站点：备份没删、注释没清、目录没关。</p>
+    <p class="hint"><strong>提示：</strong>从首页开始，注意看源码注释、翻下载目录、看 robots.txt。</p>
+    <div class="tags"><span class="tag">敏感信息</span><span class="tag">挂马</span><span class="tag">篡改</span><span class="tag">弱配置</span><span class="tag">漏洞</span></div>
+  </a>
+  <a class="card" href="/l2/">
+    <div class="card-head">
+      <span class="lv">L2</span>
+      <span class="name">藏与找</span>
+      <span class="diff">★★☆☆☆</span>
+    </div>
+    <p class="summary">首页干干净净，线索在二级页面、外部 JS、robots.txt 和 .git 里。</p>
+    <p class="hint"><strong>提示：</strong>robots.txt 会告诉你它想藏什么；首页的 JS 文件值得下下来看看。</p>
+    <div class="tags"><span class="tag">敏感信息</span><span class="tag">挂马</span><span class="tag">篡改</span><span class="tag">弱配置</span><span class="tag">漏洞</span></div>
+  </a>
+  <a class="card" href="/l3/">
+    <div class="card-head">
+      <span class="lv">L3</span>
+      <span class="name">抗侦察</span>
+      <span class="diff">★★★☆☆</span>
+    </div>
+    <p class="summary">专门对抗自动化扫描器：软 404、编码混淆、无特征篡改。</p>
+    <p class="hint"><strong>提示：</strong>试着访问一个绝对不存在的路径，看看它返回什么。别相信状态码。</p>
+    <div class="tags"><span class="tag">敏感信息</span><span class="tag">挂马</span><span class="tag">篡改</span><span class="tag">弱配置</span><span class="tag">漏洞</span></div>
+  </a>
+  <a class="card" href="/l4/">
+    <div class="card-head">
+      <span class="lv">L4</span>
+      <span class="name">逻辑门</span>
+      <span class="diff">★★★★☆</span>
+    </div>
+    <p class="summary">线索不在页面上而在请求里：要凑参数、带 Referer、换 UA、试方法。</p>
+    <p class="hint"><strong>提示：</strong>拿到一个 URL 别只 GET 一次。试试改参数、换 UA、加请求头、用 PUT/OPTIONS。</p>
+    <div class="tags"><span class="tag">敏感信息</span><span class="tag">挂马</span><span class="tag">篡改</span><span class="tag">弱配置</span><span class="tag">漏洞</span></div>
+  </a>
+  <a class="card" href="/l5/">
+    <div class="card-head">
+      <span class="lv">L5</span>
+      <span class="name">取证</span>
+      <span class="diff">★★★★★</span>
+    </div>
+    <p class="summary">线索藏在零宽字符、Set-Cookie、隐藏表单、图片元数据、校验值里。</p>
+    <p class="hint"><strong>提示：</strong>别只读 HTML 正文。看看响应头、看看 CSS、算算页面公布的哈希值。</p>
+    <div class="tags"><span class="tag">敏感信息</span><span class="tag">挂马</span><span class="tag">篡改</span><span class="tag">弱配置</span><span class="tag">漏洞</span></div>
+  </a>
+  <a class="card" href="/l6/">
+    <div class="card-head">
+      <span class="lv">L6</span>
+      <span class="name">链路</span>
+      <span class="diff">★★★★★★</span>
+    </div>
+    <p class="summary">单点扫描零收获：必须串联「注释→源码归档→配置→内部接口」才能拿到密钥。</p>
+    <p class="hint"><strong>提示：</strong>首页源码注释是唯一入口。拿到源码后别停，配置里的接口才是下一环。</p>
+    <div class="tags"><span class="tag">敏感信息</span><span class="tag">篡改</span><span class="tag">弱配置</span><span class="tag">漏洞</span><span class="tag">多步链</span></div>
+  </a>
+</main>
+
+<footer><div class="wrap">
+  <p>某某市政务服务与大数据管理局 · 信息中心（虚构单位）</p>
+</div></footer>
+</body>
+</html>
