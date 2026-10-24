@@ -311,6 +311,17 @@ static void build_prompt(buf_t *out, agent_t *a, const char *user_text,
                   "其它情况不要打断用户。\n");
   }
 
+  /* 压缩过的老对话:用摘要代表,原文不再进提示词。
+     这段要排在"最近的对话"之前 —— 先给背景,再给细节。 */
+  {
+    const char *sum = agent_ctx_summary(a);
+    if (sum && *sum) {
+      buf_puts(out, "\n## 更早的对话(已压缩成摘要)\n");
+      buf_puts(out, sum);
+      buf_puts(out, "\n");
+    }
+  }
+
   /* 多轮上下文:没有这一段,"继续""那个站也一样查一下"就没法消解 ——
      模型只会看到孤立的一句话,于是要么重复上一件事,要么反问用户。 */
   {
@@ -428,6 +439,8 @@ int llm_decide(agent_t *a, const char *user_text, json_t *observations,
   buf_t prompt;
   buf_init(&prompt);
   build_prompt(&prompt, a, user_text, observations, scope_note);
+  /* 估算 token 并记到 agent 上:占用环与压缩阈值都用这个数 */
+  agent_set_ctx_used(a, (int)est_tokens(prompt.data));
   /* 提示词体积直接换算成首字节延迟,留个读数方便以后继续压 */
   log_info("[模型] 提示词 %d 字节(观察 %d 条)", (int)prompt.len,
            observations ? j_len(observations) : 0);

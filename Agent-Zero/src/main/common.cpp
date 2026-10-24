@@ -209,8 +209,25 @@ size_t u8_prefix(const char *s, size_t max_bytes) {
   return n;
 }
 
-/* ================= 时间 ================= */
-static long long filetime_to_ms(FILETIME ft) {
+size_t est_tokens(const char *s) {
+  if (!s) return 0;
+  size_t tokens_x100 = 0;          /* 用百分之一 token 累计,避免浮点 */
+  const unsigned char *p = (const unsigned char *)s;
+  while (*p) {
+    unsigned char c = *p;
+    if (c < 0x80) {
+      /* ASCII:约 4 字节 1 token → 每字节 25 */
+      tokens_x100 += 25;
+      p++;
+    } else if ((c & 0xE0) == 0xC0) { tokens_x100 += 100; p += 2; }
+    else if ((c & 0xF0) == 0xE0) { tokens_x100 += 100; p += 3; }   /* CJK:一字≈1 token */
+    else if ((c & 0xF8) == 0xF0) { tokens_x100 += 150; p += 4; }   /* emoji 等 */
+    else { p++; }
+  }
+  return tokens_x100 / 100 + 1;
+}
+
+/* ================= 时间 ================= */static long long filetime_to_ms(FILETIME ft) {
   /* FILETIME 是 1601-01-01 起的 100ns;换成 Unix 毫秒需要减去 1970 的偏移 */
   ULARGE_INTEGER u;
   u.LowPart = ft.dwLowDateTime;

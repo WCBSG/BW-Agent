@@ -93,6 +93,11 @@ typedef struct {
   long long first_byte_ms;   /* 从开始到模型吐出第一个字的毫秒数(感知延迟) */
   long long wait_ms;         /* 其中"等用户点允许/拒绝"的毫秒数,不算模型响应 */
   long long llm_ms;          /* 其中真正花在模型请求上的毫秒数(用于解释"时快时慢") */
+  /* 上下文用量(收尾事件里带给界面,画那个占用环) */
+  int ctx_used;
+  int ctx_window;
+  int ctx_reserve;
+  int ctx_compressed;
 } sse_ctx_t;
 
 /* 每个连接线程各有一份直播上下文:一个会话在跑的时候,别的会话照样能开自己的流。
@@ -224,6 +229,11 @@ static void ev_message_stop(sse_ctx_t *c, const char *stop_reason, const char *d
     buf_printf(&b, ",\"modelSteps\":%d,\"directSteps\":%d", by_model, by_direct);
   }
   buf_printf(&b, ",\"llmMs\":%lld", (long long)(c->llm_ms > 0 ? c->llm_ms : 0));
+  /* 上下文用量:界面右上角那个环每轮结束顺手刷新一次,
+     不必再单独打一次 /api/status。数值在收尾前由调用方填进 ctx。 */
+  buf_printf(&b,
+             ",\"context\":{\"used\":%d,\"window\":%d,\"reserve\":%d,\"compressed\":%d}",
+             c->ctx_used, c->ctx_window, c->ctx_reserve, c->ctx_compressed);
   buf_puts(&b, "}");
   sse_send(c, b.data);
   buf_free(&b);
@@ -897,6 +907,18 @@ static char *build_status_json(void) {
   buf_printf(&b, ",\"modelFailed\":%s", llm_last_error()[0] ? "true" : "false");
   buf_printf(&b, ",\"tools\":%d,\"skills\":%d", tools_count(), skills_count());
   buf_printf(&b, ",\"maxSteps\":%d", MAX_STEPS_DEFAULT);
+  /* 上下文占用:分子是上一次提示词的估算 token,分母是模型窗口。
+     界面右上角那个环读的就是这三个数。 */
+  {
+    agent_slot_t *cur = agent_slot_find(g_session);
+    int used = cur ? agent_ctx_used(cur->a) : 0;
+    int window = providers_context_tokens();
+    int reserve = window / 8;
+    int compressed = cur ? agent_ctx_compressed(cur->a) : 0;
+    buf_printf(&b,
+               ",\"context\":{\"used\":%d,\"window\":%d,\"reserve\":%d,\"compressed\":%d}",
+               used, window, reserve, compressed);
+  }
 
   json_t *findings = store_all(g_store, "findings");
   int n = findings ? j_len(findings) : 0;
@@ -1793,8 +1815,33 @@ static int wants_whole_pool(const char *q) {
   return text_has_target(q) ? 0 : 1;
 }
 
-static void h_chat(const http_req_t *req, http_res_t *res) {
-  /* 会话 id 先读出来:附件与历史都按会话存,拼输入时要用。
+/* 把"当前上下文用量"记进会话:下次打开这条对话,环上还是这个数。
+   摘要与压缩轮数原样保留 —— 只是补一个 tokens 字段。 */
+static void ctx_save_used(const char *sid, agent_t *a) {
+  if (!sid || !*sid || !a) return;
+  json_t *sess = sess_get(sid);
+  json_t *old = j_get(sess, "context");
+  /* 先把要保留的字段抄进本地缓冲:json_free(sess) 之后那些指针就悬空了
+     (踩过 —— 摘要被写成了乱码)。 */
+  char sum[1600] = "";
+  char at[48] = "";
+  snprintf(sum, sizeof(sum), "%s", j_s(old, "summary", ""));
+  snprintf(at, sizeof(at), "%s", j_s(old, "at", ""));
+  int cut = (int)j_n(old, "compacted_turns", 0);
+  json_free(sess);
+
+  json_t *ctx = j_obj();
+  j_set_num(ctx, "tokens", agent_ctx_used(a));
+  if (sum[0]) j_set_str(ctx, "summary", sum);
+  if (cut > 0) j_set_num(ctx, "compacted_turns", cut);
+  if (at[0]) j_set_str(ctx, "at", at);
+  sess_set_context(sid, ctx);
+}
+
+/* 上下文压缩的前置声明:实现在 h_compact 附近(用到 llm_ask 之后) */
+static int do_compact(const char *sid, int keep, char *summary_out, size_t cap);
+
+static void h_chat(const http_req_t *req, http_res_t *res) {  /* 会话 id 先读出来:附件与历史都按会话存,拼输入时要用。
      查询串和 JSON 体都认 —— 界面走查询串,脚本调接口时更顺手的是 body。 */
   char q[4096];
   char sid[64];
@@ -1946,6 +1993,20 @@ static void h_chat(const http_req_t *req, http_res_t *res) {
   /* —— 从这里开始不再持有全局锁:一轮几十秒,别人(尤其是界面自己的状态轮询)
         不能在门外干等。共享数据一律走各自的锁(store 自带锁,状态缓存自带锁)。 —— */
   EnterCriticalSection(&slot->lock);
+
+  /* 换过模型就按新窗口重算预算;并把上一次会话里存下的摘要接上 ——
+     压缩是跨轮的,进程重启后也要生效。 */
+  {
+    int win = providers_context_tokens();
+    agent_set_ctx_window(slot->a, win, win / 8);
+    json_t *sess0 = sess_get(sid);
+    json_t *ctx0 = j_get(sess0, "context");
+    const char *sum0 = j_s(ctx0, "summary", "");
+    if (sum0 && *sum0) {
+      agent_ctx_set_summary(slot->a, sum0, (int)j_n(ctx0, "compacted_turns", 0));
+    }
+    json_free(sess0);
+  }
 
   /* 整池巡检:先把目标列出来(只取池里"允许"的条目,去重,按录入顺序)。
      每站一轮 —— 见 wants_whole_pool 上面那段说明。 */
@@ -2122,6 +2183,10 @@ static void h_chat(const http_req_t *req, http_res_t *res) {
   /* 收尾:只把块关掉,不往正文里塞"——— 本轮循环结束 ———"这类记账行 ——
      它会被当成智能体说的话渲染进气泡,而"为什么停"本来就有专门的落点
      (message_stop 的 stopDetail,界面上的收尾行)。 */
+  ctx.ctx_used = agent_ctx_used(slot->a);
+  ctx.ctx_window = agent_ctx_window(slot->a);
+  ctx.ctx_reserve = agent_ctx_reserve(slot->a);
+  ctx.ctx_compressed = agent_ctx_compressed(slot->a);
   t_close_tool(&ctx);
   t_close_text(&ctx);
   ev_message_stop(&ctx, stop, reason, &st);
@@ -2156,6 +2221,25 @@ static void h_chat(const http_req_t *req, http_res_t *res) {
   }
   store_set_chat("");
   buf_free(&ctx.answer);
+  ctx_save_used(sid, slot->a);   /* 打开这条对话时,环上显示的就是这个数 */
+
+  /* 自动压缩:提示词已经用掉九成窗口就压一次(留最近 2 轮)。
+     为什么不等到爆:模型一旦超限是硬失败,那一轮等于白跑。 */
+  {
+    int used = agent_ctx_used(slot->a);
+    int window = agent_ctx_window(slot->a);
+    int reserve = agent_ctx_reserve(slot->a);
+    int limit = window - reserve;
+    if (limit > 0 && used > (limit * 9) / 10) {
+      char sum[1600] = "";
+      int cut = do_compact(sid, 2, sum, sizeof(sum));
+      if (cut > 0) {
+        agent_ctx_set_summary(slot->a, sum, agent_ctx_compressed(slot->a) + cut);
+        agent_history_keep_recent(slot->a, 6);
+        log_info("[上下文] 用量 %d/%d,已自动压缩 %d 轮", used, window, cut);
+      }
+    }
+  }
   LeaveCriticalSection(&slot->lock);
   refresh_status_cache();
 }
@@ -2249,6 +2333,153 @@ static char *attach_read(const char *sid, const char *id, size_t cap, size_t *ou
 /* 会话列表与回看:界面左栏点一条,就能回到那次对话。
    ?run=RUN-0001 时返回"这次运行"的详情与它所属的会话 —— 老记录没有会话,
    也能点进去看当时的统计与发现,而不是掉进一个笼统的历史页。 */
+/* ================= 上下文压缩 =================
+   做法和主流 agent 一致:把"较早的轮次"压成一段摘要,原文不再进提示词。
+   为什么需要:提示词是"系统 + 技能 + 工具 + 历史 + 观察"拼起来的,
+   历史一长,真正有用的观察就被挤出去了;而直接砍掉旧轮次会让指代失忆。
+   摘要 = 谁知道"之前查过哪个站、结论是什么",砍掉细节、留住线索。 */
+
+/* 把一轮压成一行:用户说了什么 + 结论/停止原因 */
+static void turn_to_line(json_t *turn, buf_t *out) {
+  char ts[40] = "";
+  const char *started = j_s(turn, "started_at", "");
+  snprintf(ts, sizeof(ts), "%s", started);
+  json_t *ub = j_get(j_get(turn, "user"), "blocks");
+  const char *utext = "";
+  for (int i = 0; i < j_len(ub); i++) {
+    if (strcmp(j_s(j_at(ub, i), "type", ""), "text") == 0) { utext = j_s(j_at(ub, i), "text", ""); break; }
+  }
+  json_t *resp = j_get(turn, "response");
+  const char *ans = j_s(resp, "text", "");
+  const char *stop = j_s(resp, "stop_detail", j_s(resp, "stop_reason", ""));
+  buf_printf(out, "- [%s] 用户:", ts);
+
+  buf_t a;
+  buf_init(&a);
+  buf_putn(&a, utext ? utext : "", u8_prefix(utext ? utext : "", 160));
+  buf_puts(out, a.data ? a.data : "");
+  buf_free(&a);
+
+  buf_puts(out, " → 结论:");
+  buf_t c;
+  buf_init(&c);
+  buf_putn(&c, ans ? ans : "", u8_prefix(ans ? ans : "", 200));
+  buf_puts(out, c.data ? c.data : "");
+  buf_free(&c);
+  if (stop && *stop) buf_printf(out, "(停止:%s)", stop);
+  buf_puts(out, "\n");
+}
+
+/* 压缩一个会话的前 N 轮(留下最近 keep 轮)。
+   返回被压掉的轮数;0 表示没什么可压的。 */
+static int do_compact(const char *sid, int keep, char *summary_out, size_t cap) {
+  if (!sid || !*sid) return 0;
+  json_t *sess = sess_get(sid);
+  json_t *turns = j_get(sess, "turns");
+  int total = j_len(turns);
+  if (total <= keep) { json_free(sess); return 0; }
+  int cut = total - keep;
+
+  /* 先把老的轮次压成文本 */
+  buf_t raw;
+  buf_init(&raw);
+  for (int i = 0; i < cut; i++) turn_to_line(j_at(turns, i), &raw);
+  if (!raw.data || !raw.len) { buf_free(&raw); json_free(sess); return 0; }
+
+  /* 让模型写一段更紧的摘要;模型不可用就退化为原文摘录(仍然比全文省得多) */
+  buf_t prompt;
+  buf_init(&prompt);
+  buf_puts(&prompt,
+      "把下面这段巡检对话压缩成不超过 300 字的中文摘要。要求:\n"
+      "1. 保留:查过哪些目标、做了什么、得出什么结论(尤其是发现/异常);\n"
+      "2. 保留:用户明确表达过的偏好或后续要接着做的事;\n"
+      "3. 不要编造、不要复述步骤细节、不要用列表以外的格式。\n\n");
+  buf_puts(&prompt, raw.data);
+  buf_t sum;
+  buf_init(&sum);
+  const char *use = raw.data;
+  char *model_sum = NULL;
+  if (llm_enabled() && llm_ask(prompt.data, &sum) == 0 && sum.len > 0) {
+    model_sum = sum.data;
+    use = model_sum;
+  }
+  buf_free(&prompt);
+
+  /* 落进会话:context{summary, compacted_turns, at} —— 界面据此显示压缩点 */
+  json_t *old = j_get(sess, "context");
+  int prev = (int)j_n(old, "compacted_turns", 0);
+  buf_t merged;
+  buf_init(&merged);
+  const char *prev_sum = j_s(old, "summary", "");
+  if (prev_sum && *prev_sum) {
+    buf_puts(&merged, prev_sum);
+    buf_puts(&merged, "\n");
+  }
+  buf_putn(&merged, use, u8_prefix(use, 1200));
+
+  json_t *ctx = j_obj();
+  j_set_str(ctx, "summary", merged.data ? merged.data : "");
+  j_set_num(ctx, "compacted_turns", prev + cut);
+  /* 用量一并带上:压缩会重写整个 context 对象,漏了它环就归零了 */
+  j_set_num(ctx, "tokens", (int)j_n(old, "tokens", 0));
+  char ts[40];
+  now_iso(ts, sizeof(ts));
+  j_set_str(ctx, "at", ts);
+  sess_set_context(sid, ctx);
+
+  if (summary_out) snprintf(summary_out, cap, "%s", merged.data ? merged.data : "");
+  buf_free(&merged);
+  buf_free(&sum);
+  buf_free(&raw);
+  json_free(sess);
+  return cut;
+}
+
+static void h_compact(const http_req_t *req, http_res_t *res) {
+  char sid[64];
+  http_query(req, "sid", sid, sizeof(sid), "");
+  if (!sid[0] && req->body) {
+    json_t *b = json_parse(req->body);
+    if (b) { snprintf(sid, sizeof(sid), "%s", j_s(b, "sid", "")); json_free(b); }
+  }
+  if (!sid[0]) { http_res_json(res, 400, "{\"ok\":false,\"error\":\"需要 sid\"}"); return; }
+
+  /* 压缩前先按当前模型窗口更新一次预算(换了模型就得跟着变) */
+  agent_slot_t *slot = agent_slot_of(sid);
+  int window = providers_context_tokens();
+  if (slot) {
+    agent_set_ctx_window(slot->a, window, window / 8);
+    int keep = 6;                       /* 留最近 3 轮原文(每轮 2 条历史) */
+    char sum[1600] = "";
+    int cut = do_compact(sid, 2, sum, sizeof(sum));
+    if (cut > 0) {
+      agent_ctx_set_summary(slot->a, sum, agent_ctx_compressed(slot->a) + cut);
+      agent_history_keep_recent(slot->a, keep);
+      log_info("[上下文] 会话 %s 压缩了 %d 轮(留最近 2 轮)", sid, cut);
+    }
+    json_t *root = j_obj();
+    j_set_bool(root, "ok", 1);
+    j_set_num(root, "compacted", cut);
+    j_set_str(root, "summary", sum);
+    j_set_num(root, "used", agent_ctx_used(slot->a));
+    j_set_num(root, "window", window);
+    char *text = json_dump(root);
+    http_res_json(res, 200, text);
+    free(text);
+    json_free(root);
+    return;  }
+
+  char sum[1600] = "";
+  int cut = do_compact(sid, 2, sum, sizeof(sum));
+  buf_t out;
+  buf_init(&out);
+  buf_printf(&out, "{\"ok\":true,\"compacted\":%d,\"summary\":", cut);
+  buf_json_str(&out, sum);
+  buf_puts(&out, "}");
+  http_res_json(res, 200, out.data);
+  buf_free(&out);
+}
+
 static void h_chats(const http_req_t *req, http_res_t *res) {
   /* 归档/取消归档/固定:记进会话文件(补丁形式,不重写整份)。 */
   if (strcmp(req->method, "POST") == 0) {
@@ -2415,6 +2646,7 @@ static void router(const http_req_t *req, http_res_t *res, void *ud) {
     if (!strcmp(p, "/api/pool")) { h_pool(req, res); return; }
     if (!strcmp(p, "/api/cancel")) { h_cancel(req, res); return; }
     if (!strcmp(p, "/api/chats")) { h_chats(req, res); return; }
+    if (!strcmp(p, "/api/compact")) { h_compact(req, res); return; }
     if (!strcmp(p, "/api/attach")) { h_attach(req, res); return; }
     if (!strcmp(p, "/api/settings")) { api_rules(req, res); return; }
     if (!strcmp(p, "/api/rules/preset")) { api_rules_preset(req, res); return; }

@@ -201,6 +201,7 @@ int providers_load(void) {
     p->timeout_ms = j_n(it, "timeout_ms", 45000);
     p->temperature = j_n(it, "temperature", 0.2);
     p->max_tokens = (int)j_n(it, "max_tokens", 0);
+    p->context_tokens = (int)j_n(it, "context_tokens", 0);
     p->enabled = j_b(it, "enabled", 1);
     if (!p->id[0]) snprintf(p->id, sizeof(p->id), "p%d", g_count + 1);
     if (!p->name[0]) snprintf(p->name, sizeof(p->name), "%s", p->id);
@@ -291,6 +292,7 @@ static void provider_to_json(json_t *o, const provider_t *p, int mask) {
   j_set_num(o, "timeout_ms", p->timeout_ms);
   j_set_num(o, "temperature", p->temperature);
   j_set_num(o, "max_tokens", p->max_tokens);
+  j_set_num(o, "context_tokens", p->context_tokens);
   j_set_bool(o, "enabled", p->enabled);
   j_set_bool(o, "ready", provider_ready(p));
 }
@@ -375,6 +377,7 @@ int providers_apply(json_t *root, char *err, size_t errcap) {
     p->timeout_ms = j_n(it, "timeout_ms", old ? old->timeout_ms : 45000);
     p->temperature = j_n(it, "temperature", old ? old->temperature : 0.2);
     p->max_tokens = (int)j_n(it, "max_tokens", old ? old->max_tokens : 0);
+    p->context_tokens = (int)j_n(it, "context_tokens", old && old->context_tokens > 0 ? old->context_tokens : 0);
     p->enabled = j_b(it, "enabled", 1);
     if (!p->id[0]) snprintf(p->id, sizeof(p->id), "p%d", m + 1);
     if (!p->name[0]) snprintf(p->name, sizeof(p->name), "%s", p->id);
@@ -439,6 +442,15 @@ void providers_reset_tokens(void) { g_last_prompt_tokens = 0; g_last_completion_
 void providers_last_tokens(int *prompt, int *completion) {
   if (prompt) *prompt = g_last_prompt_tokens;
   if (completion) *completion = g_last_completion_tokens;
+}
+
+int providers_context_tokens(void) {
+  int idx = providers_active_index();
+  provider_t *p = idx >= 0 ? provider_at(idx) : NULL;
+  if (p && p->context_tokens > 0) return p->context_tokens;
+  /* 没配就给一个保守的默认值:界面上的占用环至少有个分母,
+     不至于"配了模型却显示 0/0"。 */
+  return 128000;
 }
 
 static void capture_usage(json_t *o) {

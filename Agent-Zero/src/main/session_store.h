@@ -64,6 +64,9 @@ int sess_delete(const char *id);
 /* 输入状态(草稿/附件/审批策略/模型):关掉页面再回来还是原来的样子 */
 int sess_set_input(const char *id, json_t *input);
 
+/* 压缩结果(摘要 + 压掉几轮):写进会话,界面据此显示压缩点 */
+int sess_set_context(const char *id, json_t *ctx);
+
 /* ---------- 一轮对话 ---------- */
 
 /* 开一轮:写入骨架(用户说了什么 + 这次请求的基本信息),立即落盘。

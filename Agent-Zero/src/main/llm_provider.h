@@ -41,6 +41,7 @@ typedef struct {
   double timeout_ms;       /* 0 = 默认 45 秒 */
   double temperature;      /* <0 = 不发送 */
   int    max_tokens;       /* 0 = 不发送 */
+  int    context_tokens;   /* 上下文窗口(输入上限);0 = 用默认值 */
   int    enabled;          /* 关掉的不参与调用,但配置保留 */
 } provider_t;
 
@@ -65,6 +66,10 @@ const char *providers_display_name(void);
 /* 最近一次调用的用量(取不到就是 0) */
 void providers_last_tokens(int *prompt, int *completion);
 void providers_reset_tokens(void);
+
+/* 当前模型的上下文窗口(输入上限,单位 token)。
+   没配就返回默认 128000 —— 界面上的占用环需要一个分母。 */
+int providers_context_tokens(void);
 const char *provider_kind_name(int kind);
 int  provider_kind_from_name(const char *name);
 const char *providers_path(void);

@@ -501,6 +501,16 @@ function bars(container, dict, colorFn) {
 function renderStatus(s) {
   state.status = s;
 
+  /* 上下文窗口随当前模型走:没跑过对话也要能显示分母 */
+  if (s.context) {
+    ctxApply({
+      used: Number(s.context.used) || 0,
+      window: Number(s.context.window) || 0,
+      reserve: Number(s.context.reserve) || 0,
+      compressed: Number(s.context.compressed) || 0,
+    });
+  }
+
   const pm = $('pill-model');
   /* 三态:没配 / 配了但最近一次失败 / 正常。
      "配了"不等于"通了" —— 选中的那条刚失败过,就不该还亮着"在线"。 */
@@ -1273,6 +1283,7 @@ function onMessageStop(e, m) {
   /* 先结审批计时(它会重新起"等待提示"的钟),再清等待提示 —— 顺序反了,
      收尾后还会冒出一条"模型还在想"。 */
   endApprovalWait(msg);
+  if (e.context) ctxApply(e.context);   /* 环跟着这一轮更新,不用再打一次状态接口 */
   if (msg === current) { clearWaiting(); hideQuestionBar(); }
   /* 人在审批条上停的那几秒不是模型在算 —— 把它从耗时里扣掉,
      否则"光速跑完但被人耽误了 40 秒"会被记成模型慢。 */
@@ -2062,6 +2073,9 @@ function newChat() {
   resetStream();
   showWork();
   syncComposer();
+  /* 新会话的上下文是空的:环归零,不要留着上一条会话的读数 */
+  const win = (state.status && state.status.context && state.status.context.window) || 128000;
+  ctxApply({ used: 0, window: win, reserve: Math.round(win / 8), compressed: 0 });
   renderChats();
   const q = $('q');
   if (q) setTimeout(() => q.focus(), 180);
@@ -2217,6 +2231,22 @@ async function openChat(sid) {
   if ($('q') && typeof input.draft === 'string') {
     $('q').value = input.draft;
     $('q').style.height = 'auto';
+  }
+  /* 这条会话压过多少轮:环上要看得出来 */
+  const cctx = sess.context || {};
+  const win = (state.status && state.status.context && state.status.context.window) || 128000;
+  ctxApply({
+    used: Number(cctx.tokens) || 0,
+    window: win,
+    reserve: Math.round(win / 8),
+    compressed: Number(cctx.compacted_turns) || 0,
+  });
+  /* 压过的会话:开头留一条标记,回看时知道"前面被压成摘要了" */
+  if (cctx.summary) {
+    const mark = el('div', 'compact-mark');
+    mark.innerHTML = '<b>更早的对话已压缩成摘要（' + (Number(cctx.compacted_turns) || 0) + ' 轮）</b>\n' +
+      mdEscape(cctx.summary);
+    stream.insertBefore(mark, stream.firstChild);
   }
   if (input.approval && APPR.items.some((x) => x.id === input.approval) && input.approval !== APPR.active) {
     applyApproval(input.approval).catch(() => {});
@@ -2804,6 +2834,91 @@ async function applyApproval(id) {
     console.warn(e.message);
   }
 }
+
+/* ---------- 上下文占用环 ----------
+   照 VS Code Copilot 的样子:输入框旁边一个小环,点开是
+   "已用 / 窗口"、斜纹表示的响应预留,以及"压缩对话"入口。 */
+const CTX = { used: 0, window: 0, reserve: 0, compressed: 0 };
+const CTX_CIRC = 2 * Math.PI * 15;      /* r=15 的周长,和 SVG 里的 dasharray 对齐 */
+
+function ctxApply(d) {
+  if (!d) return;
+  CTX.used = Number(d.used) || 0;
+  CTX.window = Number(d.window) || 0;
+  CTX.reserve = Number(d.reserve) || 0;
+  CTX.compressed = Number(d.compressed) || 0;
+  ctxPaint();
+}
+
+function ctxPaint() {
+  const ratio = CTX.window > 0 ? Math.min(1, CTX.used / CTX.window) : 0;
+  const pct = Math.round(ratio * 100);
+  const arc = $('ctx-arc');
+  if (arc) {
+    arc.setAttribute('stroke-dasharray', String(CTX_CIRC));
+    arc.setAttribute('stroke-dashoffset', String(CTX_CIRC * (1 - ratio)));
+  }
+  if ($('ctx-pct')) $('ctx-pct').textContent = pct + '%';
+  const ring = $('ctx-ring');
+  if (ring) {
+    ring.classList.toggle('warn', pct >= 70 && pct < 90);
+    ring.classList.toggle('hot', pct >= 90);
+    ring.title = `上下文 ${ctxFormat(CTX.used)} / ${ctxFormat(CTX.window)}（${pct}%）`;
+  }
+  if ($('ctx-nums')) $('ctx-nums').textContent = `${ctxFormat(CTX.used)} / ${ctxFormat(CTX.window)} 个令牌`;
+  if ($('ctx-ratio')) $('ctx-ratio').textContent = pct + '%';
+  if ($('ctx-bar-fill')) $('ctx-bar-fill').style.width = Math.max(0, Math.min(88, pct)) + '%';
+  const hold = document.querySelector('.ctx-bar-hold');
+  if (hold && CTX.window > 0) {
+    hold.style.width = Math.max(4, Math.round((CTX.reserve / CTX.window) * 100)) + '%';
+  }
+  if ($('ctx-sub')) {
+    $('ctx-sub').textContent = CTX.compressed > 0
+      ? `已压缩 ${CTX.compressed} 轮（旧轮次换成摘要）`
+      : '还没压缩过';
+  }
+}
+
+/* 1M 这种写法在中文里读起来顺:大于一万就用 K */
+function ctxFormat(n) {
+  if (!n) return '0';
+  if (n >= 1000000) return (n / 1000000).toFixed(n >= 10000000 ? 0 : 1) + 'M';
+  if (n >= 1000) return (n / 1000).toFixed(n >= 100000 ? 0 : 1) + 'K';
+  return String(n);
+}
+
+async function ctxCompact() {
+  const btn = $('ctx-compact');
+  if (btn) { btn.disabled = true; btn.textContent = '正在压缩…'; }
+  try {
+    const r = await api('/api/compact?sid=' + encodeURIComponent(BW_SID), { method: 'POST', body: '{}' });
+    if (r && r.summary) {
+      /* 现场留个标记:压缩是"看得见"的动作,不是偷偷改上下文 */
+      const mark = el('div', 'compact-mark');
+      mark.innerHTML = '<b>已压缩 ' + (r.compacted || 0) + ' 轮</b>\n' + mdEscape(r.summary);
+      stream.appendChild(mark);
+      scrollBottom();
+    }
+    if (r && r.window) ctxApply({ used: r.used, window: r.window, reserve: Math.round((r.window || 0) / 8), compressed: CTX.compressed + (r.compacted || 0) });
+  } catch (e) {
+    if ($('ctx-sub')) $('ctx-sub').textContent = '压缩失败：' + ((e && e.message) || e);
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = '压缩对话'; }
+  }
+}
+
+if ($('ctx-ring')) {
+  $('ctx-ring').addEventListener('click', (e) => {
+    e.stopPropagation();
+    const pop = $('ctx-pop');
+    if (pop) pop.hidden = !pop.hidden;
+  });
+}
+if ($('ctx-compact')) $('ctx-compact').addEventListener('click', (e) => { e.stopPropagation(); ctxCompact(); });
+document.addEventListener('click', (e) => {
+  const pop = $('ctx-pop');
+  if (pop && !pop.hidden && !$('ctx-wrap').contains(e.target)) pop.hidden = true;
+});
 
 /* 输入状态(草稿/附件/审批策略/模型)跟着会话存:关掉窗口再回来还是原样。
    写盘要防抖 —— 每敲一个字就发一次请求是自找麻烦。 */

@@ -170,6 +170,25 @@
            不属于页面顶部的全局设置 -->
       <div class="compose-foot">
         <select class="target-select policy-select" id="approval-select" title="工具调用的审批策略"></select>
+        <!-- 上下文占用环:点开看用量与压缩入口(照 VS Code Copilot 的样子) -->
+        <div class="ctx-wrap" id="ctx-wrap">
+          <button type="button" class="ctx-ring" id="ctx-ring" title="上下文占用">
+            <svg viewBox="0 0 36 36" aria-hidden="true">
+              <circle class="ctx-bg" cx="18" cy="18" r="15"></circle>
+              <circle class="ctx-fg" id="ctx-arc" cx="18" cy="18" r="15"
+                      stroke-dasharray="94.248" stroke-dashoffset="94.248"></circle>
+            </svg>
+            <span class="ctx-pct" id="ctx-pct">0%</span>
+          </button>
+          <div class="ctx-pop" id="ctx-pop" hidden>
+            <div class="ctx-pop-title">上下文窗口</div>
+            <div class="ctx-pop-nums"><b id="ctx-nums">0 / 0</b><span id="ctx-ratio">0%</span></div>
+            <div class="ctx-bar"><span class="ctx-bar-fill" id="ctx-bar-fill"></span><span class="ctx-bar-hold"></span></div>
+            <div class="ctx-bar-note"><i></i>保留用于响应</div>
+            <div class="ctx-pop-sub" id="ctx-sub">已压缩 0 轮</div>
+            <button type="button" class="ctx-compact" id="ctx-compact">压缩对话</button>
+          </div>
+        </div>
       </div>
     </form>
   </div>

@@ -82,6 +82,10 @@ char *w_to_u8_alloc(const wchar_t *w, int chars);   /* 释放用 free */
    按字节截中文会截出半个字,界面上就是乱码 —— 凡是"摘要/标题"都必须走这里。 */
 size_t u8_prefix(const char *s, size_t max_bytes);
 
+/* 估算 token 数(不需要分词器):CJK 一字约 1 token,ASCII 约 4 字节 1 token。
+   用途是"上下文占用环"和压缩阈值 —— 只要量级对,不需要精确到个位。 */
+size_t est_tokens(const char *s);
+
 /* ---------- 时间 ---------- */
 /* 2026-10-15T09:30:00.000Z —— 与三册合同里的 ISO 格式完全一致 */
 void now_iso(char *out, size_t cap);

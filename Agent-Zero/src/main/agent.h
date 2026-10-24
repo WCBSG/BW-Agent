@@ -136,6 +136,21 @@ int      agent_unattended(agent_t *a);
 /* 这一轮累计花在模型请求上的毫秒数(含失败的那次等待) */
 long long agent_llm_ms(agent_t *a);
 void      agent_llm_ms_reset(agent_t *a);
+
+/* ---------- 上下文用量与压缩 ---------- */
+/* 上一次提示词估算的 token 数(占用环的分子) */
+void agent_set_ctx_used(agent_t *a, int tokens);
+int  agent_ctx_used(agent_t *a);
+/* 模型窗口与"留给响应的那一截"(占用环的分母与阴影区) */
+void agent_set_ctx_window(agent_t *a, int window, int reserve);
+int  agent_ctx_window(agent_t *a);
+int  agent_ctx_reserve(agent_t *a);
+/* 已压缩的轮数与摘要:摘要会替换掉被压掉的那些轮次进提示词 */
+int         agent_ctx_compressed(agent_t *a);
+const char *agent_ctx_summary(agent_t *a);
+void agent_ctx_set_summary(agent_t *a, const char *summary, int compacted_turns);
+/* 压缩后只留最近 keep 条历史(旧的已由摘要代表) */
+void agent_history_keep_recent(agent_t *a, int keep);
 /* 对话历史(多轮上下文,决定"这轮说的是哪个站"时要用) */
 void     agent_add_history(agent_t *a, const char *role, const char *text);
 /* 读历史:决策提示词要把最近几轮带上,否则"继续""换到那个站"没法消解 */

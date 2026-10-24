@@ -413,6 +413,28 @@ int sess_set_input(const char *id, json_t *input) {
   return rc;
 }
 
+int sess_set_context(const char *id, json_t *ctx) {
+  if (!id || !*id || !ctx || !g_root[0]) {
+    if (ctx) json_free(ctx);
+    return -1;
+  }
+  lock_init();
+  EnterCriticalSection(&g_lock);
+  char p[MAX_PATH * 4];
+  ensure_snapshot(id, p, sizeof(p));
+  json_t *op = j_obj();
+  j_set_num(op, "kind", 1);
+  json_t *k = j_arr();
+  j_add(k, j_str("context"));
+  j_set(op, "k", k);
+  j_set(op, "v", ctx);
+  ctx = NULL;
+  int rc = append_op(p, op);
+  json_free(op);
+  LeaveCriticalSection(&g_lock);
+  return rc;
+}
+
 json_t *sess_list(void) {
   json_t *out = j_arr();
   if (!g_root[0]) return out;

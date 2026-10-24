@@ -50,6 +50,14 @@ struct agent {
   /* 累计花在模型请求上的毫秒数:用来向用户解释"为什么这轮快/那轮慢" */
   long long llm_ms;
   buf_t scope_note;      /* 拼好的授权范围说明(提示词里用) */
+  /* ---- 上下文(占用环 + 压缩) ----
+     used 是"上一次提示词估算出来的 token 数",window 是模型的输入上限,
+     reserve 是留给响应的那一截。三个数一起决定"要不要压缩"。 */
+  int ctx_used;
+  int ctx_window;
+  int ctx_reserve;
+  int ctx_compressed;    /* 这一会话已经压缩过几轮 */
+  buf_t ctx_summary;     /* 压缩出来的摘要(拼进提示词,替代被压掉的轮次) */
 };
 
 /* ================= 生命周期 ================= */
@@ -63,6 +71,9 @@ agent_t *agent_create(const char *session_id) {
   a->history = j_arr();
   a->max_steps = MAX_STEPS_DEFAULT;
   buf_init(&a->scope_note);
+  buf_init(&a->ctx_summary);
+  a->ctx_window = 128000;
+  a->ctx_reserve = 16000;
   return a;
 }
 
@@ -71,7 +82,39 @@ void agent_free(agent_t *a) {
   json_free(a->history);
   if (a->domains) str_free_list(a->domains, a->domain_count);
   buf_free(&a->scope_note);
+  buf_free(&a->ctx_summary);
   free(a);
+}
+
+/* ---------- 上下文用量与压缩 ---------- */
+void agent_set_ctx_used(agent_t *a, int tokens) { if (a) a->ctx_used = tokens; }
+void agent_set_ctx_window(agent_t *a, int window, int reserve) {
+  if (!a) return;
+  a->ctx_window = window > 0 ? window : 128000;
+  a->ctx_reserve = reserve > 0 ? reserve : (a->ctx_window / 8);
+}
+int agent_ctx_used(agent_t *a) { return a ? a->ctx_used : 0; }
+int agent_ctx_window(agent_t *a) { return a ? a->ctx_window : 0; }
+int agent_ctx_reserve(agent_t *a) { return a ? a->ctx_reserve : 0; }
+int agent_ctx_compressed(agent_t *a) { return a ? a->ctx_compressed : 0; }
+const char *agent_ctx_summary(agent_t *a) { return a && a->ctx_summary.data ? a->ctx_summary.data : ""; }
+
+void agent_ctx_set_summary(agent_t *a, const char *summary, int compacted_turns) {
+  if (!a) return;
+  buf_clear(&a->ctx_summary);
+  if (summary && *summary) buf_puts(&a->ctx_summary, summary);
+  a->ctx_compressed = compacted_turns > 0 ? compacted_turns : 0;
+}
+
+/* 压缩后历史只剩"最近几轮":旧的那部分已经被摘要代表了 */
+void agent_history_keep_recent(agent_t *a, int keep) {
+  if (!a || keep < 0) return;
+  while (j_len(a->history) > keep) {
+    json_t *keepArr = j_arr();
+    for (int i = 1; i < j_len(a->history); i++) j_add(keepArr, j_clone(j_at(a->history, i)));
+    json_free(a->history);
+    a->history = keepArr;
+  }
 }
 
 void agent_set_hooks(agent_t *a, const agent_hooks_t *hooks) {

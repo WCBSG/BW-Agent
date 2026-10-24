@@ -584,6 +584,67 @@ body.row-resizing *{cursor:row-resize !important}
   font-size:11.5px;color:var(--ink-3);
 }
 /* 这一轮还没跑完、又排了一句:在输入框下面说清楚它会什么时候发 */
+
+/* ---------- 上下文占用环 ---------- */
+.ctx-wrap{position:relative;margin-left:auto}
+.ctx-ring{
+  position:relative;width:30px;height:30px;border-radius:50%;padding:0;
+  display:grid;place-items:center;color:var(--ink-3);
+}
+.ctx-ring svg{width:30px;height:30px;transform:rotate(-90deg)}
+.ctx-bg{fill:none;stroke:var(--line-2);stroke-width:3}
+.ctx-fg{
+  fill:none;stroke:#4a7fb5;stroke-width:3;stroke-linecap:round;
+  transition:stroke-dashoffset .25s var(--ease),stroke .25s var(--ease);
+}
+.ctx-ring.warn .ctx-fg{stroke:var(--warn)}
+.ctx-ring.hot .ctx-fg{stroke:var(--bad)}
+.ctx-pct{
+  position:absolute;font-size:9.5px;font-variant-numeric:tabular-nums;
+  color:var(--ink-3);letter-spacing:-.02em;
+}
+.ctx-pop{
+  position:absolute;right:0;bottom:38px;z-index:40;width:248px;
+  background:var(--panel);border:1px solid var(--line-2);border-radius:10px;
+  box-shadow:0 8px 24px rgba(25,25,20,.12);padding:12px 13px;
+  font-size:12px;color:var(--ink-2);
+}
+.ctx-pop[hidden]{display:none}
+.ctx-pop-title{font-size:11.5px;color:var(--ink-3);margin-bottom:6px}
+.ctx-pop-nums{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:7px}
+.ctx-pop-nums b{font-family:var(--mono);font-size:12.5px;font-weight:600;color:var(--ink)}
+.ctx-pop-nums span{font-family:var(--mono);font-size:12px;color:var(--ink-3)}
+.ctx-bar{
+  position:relative;height:6px;border-radius:3px;background:#e9e9e3;overflow:hidden;
+}
+.ctx-bar-fill{
+  position:absolute;left:0;top:0;bottom:0;width:0;background:#4a7fb5;
+  transition:width .25s var(--ease),background .25s var(--ease);
+}
+/* 斜纹:留给响应,不该被占满 */
+.ctx-bar-hold{
+  position:absolute;right:0;top:0;bottom:0;width:12.5%;
+  background:repeating-linear-gradient(115deg,#c9d6e4 0 3px,transparent 3px 6px);
+}
+.ctx-bar-note{display:flex;align-items:center;gap:5px;font-size:11px;color:var(--ink-3);margin-top:6px}
+.ctx-bar-note i{
+  width:11px;height:7px;border-radius:2px;
+  background:repeating-linear-gradient(115deg,#c9d6e4 0 3px,transparent 3px 6px);
+}
+.ctx-pop-sub{font-size:11px;color:var(--ink-3);margin-top:6px}
+.ctx-compact{
+  width:100%;margin-top:9px;border:1px solid var(--line-2);border-radius:7px;
+  padding:6px 0;font-size:12.5px;color:var(--ink-2);background:var(--panel);
+}
+.ctx-compact:hover{border-color:#c9c9c1;color:var(--ink)}
+.ctx-compact:disabled{opacity:.55;cursor:default}
+
+/* 压缩标记:会话里留一条,谁都能看出"这里被压过" */
+.compact-mark{
+  margin:6px 0 10px;padding:7px 11px;border-left:2px solid var(--line-2);
+  font-size:11.5px;color:var(--ink-3);line-height:1.6;white-space:pre-wrap;
+}
+.compact-mark b{color:var(--ink-2);font-weight:600}
 /* 排队中的那条话:以灰掉的气泡贴在消息流末尾,和"已发出"一眼能分清 */
 .msg.user.queued{opacity:.52}
 .msg.user.queued .body{background:#f3f3ef;border-style:dashed}
