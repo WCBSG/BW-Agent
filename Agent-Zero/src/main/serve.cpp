@@ -249,6 +249,10 @@ static void hook_thinking(void *ud, const char *text) {
   sse_ctx_t *c = g_sse;
   if (!c) return;
   t_close_tool(c);
+  /* 思考必须自成一个文本块:不先关掉上一块的话,后面的正文会被追加进这一块,
+     前端按"[第 N 步 · 思考]"开头判定时,整段(思考 + 回答)都被折进"思考"里,
+     用户看到的就只有一句"正在理解你的意图……"。 */
+  t_close_text(c);
   buf_t b;
   buf_init(&b);
   buf_puts(&b, "\n[第 ");
@@ -257,6 +261,7 @@ static void hook_thinking(void *ud, const char *text) {
   buf_puts(&b, text ? text : "");
   buf_puts(&b, "\n");
   t_put_text(c, b.data);
+  t_close_text(c);            /* 说完就收块,正文另起一块 */
   buf_free(&b);
 }
 
