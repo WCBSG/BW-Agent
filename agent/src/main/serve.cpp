@@ -87,6 +87,7 @@ typedef struct {
   buf_t answer;              /* 本轮说给用户的最终话(要落进会话转录) */
   long long t_start;         /* 这一轮开始的毫秒时刻 —— 耗时由后端算,界面只负责显示 */
   long long wait_ms;         /* 其中"等用户点允许/拒绝"的毫秒数,不算模型响应 */
+  long long llm_ms;          /* 其中真正花在模型请求上的毫秒数(用于解释"时快时慢") */
 } sse_ctx_t;
 
 /* 每个连接线程各有一份直播上下文:一个会话在跑的时候,别的会话照样能开自己的流。
@@ -188,7 +189,7 @@ static void ev_tool_status(sse_ctx_t *c, const char *tool_use_id,
   buf_free(&b);
 }
 
-static void ev_message_stop(sse_ctx_t *c, const char *stop_reason) {
+static void ev_message_stop(sse_ctx_t *c, const char *stop_reason, const loop_state_t *st) {
   buf_t b;
   buf_init(&b);
   buf_puts(&b, "{\"type\":\"message_stop\",\"messageId\":");
@@ -198,6 +199,16 @@ static void ev_message_stop(sse_ctx_t *c, const char *stop_reason) {
   /* 耗时以这里为准:界面切走、刷新、换会话之后还能从转录里读回同一个数 */
   buf_printf(&b, ",\"durationMs\":%lld,\"waitMs\":%lld",
              c->t_start ? now_ms() - c->t_start : 0, c->wait_ms);
+  /* 这一轮里有多少步真的问了模型:用户看到的"时快时慢"必须能对上账 */
+  if (st) {
+    int by_model = 0, by_rule = 0;
+    for (int i = 0; i < j_len(st->steps); i++) {
+      if (j_b(j_at(st->steps, i), "from_model", 0)) by_model++;
+      else by_rule++;
+    }
+    buf_printf(&b, ",\"modelSteps\":%d,\"ruleSteps\":%d", by_model, by_rule);
+  }
+  buf_printf(&b, ",\"llmMs\":%lld", (long long)(c->llm_ms > 0 ? c->llm_ms : 0));
   buf_puts(&b, "}");
   sse_send(c, b.data);
   buf_free(&b);
@@ -1976,6 +1987,7 @@ static void h_chat(const http_req_t *req, http_res_t *res) {
   buf_free(&input);
 
   const char *reason = st.stop_reason[0] ? st.stop_reason : "已完成";
+  ctx.llm_ms = agent_llm_ms(slot->a);
   const char *stop = (st.stop_code == STOP_NEED_USER) ? "refusal" : "end_turn";
   if (st.stop_code == STOP_ANSWERED || st.stop_code == STOP_ANSWERING_ONLY) {
     stop = "end_turn";
@@ -2028,7 +2040,7 @@ static void h_chat(const http_req_t *req, http_res_t *res) {
   t_put_text(&ctx, b.data);
   buf_free(&b);
   t_close_text(&ctx);
-  ev_message_stop(&ctx, stop);
+  ev_message_stop(&ctx, stop, &st);
 
   buf_free(&st.transcript);
   if (st.steps) json_free(st.steps);

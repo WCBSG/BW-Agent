@@ -183,27 +183,6 @@ static void selftest_llm(void) {
 
   check(llm_extract_action("完全不是 JSON", &d) != 0, "非 JSON 输出被拒绝");
   decision_free(&d);
-
-  /* 规则降级:断网时也能把常见意图顶上去 */
-  rule_decide("帮我看看 www.example-gov.cn 有没有敏感文件泄露", "", &d);
-  check(d.kind == ACT_ACT && strcmp(d.tool, "skill_leak_check") == 0,
-        "规则降级:敏感信息意图", d.tool ? d.tool : "");
-  decision_free(&d);
-
-  rule_decide("对这个站跑一遍巡检", "任务 T-0001 授权域名: 127.0.0.1", &d);
-  check(d.kind == ACT_ACT && strcmp(d.tool, "skill_full_inspection") == 0,
-        "规则降级:巡检意图", d.tool ? d.tool : "");
-  decision_free(&d);
-
-  rule_decide("修好了吗", "", &d);
-  check(d.kind == ACT_ACT && strcmp(d.tool, "skill_retest") == 0, "规则降级:复测意图",
-        d.tool ? d.tool : "");
-  decision_free(&d);
-
-  rule_decide("今天天气怎么样", "", &d);
-  check(d.kind == ACT_ANSWER && d.text != NULL,
-        "没命中意图时给出能力说明,而不是硬报结论");
-  decision_free(&d);
 }
 
 /* ---------- 技能与循环自检(不联网:用假取数通道) ---------- */
@@ -476,6 +455,8 @@ static void selftest_loop(void) {
   printf("\n=== 决策循环(感知→决策→行动→观察→反思→收敛)===\n");
 
   agent_t *a = agent_create("selftest-session");
+  /* 自检不联网:不开这一步的话,循环会真的去问模型,在没网的机器上直接挂住 */
+  llm_set_test_mode(1);
   int answers = 0;
   agent_hooks_t h;
   memset(&h, 0, sizeof(h));
@@ -488,7 +469,7 @@ static void selftest_loop(void) {
   h.on_ask = on_ask;
   agent_set_hooks(a, &h);
 
-  /* 不设授权域名:循环必须拒绝动手(合规底线) */
+  /* 不设授权域名 + 模型不可用:循环必须立刻收束,并说清为什么 */
   loop_state_t st;
   agent_run_turn(a, "帮我扫一下 www.example-gov.cn", &st);
   check(st.step_count == 0 || st.stop_code != STOP_NONE,
@@ -497,10 +478,10 @@ static void selftest_loop(void) {
   buf_free(&st.transcript);
   json_free(st.steps);
 
-  /* 纯问答:不该产生任何动作 */
+  /* 模型不可用:如实报错,不再用关键词规则冒充结论 */
   agent_run_turn(a, "今天天气怎么样", &st);
-  check(st.step_count <= 1, "纯问答不产生多步动作");
-  check(answers > 0, "最终回答通过 hook 推给了界面");
+  check(st.stop_code == STOP_ERROR, "模型不可用时按失败收尾(不伪装成回答)");
+  check(answers > 0, "失败也要给人一句话,而不是静默停下");
   buf_free(&st.transcript);
   json_free(st.steps);
 

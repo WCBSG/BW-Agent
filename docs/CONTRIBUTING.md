@@ -10,9 +10,10 @@
   · Windows 10/11(用了 WinHTTP / Win32 目录 API / Winsock)
 
 构建:
-  agent\build.bat           → agent\build\网站安全巡检智能体.exe(单文件,双击即用)
-自检:
-  agent\build\agent.exe selftest → 116 项,必须全绿
+  agent\build.bat           → 发布版 agent\build\网站安全巡检智能体.exe(单文件,双击即用,不带自检)
+  agent\build.bat debug     → 调试版 agent\build\网站安全巡检智能体-dev.exe(带自检/正则验枪口/网络基准)
+自检(只有调试版有):
+  agent\build\agent-dev.exe selftest → 118 项,必须全绿
 ```
 
 `agent\build.bat` 会把 `agent\ui\` 和 `agent\data\rules\` 编进 exe（见 `agent\tools\mkres.cpp`），
@@ -28,7 +29,7 @@
 - 提交前本地至少跑一遍：
 
 ```
-agent\build.bat && agent\build\agent.exe selftest
+agent\build.bat debug && agent\build\agent-dev.exe selftest
 ```
 
 ## 三、必须守住的四条线
@@ -63,7 +64,7 @@ agent\build.bat && agent\build\agent.exe selftest
 
 ```
 [ ] agent\build.bat 通过
-[ ] agent\build\agent.exe selftest 全绿
+[ ] agent\build\agent-dev.exe selftest 全绿
 [ ] 没有把 .env / 令牌 / 真实站点数据提交进来
 [ ] 新增的对外请求过了 net.cpp（没有自己开 socket / WinHTTP）
 [ ] 新增的配置项写进了 README 与界面（不要只藏在代码里）

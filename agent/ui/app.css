@@ -241,6 +241,26 @@ code,pre,.mono{font-family:var(--mono)}
 }
 .q-input:focus{outline:none;border-color:#c3cdd9}
 
+/* / 命令补全 */
+.slash-pop{
+  position:absolute;left:0;right:0;bottom:100%;margin-bottom:8px;z-index:21;
+  background:var(--panel);border:1px solid var(--line-2);border-radius:9px;
+  box-shadow:0 -8px 24px rgba(25,25,20,.10);overflow:hidden;
+  opacity:0;visibility:hidden;transform:translateY(6px);
+  transition:opacity .14s var(--ease),transform .14s var(--ease),visibility 0s linear .14s;
+}
+.slash-pop.on{opacity:1;visibility:visible;transform:none;
+  transition:opacity .16s var(--ease),transform .16s var(--ease),visibility 0s}
+.slash-item{
+  display:flex;align-items:baseline;gap:9px;width:100%;
+  padding:7px 11px;border:0;background:none;text-align:left;cursor:pointer;font:inherit
+}
+.slash-item .sc{font-family:var(--mono);font-size:12.5px;color:var(--ink);min-width:86px}
+.slash-item .sd{font-size:12px;color:var(--ink-3);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.slash-item .sk{margin-left:auto;font-size:11px;color:var(--ink-3);flex:none}
+.slash-item.on{background:#eef3fb}
+.slash-item.on .sc{color:#1f3f6b;font-weight:600}
+
 /* 思考:默认收起成一行,点开才看全文 —— 和主流 agent 一样,过程不抢正文的位置 */
 .think{border-top:1px solid var(--line);padding:6px 0;cursor:pointer}
 .think:last-of-type{border-bottom:1px solid var(--line)}

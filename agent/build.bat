@@ -4,9 +4,13 @@ rem ============================================================
 rem  Website Security Inspection Agent - build script
 rem  Requires: g++ (MinGW-w64, C++20) + Windows system DLLs only
 rem
+rem  Usage:
+rem    build.bat            release build (no selftest, smallest exe)
+rem    build.bat debug      debug build  (with selftest / regextest / netbench)
+rem
 rem  Output:
-rem    build\<product>.exe       single-file deliverable (name in product.name)
-rem    build\agent.exe           console / CLI form
+rem    release: build\agent.exe           + build\<product>.exe
+rem    debug:   build\agent-dev.exe       + build\<product>-dev.exe
 rem
 rem  NOTE: keep this file ASCII-only. A multi-byte character in a .bat
 rem  can end with 0x5E and turn into a line-continuation, which breaks
@@ -14,6 +18,16 @@ rem  cmd parsing. All Chinese output comes from the program itself.
 rem ============================================================
 setlocal enabledelayedexpansion
 cd /d "%~dp0"
+
+set "MODE=release"
+set "SUFFIX="
+set "DEFS="
+if /i "%~1"=="debug" set "MODE=debug"
+if /i "%MODE%"=="release" (
+    set "DEFS=-DBW_RELEASE=1"
+) else (
+    set "SUFFIX=-dev"
+)
 
 set "GXX="
 where g++ >nul 2>nul && set "GXX=g++"
@@ -24,7 +38,10 @@ if not defined GXX (
 )
 
 if not exist build mkdir build
-if not exist build\obj mkdir build\obj
+rem Obj dir is per-mode: mixing -DBW_RELEASE objects with debug ones links wrong code.
+set "OBJDIR=build\obj"
+if /i "%MODE%"=="debug" set "OBJDIR=build\obj-dev"
+if not exist "%OBJDIR%" mkdir "%OBJDIR%"
 
 rem ---------- 1. build-time helper ----------
 if not exist "tools\mkres.cpp" (
@@ -39,22 +56,30 @@ build\mkres.exe build\resources_core.cpp "@data/rules/=data\rules"
 if errorlevel 1 ( echo [FAILED] tool resources & exit /b 1 )
 
 rem ---------- 2. compile sources ----------
-set "CFLAGS=-std=c++20 -O2 -ffunction-sections -fdata-sections -Wall -Wextra -Wno-unused-parameter -Wno-missing-field-initializers -I src\main -I src\tools"
+set "CFLAGS=-std=c++20 -O2 %DEFS% -ffunction-sections -fdata-sections -Wall -Wextra -Wno-unused-parameter -Wno-missing-field-initializers -I src\main -I src\tools"
 set "LIBS=-lws2_32 -lwinhttp -lbcrypt -lcrypt32 -lole32 -loleaut32 -luuid -luser32 -lgdi32 -lshell32 -ladvapi32 -lcabinet"
 
+echo [BUILD] mode=%MODE%
 echo [BUILD] %GXX%
 echo [BUILD] compiling sources...
 set "OBJS="
 rem Engine objects: src\main\*.cpp except main.cpp (the app entry).
+rem Release build skips selftest.cpp: it is 40K+ lines of dev-only checks and
+rem nothing else references it, so leaving it out is pure size win.
 for %%f in (src\main\*.cpp) do (
-    set "OBJ=build\obj\%%~nf.o"
-    "%GXX%" %CFLAGS% -c "%%f" -o "!OBJ!"
-    if errorlevel 1 ( echo [FAILED] compile %%f & exit /b 1 )
-    if /i not "%%~nf"=="main" set "OBJS=!OBJS! !OBJ!"
+    set "BASE=%%~nf"
+    set "SKIP="
+    if /i "%MODE%"=="release" if /i "!BASE!"=="selftest" set "SKIP=1"
+    if not defined SKIP (
+        set "OBJ=%OBJDIR%\!BASE!.o"
+        "%GXX%" %CFLAGS% -c "%%f" -o "!OBJ!"
+        if errorlevel 1 ( echo [FAILED] compile %%f & exit /b 1 )
+        if /i not "!BASE!"=="main" set "OBJS=!OBJS! !OBJ!"
+    )
 )
 rem Every tool implementation is one file.
 for %%f in (src\tools\*.cpp) do (
-    set "OBJ=build\obj\tool_%%~nf.o"
+    set "OBJ=%OBJDIR%\tool_%%~nf.o"
     "%GXX%" %CFLAGS% -c "%%f" -o "!OBJ!"
     if errorlevel 1 ( echo [FAILED] compile %%f & exit /b 1 )
     set "OBJS=!OBJS! !OBJ!"
@@ -90,9 +115,9 @@ rem ---------- 5. main program ----------
 echo [BUILD] linking main program...
 set "EXTRA="
 if exist "build\app_res.o" set "EXTRA=build\app_res.o"
-set "EXTRA=!EXTRA! build\resources.cpp build\obj\main.o"
+set "EXTRA=!EXTRA! build\resources.cpp %OBJDIR%\main.o"
 "%GXX%" %CFLAGS% -DAGENT_GUI_BUILD -mwindows -static -s -Wl,--gc-sections ^
-    -o build\agent.exe !OBJS! !EXTRA! %LIBS%
+    -o build\agent%SUFFIX%.exe !OBJS! !EXTRA! %LIBS%
 if errorlevel 1 (
     echo.
     echo [FAILED] link main program
@@ -103,10 +128,14 @@ rem Product file name is kept in product.name (UTF-8) so this script stays ASCII
 set "APPNAME="
 for /f "usebackq delims=" %%n in ("product.name") do set "APPNAME=%%n"
 if not defined APPNAME set "APPNAME=WebSecAgent"
-copy /y build\agent.exe "build\!APPNAME!.exe" >nul
+copy /y build\agent%SUFFIX%.exe "build\!APPNAME!%SUFFIX%.exe" >nul
 
 echo.
-echo [DONE] single-file build: build\!APPNAME!.exe
-echo        CLI:   build\agent.exe selftest / run / tool / serve / manifest
-echo        tools: agent.exe toolhost  (single-process tool host)
+echo [DONE] %MODE% build: build\!APPNAME!%SUFFIX%.exe  ^(build\agent%SUFFIX%.exe^)
+if /i "%MODE%"=="release" (
+    echo        no selftest / regextest / netbench in this build
+) else (
+    echo        CLI: agent%SUFFIX%.exe selftest / regextest / netbench
+)
+echo        tools: agent%SUFFIX%.exe toolhost  (single-process tool host)
 exit /b 0

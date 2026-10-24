@@ -419,11 +419,20 @@ async function api(path, opts) {
   return j;
 }
 
-/* 页面过期:只提示一次,不刷屏 */
+/* 页面过期:自动刷一次,刷不动再提示 ——
+   令牌每次启动都会换,重启后旧页面必然 401;让人自己去按 F5 是多余的一步。
+   用 sessionStorage 记一次,避免"刷完还是 401"时来回跳。 */
 let staleNotified = false;
 function stalePage() {
   if (staleNotified) return;
   staleNotified = true;
+  let tried = 0;
+  try { tried = Number(sessionStorage.getItem('bw-stale-reload') || 0); } catch (e) { /* 隐私模式 */ }
+  if (tried < 1) {
+    try { sessionStorage.setItem('bw-stale-reload', String(tried + 1)); } catch (e) { /* 忽略 */ }
+    location.reload();
+    return;
+  }
   const bar = el('div', 'stale-bar');
   bar.textContent = '这个页面已经过期（程序重启过），按 F5 刷新后配置和会话才会显示。';
   const btn = el('button', 'btn', '刷新页面');
@@ -1169,7 +1178,15 @@ function onMessageStop(e) {
   const back = () => {
     for (const k of Object.keys(msg.blocks || {})) renderMdBlock(msg.blocks[k]);
     const line = el('div', 'stopline');
-    line.textContent = `消息结束 · 停止原因 ${e.stopReason} · 调用技能/工具 ${msg.steps} 次 · 耗时 ${seconds}s`;
+    /* 把耗时的账摊开:快可能是"没在问模型",慢可能是"模型在憋" —— 两者都该看见 */
+    const msteps = Number(e.modelSteps) || 0;
+    const rsteps = Number(e.ruleSteps) || 0;
+    const llmS = (Number(e.llmMs) || 0) / 1000;
+    let extra = '';
+    if (rsteps > 0) extra = ` · ${msteps} 步模型 / ${rsteps} 步直接执行`;
+    else if (msteps > 0) extra = ` · ${msteps} 步均由模型决策`;
+    if (llmS >= 0.5) extra += ` · 其中模型 ${llmS.toFixed(1)}s`;
+    line.textContent = `消息结束 · 停止原因 ${e.stopReason} · 调用技能/工具 ${msg.steps} 次 · 耗时 ${seconds}s` + extra;
     msg.body.appendChild(line);
     if ($('trace-hint')) $('trace-hint').textContent = `${msg.steps} 步 / ${seconds}s / ${e.stopReason}`;
     if (current === msg) current = null;
@@ -4691,6 +4708,85 @@ if (stopBtn) {
 }
 
 const ta = $('q');
+
+/* ---------- / 命令补全 ----------
+   主流 agent 产品的做法:输入 / 就列出能直接跑的能力,选中即补全。
+   命令名从后端清单里取(cmd 字段),前端不再自己维护一份别名表。 */
+const SLASH = { all: null, items: [], idx: 0, open: false };
+
+async function slashLoad() {
+  if (SLASH.all) return SLASH.all;
+  let man = null;
+  try { man = await api('/api/manifest'); } catch { man = null; }
+  const out = [];
+  for (const s of (man && man.skills) || []) {
+    out.push({ cmd: s.cmd || s.name, desc: s.title || s.name, kind: '技能' });
+  }
+  for (const t of (man && man.tools) || []) {
+    out.push({ cmd: t.cmd || t.name, desc: (t.description || '').slice(0, 80), kind: '工具' });
+  }
+  SLASH.all = out;
+  return out;
+}
+
+function slashHide() {
+  SLASH.open = false;
+  const p = $('slash-pop');
+  if (p) { p.classList.remove('on'); p.innerHTML = ''; }
+}
+
+function slashRender() {
+  const p = $('slash-pop');
+  if (!p) return;
+  p.innerHTML = '';
+  SLASH.items.forEach((it, i) => {
+    const b = el('button', 'slash-item' + (i === SLASH.idx ? ' on' : ''));
+    b.type = 'button';
+    b.appendChild(el('span', 'sc', '/' + it.cmd));
+    b.appendChild(el('span', 'sd', it.desc));
+    b.appendChild(el('span', 'sk', it.kind));
+    b.addEventListener('mousedown', (ev) => { ev.preventDefault(); slashPick(it); });
+    p.appendChild(b);
+  });
+  p.classList.toggle('on', SLASH.items.length > 0);
+  SLASH.open = SLASH.items.length > 0;
+}
+
+async function slashUpdate() {
+  const box = $('q');
+  if (!box) return;
+  const m = /^\/([^\s]*)$/.exec(box.value);
+  if (!m) { slashHide(); return; }
+  const typed = box.value;
+  const q = m[1].toLowerCase();
+  const all = await slashLoad();
+  /* 等清单回来这段时间里,用户可能已经把命令发出去了 —— 
+     不核对一次,面板会在发送之后又冒出来。 */
+  if (!$('q') || $('q').value !== typed) return;
+  SLASH.items = all
+    .filter((x) => !q || x.cmd.toLowerCase().startsWith(q) || x.cmd.toLowerCase().includes(q))
+    /* 前缀命中的排前面:敲 /po 时 /pool 应该在 /report 之前 */
+    .sort((a, b) => {
+      const pa = a.cmd.toLowerCase().startsWith(q) ? 0 : 1;
+      const pb = b.cmd.toLowerCase().startsWith(q) ? 0 : 1;
+      return pa - pb;
+    })
+    .slice(0, 8);
+  SLASH.idx = 0;
+  slashRender();
+}
+
+function slashPick(it) {
+  const box = $('q');
+  if (!box) return;
+  box.value = '/' + it.cmd + ' ';
+  box.style.height = 'auto';
+  box.style.height = Math.min(box.scrollHeight, 120) + 'px';
+  slashHide();
+  box.focus();
+}
+
+if (ta) ta.addEventListener('input', () => { slashUpdate(); });
 ta.addEventListener('input', () => {
   ta.style.height = 'auto';
   ta.style.height = Math.min(ta.scrollHeight, 120) + 'px';
@@ -4698,6 +4794,22 @@ ta.addEventListener('input', () => {
 /* 回车直接发,Shift+回车换行 —— 聊天框的通用手势。
    用 requestSubmit 而不是 click:表单的 submit 处理器只有一处,别绕开它。 */
 ta.addEventListener('keydown', (e) => {
+  /* / 面板开着时,方向键与回车归它用:先选命令,选中再回车才是发送 */
+  if (SLASH.open && SLASH.items.length) {
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+      e.preventDefault();
+      const n = SLASH.items.length;
+      SLASH.idx = (SLASH.idx + (e.key === 'ArrowDown' ? 1 : n - 1)) % n;
+      slashRender();
+      return;
+    }
+    if (e.key === 'Tab' || (e.key === 'Enter' && !e.shiftKey)) {
+      e.preventDefault();
+      slashPick(SLASH.items[SLASH.idx]);
+      return;
+    }
+    if (e.key === 'Escape') { e.preventDefault(); slashHide(); return; }
+  }
   if (e.key !== 'Enter' || e.shiftKey || e.ctrlKey || e.altKey || e.isComposing) return;
   e.preventDefault();
   const form = $('form');
@@ -4714,6 +4826,7 @@ if (workForm) {
     const box = $('q');
     const text = (box.value || '').trim();
     if (!text && !pendingAtt.length) return;
+    slashHide();
     box.value = '';
     box.style.height = 'auto';
     send(text);
@@ -5238,6 +5351,8 @@ document.addEventListener('keydown', (e) => {
   enhanceSelects();          /* 静态下拉先接管;之后动态插入的由 MutationObserver 接管 */
   try {
     renderStatus(await api('/api/status'));
+    /* 这一页确实是最新的了:清掉"刚自动刷过"的标记,下次重启还能自动刷 */
+    try { sessionStorage.removeItem('bw-stale-reload'); } catch (e) { /* 忽略 */ }
   } catch (e) {
     console.warn('连不上后端服务：' + e.message);
   }

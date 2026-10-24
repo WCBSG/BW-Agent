@@ -13,6 +13,8 @@
 
 /* 最近一次调用模型失败的原因(界面/命令行可以据此说明"为什么降级了") */
 static char *g_last_error = NULL;
+/* 自检模式:不联网、也不假装有模型 —— 自检只验证循环与工具,不许打真实接口 */
+static int g_test_mode = 0;
 /* 失败冷却截止时刻(毫秒时间戳):失败后短时间内不再重试,避免每步都白等一次超时 */
 static long long g_fail_until_ms = 0;
 
@@ -37,9 +39,15 @@ void llm_init(const char *env_dir) {
 /* "有模型可用"= 当前选中的那一条可用。配了三家但选中的那条不通,
    就不该对界面说"在线" —— 否则顶栏亮着、每轮又都降级,自相矛盾。 */
 int llm_enabled(void) {
+  if (g_test_mode) return 0;      /* 自检不联网:显式关掉模型 */
   int idx = providers_active_index();
   provider_t *p = idx >= 0 ? provider_at(idx) : NULL;
   return provider_ready(p) ? 1 : 0;
+}
+
+void llm_set_test_mode(int on) {
+  g_test_mode = on ? 1 : 0;
+  if (on) llm_set_last_error("自检模式:未调用模型");
 }
 /* ================= 决策解析(容错) ================= */
 /* 模型爱加解释、爱包代码块、爱把 JSON 写坏。这里从最可信到最宽泛逐级尝试。 */
@@ -389,8 +397,16 @@ static int llm_call(agent_t *a, const char *prompt, buf_t *answer_out) {
   memset(&ec, 0, sizeof(ec));
   ec.agent = a;
   char err[512] = "";
+  long long t0 = now_ms();
   int rc = provider_chat(p, prompt, emit_prose, &ec, answer_out, err, sizeof(err));
-  if (rc == 0 && answer_out->len > 0) return 0;
+  long long ms = now_ms() - t0;
+  if (rc == 0 && answer_out->len > 0) {
+    /* 单次调用的耗时:一轮要问好几次,平均几十秒和偶尔三分钟是两种体验,
+       记下来才能回答"为什么时快时慢" */
+    log_info("[模型] %s 用时 %lldms,输出 %d 字节", p->name, ms, (int)answer_out->len);
+    return 0;
+  }
+  log_warn("[模型] %s 失败前等了 %lldms", p->name, ms);
 
   /* 失败时可能已经有半截输出,清掉:别把"说到一半的话"当成回答 */
   buf_clear(answer_out);
@@ -453,121 +469,4 @@ int llm_ask(const char *prompt, buf_t *out) {
   }
   g_fail_until_ms = 0;
   return 0;
-}
-
-/* ================= 本地规则路由(降级通道) =================
-   规则不是"简化版智能体",而是**没网时的保底**:覆盖最常见的几类意图,
-   保证演示现场网络抖动也能把流程走完。纯粹的关键词+正则,不猜。 */
-typedef struct {
-  const char *skill;        /* 命中的技能 */
-  const char *arg_key;      /* 参数名 */
-  const char *target_hint;  /* 取目标时用 */
-} rule_entry_t;
-
-void rule_decide(const char *user_text, const char *scope_note, decision_t *out) {
-  memset(out, 0, sizeof(*out));
-  out->from_model = 0;
-  const char *t = user_text ? user_text : "";
-
-  /* 目标:优先取带点的域名/URL */
-  char target[512] = {0};
-  for (const char *p = t; *p; p++) {
-    if ((*p >= 'a' && *p <= 'z') || (*p >= 'A' && *p <= 'Z') || (*p >= '0' && *p <= '9')) {
-      const char *q = p;
-      while (*q && (isalnum((unsigned char)*q) || *q == '.' || *q == '-' || *q == '_' ||
-                    *q == ':' || *q == '/' || *q == '?' || *q == '=' || *q == '&')) q++;
-      size_t n = (size_t)(q - p);
-      if (n > 3 && n < sizeof(target) && memchr(p, '.', n)) {
-        memcpy(target, p, n);
-        target[n] = 0;
-        break;
-      }
-      p = q;
-    }
-  }
-
-  json_t *args = j_obj();
-  if (target[0]) j_set_str(args, "target", target);
-
-  /* 意图判定:从强到弱(更具体的先命中) */
-  if ((str_icontains(t, "授权列表") || str_icontains(t, "授权池") ||
-       str_icontains(t, "能查哪些") || str_icontains(t, "可以查哪些")) &&
-      !str_icontains(t, "巡检") && !str_icontains(t, "检查") && !str_icontains(t, "扫")) {
-    /* 只问"授权了谁"。带了巡检动词就不走这条 —— 那是整池巡检,
-       由服务端展开成每站一轮(见 serve.cpp 的 wants_whole_pool)。 */
-    out->kind = ACT_ACT;
-    out->tool = xstrdup("pool_list");
-    out->reason = xstrdup("规则降级:读授权列表");
-  } else if (str_icontains(t, "你的状态") || str_icontains(t, "本机信息") ||
-             str_icontains(t, "你自己的") || str_icontains(t, "数据目录") ||
-             str_icontains(t, "配置在哪")) {
-    out->kind = ACT_ACT;
-    out->tool = xstrdup("agent_info");
-    out->reason = xstrdup("规则降级:查本机信息与状态");
-  } else if (str_icontains(t, "当前设置") || str_icontains(t, "现在的设置") ||
-             (str_icontains(t, "设置") &&
-              (str_icontains(t, "看一下") || str_icontains(t, "查一下") ||
-               str_icontains(t, "是什么") || str_icontains(t, "当前")))) {
-    out->kind = ACT_ACT;
-    out->tool = xstrdup("settings_get");
-    out->reason = xstrdup("规则降级:读当前设置");
-  } else if (str_icontains(t, "复测") || str_icontains(t, "复查") || str_icontains(t, "修好")) {
-    out->kind = ACT_ACT;
-    out->tool = xstrdup("skill_retest");
-    out->reason = xstrdup("规则降级:命中复测意图");
-  } else if (str_icontains(t, "报告") || str_icontains(t, "导出")) {
-    out->kind = ACT_ACT;
-    out->tool = xstrdup("skill_report");
-    out->reason = xstrdup("规则降级:命中出报告意图");
-  } else if (str_icontains(t, "核对证据") || str_icontains(t, "证据") ||
-             str_icontains(t, "召回") || str_icontains(t, "误报率") ||
-             str_icontains(t, "准确率") || str_icontains(t, "评测") ||
-             str_icontains(t, "跑分")) {
-    out->kind = ACT_ACT;
-    out->tool = xstrdup("skill_evidence");
-    out->reason = xstrdup("规则降级:命中证据核对意图(指标由评测方给,本工具只给逐条证据)");
-  } else if (str_icontains(t, "篡改") || str_icontains(t, "有没有被改") ||
-             str_icontains(t, "基线")) {
-    out->kind = ACT_ACT;
-    out->tool = xstrdup("skill_integrity_check");
-    out->reason = xstrdup("规则降级:命中完整性/篡改意图");
-  } else if (str_icontains(t, "敏感") || str_icontains(t, "泄露") ||
-             str_icontains(t, ".env") || str_icontains(t, "配置")) {
-    out->kind = ACT_ACT;
-    out->tool = xstrdup("skill_leak_check");
-    out->reason = xstrdup("规则降级:命中敏感信息意图");
-  } else if (str_icontains(t, "口令") || str_icontains(t, "密码") ||
-             str_icontains(t, "弱口令")) {
-    out->kind = ACT_ACT;
-    out->tool = xstrdup("password_check");
-    out->reason = xstrdup("规则降级:口令强度评估");
-  } else if (str_icontains(t, "页面") || str_icontains(t, "资产") ||
-             str_icontains(t, "有哪些") || str_icontains(t, "爬")) {
-    out->kind = ACT_ACT;
-    out->tool = xstrdup("skill_recon");
-    out->reason = xstrdup("规则降级:命中资产发现意图");
-  } else if (str_icontains(t, "巡检") || str_icontains(t, "检查") ||
-             str_icontains(t, "扫") || str_icontains(t, "风险")) {
-    out->kind = ACT_ACT;
-    out->tool = xstrdup("skill_full_inspection");
-    out->reason = xstrdup("规则降级:命中巡检意图");
-  } else {
-    /* 什么都没命中:给出能力说明,而不是硬报一个结论 */
-    out->kind = ACT_ANSWER;
-    out->text = xstrdup(
-        "我是网站安全巡检智能体。可以让我:① 对授权域名做一次完整巡检"
-        "(资产发现 → 内容完整性 → 敏感文件 → 配置/漏洞);② 复测未闭环的问题;"
-        "③ 生成报告;④ 核对每条结论的证据与闭环状态。\n"
-        "效果指标不在这里给 —— 那取决于评测集与口径,应由评测方按自己的数据集算。\n"
-        "另外我还能单独做:敏感信息扫描、口令强度评估、页面篡改比对、目录/入口探测。\n"
-        "请告诉我目标和想做的事。");
-  }
-
-  if (out->kind == ACT_ACT) {
-    out->args = args;
-    out->raw = xstrdup("(local rules)");
-  } else {
-    json_free(args);
-  }
-  (void)scope_note;
 }

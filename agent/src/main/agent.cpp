@@ -47,6 +47,8 @@ struct agent {
   volatile LONG cancel;
   /* 1 = 定时/自动巡检,没有人在看:不许提问,直接按增量做 */
   int unattended;
+  /* 累计花在模型请求上的毫秒数:用来向用户解释"为什么这轮快/那轮慢" */
+  long long llm_ms;
   buf_t scope_note;      /* 拼好的授权范围说明(提示词里用) */
 };
 
@@ -81,6 +83,11 @@ void agent_set_unattended(agent_t *a, int on) {
 }
 
 int agent_unattended(agent_t *a) { return a ? a->unattended : 0; }
+
+long long agent_llm_ms(agent_t *a) { return a ? a->llm_ms : 0; }
+void agent_llm_ms_reset(agent_t *a) {
+  if (a) a->llm_ms = 0;
+}
 
 static void emit(agent_t *a, int which, const char *s1, const char *s2, json_t *args) {
   if (!a) return;
@@ -469,6 +476,203 @@ static int run_step(agent_t *a, tool_ctx_t *ctx, const char *name, json_t *args,
   return rc;
 }
 
+/* ================= 斜杠命令:绕过模型直接跑一个检查 =================
+   主流 agent 产品都有 / 命令:当用户已经知道自己要跑什么时,不该再让模型去猜意图,
+   也不该因为模型调不通就什么都干不了。
+   命令名 = 技能/工具的短别名(见 kSlash)或真实名字;
+   执行仍走同一条路径 —— 授权池、只读、限速、审计、落库一样不少。 */
+static const struct {
+  const char *cmd;
+  const char *name;
+  const char *hint;
+} kSlash[] = {
+    {"inspect", "skill_full_inspection", "完整巡检(资产→完整性→敏感文件→目录→模板)"},
+    {"recon", "skill_recon", "摸清资产:页面、静态资源、接口"},
+    {"leak", "skill_leak_check", "按本单位定义查敏感文件与泄露"},
+    {"integrity", "skill_integrity_check", "内容基线比对:有没有被改"},
+    {"retest", "skill_retest", "复测未闭环的问题"},
+    {"report", "skill_report", "汇总成分级报告"},
+    {"evidence", "skill_evidence", "核对每条结论的证据是否齐"},
+    {"get", "http_get", "读一个地址的状态、响应头、正文与链接"},
+    {"assets", "asset_list", "列已摸到的资产底账"},
+    {"record", "record_finding", "把一条结论落成发现(参数用 JSON)"},
+    {"pool", "pool_list", "看授权池"},
+    {"info", "agent_info", "看本机状态"},
+};
+
+/* 命令名 → 真实名字。先查别名表,再按原名/加 skill_ 前缀查 ——
+   三种写法都认:`/recon`、`/skill_recon`、`/recon` 与 `/http_get`。 */
+static const char *slash_resolve(const char *cmd) {
+  for (size_t i = 0; i < sizeof(kSlash) / sizeof(kSlash[0]); i++) {
+    if (str_ieq(kSlash[i].cmd, cmd)) return kSlash[i].name;
+  }
+  return NULL;
+}
+
+static int slash_known(const char *cmd) {
+  const char *real = slash_resolve(cmd);
+  if (real && skills_find(real)) return 1;
+  if (real && tools_find(real)) return 1;
+  if (skills_find(cmd)) return 1;
+  if (tools_find(cmd)) return 1;
+  return 0;
+}
+
+static void slash_list(buf_t *out) {
+  buf_puts(out, "可用命令(斜杠后面的名字不区分大小写):\n");
+  for (size_t i = 0; i < sizeof(kSlash) / sizeof(kSlash[0]); i++) {
+    buf_printf(out, "  /%-10s %s\n", kSlash[i].cmd, kSlash[i].hint);
+  }
+  buf_puts(out, "用法:/命令 目标地址,例如 /recon 127.0.0.1:8081\n"
+                "需要多个参数时直接给 JSON:/record {\"title\":\"…\",\"severity\":\"高\",\"evidence\":\"…\"}\n"
+                "不带参数就列出该命令的用法。");
+}
+
+/* 把命令名后面那一段变成参数:整段是 JSON 就按 JSON;否则按目标地址填到
+   该命令真正需要的那个参数名上(schema 里有 target 就是 target,否则 url/path)。 */
+static json_t *slash_args(const char *name, const char *rest) {
+  json_t *args = j_obj();
+  const char *p_rest = rest ? rest : "";
+  while (*p_rest == ' ') p_rest++;
+  if (!*p_rest) return args;
+
+  if (*p_rest == '{') {
+    json_t *given = json_parse(p_rest);
+    if (given && given->type == J_OBJ) {
+      json_free(args);
+      return given;
+    }
+    if (given) json_free(given);
+  }
+
+  /* 参数名从声明里取:不同工具要的字段名不一样,写死一个会调不动 */
+  const char *want = "target";
+  tool_t *tl = tools_find(name);
+  if (tl && tl->schema && tl->schema[0]) {
+    json_t *sc = json_parse(tl->schema);
+    json_t *props = sc ? j_get(sc, "properties") : NULL;
+    if (props && props->type == J_OBJ) {
+      if (!j_get(props, "target") && j_get(props, "url")) want = "url";
+      else if (!j_get(props, "target") && j_get(props, "path")) want = "path";
+    }
+    if (sc) json_free(sc);
+  }
+  j_set_str(args, want, p_rest);
+  return args;
+}
+
+/* 直接执行一条 / 命令,不经过模型。 */
+static int slash_run(agent_t *a, tool_ctx_t *ctx, buf_t *notes, const char *line,
+                     loop_state_t *st) {
+  const char *p = line + 1;
+  while (*p == ' ') p++;
+  char cmd[64] = {0};
+  size_t n = 0;
+  while (p[n] && p[n] != ' ' && n < sizeof(cmd) - 1) {
+    cmd[n] = p[n];
+    n++;
+  }
+  cmd[n] = 0;
+  const char *rest = p + n;
+
+  if (!cmd[0] || str_ieq(cmd, "help") || str_ieq(cmd, "?")) {
+    buf_t t;
+    buf_init(&t);
+    slash_list(&t);
+    EMIT_ANSWER(a, t.data);
+    buf_free(&t);
+    if (st) {
+      st->stop_code = STOP_ANSWERING_ONLY;
+      snprintf(st->stop_reason, sizeof(st->stop_reason), "列出斜杠命令");
+      st->step_count = 1;
+    }
+    return 0;
+  }
+
+  const char *real = slash_resolve(cmd);
+  if (!real) real = cmd;
+  const char *name = NULL;
+  if (skills_find(real)) name = real;
+  else if (tools_find(real)) name = real;
+  if (!name) {
+    buf_t t;
+    buf_init(&t);
+    buf_printf(&t, "没有「%s」这条命令。\n\n", cmd);
+    slash_list(&t);
+    EMIT_ANSWER(a, t.data);
+    buf_free(&t);
+    if (st) {
+      st->stop_code = STOP_NEED_USER;
+      snprintf(st->stop_reason, sizeof(st->stop_reason), "命令名不认识");
+      st->step_count = 1;
+    }
+    return 0;
+  }
+
+  /* 需要目标的命令没给目标:直接说清楚该带什么,不发请求 */
+  json_t *args = slash_args(name, rest);
+  if (args->count == 0) {
+    skill_t *sk = skills_find(name);
+    if (sk && sk->multi_step) {
+      buf_t t;
+      buf_init(&t);
+      buf_printf(&t, "/%s 需要目标地址,例如 /%s 127.0.0.1:8081", cmd, cmd);
+      EMIT_ANSWER(a, t.data);
+      buf_free(&t);
+      json_free(args);
+      if (st) {
+        st->stop_code = STOP_NEED_USER;
+        snprintf(st->stop_reason, sizeof(st->stop_reason), "命令缺少目标");
+        st->step_count = 1;
+      }
+      return 0;
+    }
+  }
+
+  EMIT_THINKING(a, "直接执行命令,不经过模型…");
+  net_scope_violation_clear();
+  json_t *observations = j_arr();
+  int findings = 0;
+  int step_rc = run_step(a, ctx, name, args, observations, &findings);
+  (void)notes;
+
+  if (st) {
+    json_t *rec = j_obj();
+    j_set_num(rec, "step", 1);
+    j_set_str(rec, "kind", "act");
+    j_set_str(rec, "action", name);
+    j_set_str(rec, "reason", "斜杠命令直接执行");
+    j_set_bool(rec, "from_model", 0);
+    j_add(st->steps, rec);
+    st->step_count = 1;
+    buf_printf(&st->transcript, "[第 1 步] 斜杠命令:执行 %s\n", name);
+  }
+
+  /* 收尾:把工具/技能自己的结论原样交给用户 —— 这就是他要的东西 */
+  const char *last = NULL;
+  if (j_len(observations) > 0) last = j_s(j_at(observations, j_len(observations) - 1), "result", "");
+  buf_t out;
+  buf_init(&out);
+  if (last && *last) {
+    buf_puts(&out, last);
+    if (!str_endswith(last, "\n")) buf_puts(&out, "\n");
+  } else {
+    buf_printf(&out, "/%s 已执行,但没有返回内容。", cmd);
+  }
+  if (findings > 0) buf_printf(&out, "本轮新增/更新 %d 条发现。\n", findings);
+  EMIT_ANSWER(a, out.data);
+  buf_free(&out);
+
+  json_free(observations);
+  json_free(args);
+  if (st) {
+    st->stop_code = step_rc == 0 ? STOP_ANSWERED : STOP_ERROR;
+    snprintf(st->stop_reason, sizeof(st->stop_reason), "%s",
+             step_rc == 0 ? "命令执行完成" : "命令执行出错");
+  }
+  return step_rc;
+}
+
 /* ================= 核心:一轮对话 ================= */
 int agent_run_turn(agent_t *a, const char *user_text, loop_state_t *st) {
   if (!a) return -1;
@@ -488,6 +692,7 @@ int agent_run_turn(agent_t *a, const char *user_text, loop_state_t *st) {
   net_set_scope(a->task_id, (const char **)a->domains, a->domain_count);
   net_scope_violation_clear();
   agent_cancel_clear(a);
+  a->llm_ms = 0;
   /* 叫停信号也接到取数通道上:一轮里有几十上百次请求,
      只在步与步之间检查的话,"停止"点下去还要等半分钟才生效。 */
   net_set_cancel(&a->cancel);
@@ -510,6 +715,22 @@ int agent_run_turn(agent_t *a, const char *user_text, loop_state_t *st) {
   buf_t notes;
   buf_init(&notes);
   ctx.note = &notes;
+
+  /* ---- 斜杠命令:/xxx 目标 → 直接执行,不经过模型 ---- */
+  {
+    const char *p0 = user_text ? user_text : "";
+    while (*p0 == ' ' || *p0 == '\t') p0++;
+    if (*p0 == '/') {
+      buf_t n;
+      buf_init(&n);
+      ctx.note = &n;
+      int src = slash_run(a, &ctx, &n, p0, st);
+      buf_free(&n);
+      buf_free(&notes);
+      net_set_cancel(NULL);
+      return src;
+    }
+  }
 
   EMIT_THINKING(a, "正在理解你的意图并规划检查步骤……");
   if (st) buf_puts(&st->transcript, "== 一轮对话开始 ==\n");
@@ -597,7 +818,10 @@ int agent_run_turn(agent_t *a, const char *user_text, loop_state_t *st) {
     memset(&d, 0, sizeof(d));
     int decided = -1;
     if (llm_enabled()) {
+      long long t_llm = now_ms();
       decided = llm_decide(a, user_text, observations, scope, &d);
+      /* 失败也要计:那次干等同样是"慢"的一部分,不记就永远解释不清 */
+      a->llm_ms += now_ms() - t_llm;
     }
     /* 停止信号可能正好落在模型调用里(那一段已经被掐断):这一轮到此为止,
        不要再用规则"替模型把话说完" —— 用户点停止就是不想继续了。
@@ -607,48 +831,28 @@ int agent_run_turn(agent_t *a, const char *user_text, loop_state_t *st) {
       continue;
     }
     if (decided != 0) {
-      rule_decide(user_text, scope, &d);        /* 降级:本地规则 */
-      if (decided != 0 && llm_enabled()) {
-        log_warn("模型决策不可用,已降级为本地规则(d=%d)", decided);
+      /* 模型不可用就如实停下。
+         以前这里会"降级为本地规则"接着跑,结果是:用户看到一段像模像样的结论,
+         但其实一次模型都没问过 —— 智能体的判断不能由关键词匹配冒充。
+         要跑确定性的检查,用 / 命令(见下方 slash_run),那是用户明确点的。 */
+      const char *why = llm_last_error();
+      if (st) {
+        st->stop_code = STOP_ERROR;
+        snprintf(st->stop_reason, sizeof(st->stop_reason), "模型不可用:%s",
+                 (why && *why) ? why : "没有可用的模型配置");
       }
-      /* 规则只看用户这句话,不知道刚才已经做过什么。它选出的动作如果本轮
-         已经跑过,再跑一遍只是空转 —— 直接收尾,并把已有的结论说清楚。 */
-      if (d.kind == ACT_ACT && d.tool && d.tool[0]) {
-        int already = 0;
-        for (int i = 0; i < j_len(observations); i++) {
-          const char *t = j_s(j_at(observations, i), "tool", "");
-          if (t[0] && strcmp(t, d.tool) == 0) { already = 1; break; }
-        }
-        if (already) {
-          char *tool = d.tool ? xstrdup(d.tool) : NULL;
-          /* 读信息类工具(授权列表 / 本机信息 / 设置)和技能的结果**本身就是回答**:
-             模型在线时它会照着结果讲一遍;降级到本地规则时没人转述,
-             就该把结果原样交给用户,而不是说一句"已经跑完了"让人自己往上翻。 */
-          const char *last_result = NULL;
-          int result_is_answer = tool && (!strcmp(tool, "pool_list") || !strcmp(tool, "agent_info") ||
-                                          !strcmp(tool, "settings_get") || !strcmp(tool, "settings_set") ||
-                                          str_startswith(tool, "skill_"));
-          if (result_is_answer) {
-            for (int i = 0; i < j_len(observations); i++) {
-              json_t *o = j_at(observations, i);
-              if (strcmp(j_s(o, "tool", ""), tool) == 0) last_result = j_s(o, "result", "");
-            }
-          }
-          decision_free(&d);
-          d.kind = ACT_ANSWER;
-          if (last_result && *last_result) {
-            d.text = xstrdup(last_result);
-          } else {
-            buf_t n;
-            buf_init(&n);
-            buf_printf(&n, "「%s」这一轮已经跑完了,结论就在上面的结果里。", tool ? tool : "这项检查");
-            if (findings_total > 0) buf_printf(&n, "共确认 %d 条风险。", findings_total);
-            buf_puts(&n, "需要继续的话,可以针对某一条复测、出报告,或指定某个页面做更深的单点检查。");
-            d.text = buf_take(&n);
-          }
-          free(tool);
-        }
-      }
+      buf_t n;
+      buf_init(&n);
+      buf_puts(&n, "这一步没做成:模型调不通,所以我没有继续。\n");
+      if (why && *why) buf_printf(&n, "原因:%s\n", why);
+      if (findings_total > 0) buf_printf(&n, "停下前已确认 %d 条风险,详见结果卡片。\n", findings_total);
+      buf_puts(&n,
+               "可以稍后重试,或在「设置 → 模型」里换一家;"
+               "要直接跑某个检查(不经过模型),用 / 命令,例如 /recon 目标地址、/inspect 目标地址。");
+      EMIT_ANSWER(a, n.data);
+      buf_free(&n);
+      decision_free(&d);
+      break;
     }
 
     if (st) {
@@ -661,7 +865,7 @@ int agent_run_turn(agent_t *a, const char *user_text, loop_state_t *st) {
       j_add(st->steps, rec);
       st->step_count = step + 1;
       buf_printf(&st->transcript, "[第 %d 步] %s %s%s%s\n", step + 1,
-                 d.from_model ? "模型决策:" : "规则降级:",
+                 d.from_model ? "模型决策:" : "直接执行:",
                  d.kind == ACT_ACT ? "执行 " : (d.kind == ACT_ANSWER ? "回答" : "追问"),
                  d.tool ? d.tool : "",
                  d.reason ? d.reason : "");
@@ -809,7 +1013,32 @@ void agent_print_skills(void) {
   }
 }
 
-json_t *agent_skill_list_json(void) { return skills_decl_json(); }
-json_t *agent_tool_list_json(void) { return tools_decl_json(); }
+/* 清单里补一个 cmd 字段:界面据此画 / 命令补全,后端据此解析 —— 
+   两边不再各写一份别名表。 */
+static void stamp_cmd(json_t *arr) {
+  for (int i = 0; i < j_len(arr); i++) {
+    json_t *o = j_at(arr, i);
+    const char *name = j_s(o, "name", "");
+    const char *cmd = NULL;
+    for (size_t k = 0; k < sizeof(kSlash) / sizeof(kSlash[0]); k++) {
+      if (strcmp(kSlash[k].name, name) == 0) { cmd = kSlash[k].cmd; break; }
+    }
+    if (!cmd && str_startswith(name, "skill_")) cmd = name + 6;
+    if (!cmd) cmd = name;
+    j_set_str(o, "cmd", cmd);
+  }
+}
+
+json_t *agent_skill_list_json(void) {
+  json_t *arr = skills_decl_json();
+  stamp_cmd(arr);
+  return arr;
+}
+
+json_t *agent_tool_list_json(void) {
+  json_t *arr = tools_decl_json();
+  stamp_cmd(arr);
+  return arr;
+}
 
 

@@ -294,7 +294,29 @@ json_t *tools_decl_json(void) {
 void tools_manifest(buf_t *out) {
   for (int i = 0; i < g_tool_count; i++) {
     tool_t *t = &g_tools[i];
-    buf_printf(out, "- %s —— %s\n", t->name, t->description);
+    /* 每行给"名字 + 参数名 + 一句用途":模型靠这三样就能正确调用。
+       完整说明书留给界面 —— 提示词每步都发,描述写全了会直接把首字节拖成几十秒。 */
+    buf_printf(out, "- %s", t->name);
+    json_t *sc = t->schema && t->schema[0] ? json_parse(t->schema) : NULL;
+    json_t *props = sc ? j_get(sc, "properties") : NULL;
+    if (props && props->type == J_OBJ && props->count > 0) {
+      buf_puts(out, "(");
+      int shown = 0;
+      for (int k = 0; k < props->count && shown < 8; k++) {
+        const char *key = props->keys ? props->keys[k] : NULL;
+        if (!key || !key[0]) continue;
+        if (shown) buf_puts(out, ",");
+        buf_puts(out, key);
+        shown++;
+      }
+      buf_puts(out, ")");
+    }
+    if (sc) json_free(sc);
+    buf_puts(out, " —— ");
+    size_t n = u8_prefix(t->description ? t->description : "", 150);
+    if (n) buf_putn(out, t->description, n);
+    if (t->description && strlen(t->description) > n) buf_puts(out, "…");
+    buf_puts(out, "\n");
   }
 }
 

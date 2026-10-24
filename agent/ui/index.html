@@ -128,6 +128,8 @@
     <form class="compose" id="form">
       <div class="compose-grip" id="compose-grip" role="separator" aria-orientation="horizontal"
            title="拖动调整输入区高度，双击恢复默认"></div>
+      <!-- / 命令补全：和主流 agent 一样，输入 / 就列出能直接跑的东西 -->
+      <div class="slash-pop" id="slash-pop" role="listbox" aria-label="命令"></div>
       <!-- 审批条：贴在输入框上方浮着，和主流 agent 一样 ——
            它属于"你现在要做的决定"，不属于历史记录，所以不进流 -->
       <div class="approval-bar" id="approval-bar" role="alertdialog" aria-live="polite">        <div class="ab-row">

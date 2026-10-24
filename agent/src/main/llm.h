@@ -17,6 +17,8 @@
 
 void llm_init(const char *env_dir);
 int  llm_enabled(void);
+/* 自检模式:llm_enabled() 恒为 0,循环会走"模型不可用"的收尾分支,不联网 */
+void llm_set_test_mode(int on);
 
 /* 最近一次调用模型失败的原因(空字符串 = 没有失败)。
    用途:界面/命令行说明"为什么降级到本地规则",而不是只显示"离线可用"。 */
@@ -35,7 +37,10 @@ int llm_decide(agent_t *a, const char *user_text, json_t *observations,
                const char *scope_note, decision_t *out);
 
 /* 本地规则路由(降级通道)。永远可用,纯函数。 */
-void rule_decide(const char *user_text, const char *scope_note, decision_t *out);
+/* 决策只有一条路:模型。
+   早期有过"模型不通就用关键词规则兜底"的降级通道,已去掉 ——
+   它会让界面显示一段像是智能体给出的结论,其实一次模型都没问过。
+   要跑确定性的检查,用户用 / 命令直说,不需要程序替他猜。 */
 
 /* 签名在 llm_provider.h 里声明(它属于"怎么鉴权"的一部分) */
 

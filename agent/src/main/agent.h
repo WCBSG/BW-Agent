@@ -130,6 +130,9 @@ void     agent_set_store(agent_t *a, void *store, const char *run_id);
 /* 本轮有没有人在看:定时/自动巡检没有人回答提问,模型也不该问 */
 void     agent_set_unattended(agent_t *a, int on);
 int      agent_unattended(agent_t *a);
+/* 这一轮累计花在模型请求上的毫秒数(含失败的那次等待) */
+long long agent_llm_ms(agent_t *a);
+void      agent_llm_ms_reset(agent_t *a);
 /* 对话历史(多轮上下文,决定"这轮说的是哪个站"时要用) */
 void     agent_add_history(agent_t *a, const char *role, const char *text);
 /* 读历史:决策提示词要把最近几轮带上,否则"继续""换到那个站"没法消解 */

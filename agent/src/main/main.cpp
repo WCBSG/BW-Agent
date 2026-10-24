@@ -11,7 +11,9 @@
 #include "profile.h"
 #include "res.h"
 #include "rules.h"
+#ifndef BW_RELEASE
 #include "selftest.h"
+#endif
 #include "serve.h"
 #include "skills.h"
 #include "store.h"
@@ -234,8 +236,13 @@ int app_main(int argc, char **argv) {
   /* 先把出厂数据铺到数据目录,再装工具:
      工具声明里写的是"入口在同目录的 exe",exe 没铺开就认不出入口,能力会悄悄退回内置实现。
      顺序反过来之后,"第一次运行"和"以后每次运行"看到的是同一套能力。
-     selftest 除外 —— 自检不该往使用者的数据目录里写东西。 */
+     selftest 除外 —— 自检不该往使用者的数据目录里写东西。
+     发布版没有 selftest 子命令,这一支恒为 0。 */
+#ifdef BW_RELEASE
+  int is_selftest = 0;
+#else
   int is_selftest = (argc > 1 && str_ieq(argv[1], "selftest"));
+#endif
   if (!is_selftest) res_bootstrap_data_dir();
 
   tools_init();          /* 注册表必须先建好,后面所有分支都依赖它 */
@@ -258,6 +265,19 @@ int app_main(int argc, char **argv) {
     return rc;
   }
 
+#ifdef BW_RELEASE
+  /* 发布版没有这几个子命令:明说一句,不要静默退出让人以为跑过了 */
+  if (str_ieq(cmd, "selftest") || str_ieq(cmd, "regextest") || str_ieq(cmd, "netbench")) {
+    printf("%s 是调试功能,发布版不带。需要它请用 agent-dev.exe(build.bat debug 构建)。\n", cmd);
+    net_shutdown();
+    rules_shutdown();
+    return 1;
+  }
+#endif
+
+#ifndef BW_RELEASE
+  /* 调试版才有:自检、正则验枪口、网络基准。发布版不带这些 —— 
+     它们对使用者没有用处,却要把 selftest.cpp 整个编进来。 */
   if (str_ieq(cmd, "selftest")) {
     printf("网站安全巡检智能体(C 版)· 自检\n");
     printf("程序目录: %s\n", app_dir());
@@ -266,6 +286,7 @@ int app_main(int argc, char **argv) {
     rules_shutdown();
     return rc;
   }
+#endif
 
   if (str_ieq(cmd, "tools")) {
     agent_print_tools();
@@ -506,6 +527,12 @@ int app_main(int argc, char **argv) {
   }
 
   if (str_ieq(cmd, "regextest")) {
+#ifdef BW_RELEASE
+    printf("发布版不带 regextest。要验自定义正则,请用调试版(agent-dev.exe)。\n");
+    net_shutdown();
+    rules_shutdown();
+    return 1;
+#else
     /* 自己写正则时的验枪口:agent.exe regextest "<正则>" "<样本文本>"
        规则是数据,数据写错不该靠猜 —— 这里直接告诉你它匹配到了哪一段。 */
     const char *pattern = (argc > 2) ? argv[2] : "";
@@ -529,9 +556,16 @@ int app_main(int argc, char **argv) {
     net_shutdown();
     rules_shutdown();
     return 0;
+#endif
   }
 
   if (str_ieq(cmd, "netbench")) {
+#ifdef BW_RELEASE
+    printf("发布版不带 netbench。要看网络层基准,请用调试版(agent-dev.exe)。\n");
+    net_shutdown();
+    rules_shutdown();
+    return 1;
+#else
     /* 连接复用/解压整改前后的对比基准:同一个 URL 连打 n 次,分别量"复用"与"不复用"。
        用法: agent.exe netbench example.com [次数] */
     const char *target = (argc > 2) ? argv[2] : "";
@@ -561,6 +595,7 @@ int app_main(int argc, char **argv) {
     net_shutdown();
     rules_shutdown();
     return avg < 0 ? 1 : 0;
+#endif
   }
 
   if (str_ieq(cmd, "chat")) {

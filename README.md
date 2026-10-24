@@ -14,7 +14,7 @@
 > 想加一个自己的工具？见 [工具协议.md](./docs/工具协议.md)：声明 + 入口 + 协议，不用改代码。
 >
 > 多人一起改？先看 [CONTRIBUTING.md](./docs/CONTRIBUTING.md)：分支模型、构建与自检、以及"改代码时不能破的四条线"。
-> CI 在 `.github/workflows/build.yml`，每次 push / PR 都会编译并跑 `agent.exe selftest`。
+> CI 在 `.github/workflows/build.yml`，每次 push / PR 都会编译并跑 `agent-dev.exe selftest`。
 
 ---
 
@@ -79,13 +79,14 @@ exe 放桌面、放 U 盘、放下载目录都能跑（数据始终在用户目�
 ### 命令行（可选，给懂的人）
 
 ```
-agent\build\网站安全巡检智能体.exe            零参数 = 启动服务并打开界面
-agent\build\agent.exe selftest                自检（当前 116 项，应全过）
-agent\build\agent.exe run skill_full_inspection 127.0.0.1:8081    单跑一个技能，结论可复核
+agent\build\网站安全巡检智能体.exe            零参数 = 启动服务并打开界面(发布版,不带自检)
+agent\build\网站安全巡检智能体-dev.exe        调试版(带自检/正则验枪口/网络基准)
+agent\build\agent-dev.exe selftest            自检(当前 118 项,应全过;只有调试版有)
+agent\build\agent.exe run skill_full_inspection 127.0.0.1:8081    单跑一个技能,结论可复核
 agent\build\agent.exe tool dir_probe 127.0.0.1:8081               单跑一个工具
 agent\build\agent.exe chat 127.0.0.1:8081     在终端里对话
 agent\build\agent.exe rules                   导出当前生效规则
-agent\build.bat                          重新编译（需要 g++ / MinGW-w64）
+agent\build.bat [release|debug]           重新编译(默认 release;需要 g++ / MinGW-w64)
 ```
 
 > `UI_MODE=off` 只起服务不开窗口（定时任务/自动化用）；`UI_MODE=browser` 强制用系统浏览器
@@ -584,14 +585,14 @@ agent\build\agent.exe run skill_我的技能
 ├─ docs/                        交付说明 / 系统架构 / 测试报告 / 工具清单 / 演示环境 / 工具协议 / CONTRIBUTING
 ├─ .env.example                   大模型凭证样例(复制成 .env 填自己的密钥)
 └─ agent/                         ★ 程序本体
-    ├─ build.bat                  一键编译:生成内置资源 → 编译 → 输出单文件 exe
+    ├─ build.bat                  一键编译:生成内置资源 → 编译 → 输出单文件 exe(默认发布版,debug 带自检)
     ├─ build_dbg.bat              调试版构建(-O0 -g)
     ├─ build/                     构建产物(每次 build.bat 重新生成)
     │   ├─ 网站安全巡检智能体.exe   ★ 交付物:单文件(~1.45 MB),双击即用;界面/规则/技能/工具声明压进资源
     │   └─ agent.exe              同源产物,命令行工具形态
     ├─ src/main/                  后端源码(约 1.3 万行, C++20, 零第三方依赖)
     │   ├─ main.cpp               入口:零参数启动 / selftest / run / tool / chat / serve / rules
-    │   ├─ selftest.cpp           自检套件(基础件/JSON/决策/技能/循环),`agent.exe selftest` 跑的就是它
+    │   ├─ selftest.cpp           自检套件(基础件/JSON/决策/技能/循环),`agent-dev.exe selftest` 跑的就是它
     │   ├─ agent.cpp              循环:决策、执行、观察、反思、收敛
     │   ├─ ext.cpp ext.h          扩展层:外部工具、技能包、MCP 客户端(都在数据目录里读)
     │   ├─ skills.cpp skills_closure.cpp 技能:检查类 + 收尾类(复测/报告/证据核对)
