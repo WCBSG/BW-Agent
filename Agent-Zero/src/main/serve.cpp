@@ -85,6 +85,8 @@ typedef struct {
   int aborted;
   char session[128];         /* 这一条流属于哪个会话(事件的 sessionId 用它) */
   buf_t answer;              /* 本轮说给用户的最终话(要落进会话转录) */
+  json_t *proc;              /* 本轮的过程(思考/工具),随转录一起落盘 ——
+                                切走再切回来、重开历史对话,过程不能凭空消失 */
   long long t_start;         /* 这一轮开始的毫秒时刻 —— 耗时由后端算,界面只负责显示 */
   long long wait_ms;         /* 其中"等用户点允许/拒绝"的毫秒数,不算模型响应 */
   long long llm_ms;          /* 其中真正花在模型请求上的毫秒数(用于解释"时快时慢") */
@@ -274,6 +276,14 @@ static void hook_thinking(void *ud, const char *text) {
   t_put_text(c, b.data);
   t_close_text(c);            /* 说完就收块,正文另起一块 */
   buf_free(&b);
+  /* 同时记进"本轮过程":转录里也要能重放出来 */
+  if (c->proc) {
+    json_t *it = j_obj();
+    j_set_str(it, "kind", "think");
+    j_set_str(it, "text", text);
+    j_set_num(it, "step", c->step + 1);
+    j_add(c->proc, it);
+  }
 }
 
 static void hook_action(void *ud, const char *tool, json_t *args, const char *reason) {
@@ -293,6 +303,16 @@ static void hook_action(void *ud, const char *tool, json_t *args, const char *re
 
   char *dump = args ? json_dump(args) : NULL;
   ev_block_delta_json(c, c->index, dump ? dump : "{}");
+  /* 记进本轮过程:工具名 + 参数摘要,转录重放时才能还原这一行 */
+  if (c->proc) {
+    json_t *it = j_obj();
+    j_set_str(it, "kind", "tool");
+    j_set_str(it, "name", tool ? tool : "");
+    j_set_str(it, "id", c->tool_use_id);
+    j_set_str(it, "args", dump ? dump : "{}");
+    j_set_num(it, "step", c->step);
+    j_add(c->proc, it);
+  }
   if (dump) free(dump);
 
   /* 状态说明可能比动作先到(agent.c 在"决定要做"时就广播了一次状态),
@@ -328,9 +348,23 @@ static void hook_observation(void *ud, const char *tool, tool_result_t *r) {
   (void)ud;
   sse_ctx_t *c = g_sse;
   if (!c) return;
-  ev_tool_status(c, c->tool_use_id, (r && r->is_error) ? "error" : "done",
-                 (r && r->text) ? r->text : "");
+  const char *txt = (r && r->text) ? r->text : "";
+  ev_tool_status(c, c->tool_use_id, (r && r->is_error) ? "error" : "done", txt);
   t_close_tool(c);
+  /* 把结果摘要补进过程条目:重放时工具行后面那句话就是它 */
+  if (c->proc) {
+    for (int i = j_len(c->proc) - 1; i >= 0; i--) {
+      json_t *it = j_at(c->proc, i);
+      if (strcmp(j_s(it, "id", ""), c->tool_use_id) != 0) continue;
+      buf_t line;
+      buf_init(&line);
+      for (const char *p = txt; *p && *p != '\n' && line.len < 160; p++) buf_putc_(&line, *p);
+      j_set_str(it, "note", line.data ? line.data : "");
+      j_set_str(it, "status", (r && r->is_error) ? "error" : "done");
+      buf_free(&line);
+      break;
+    }
+  }
 }
 
 static void hook_answer(void *ud, const char *text) {
@@ -1849,6 +1883,7 @@ static void h_chat(const http_req_t *req, http_res_t *res) {
   ctx.t_start = now_ms();
   snprintf(ctx.session, sizeof(ctx.session), "%s", sid[0] ? sid : g_session);
   buf_init(&ctx.answer);
+  ctx.proc = j_arr();          /* 本轮过程:思考与工具,收尾时随转录落盘 */
   EnterCriticalSection(&g_lock);
   snprintf(ctx.message_id, sizeof(ctx.message_id), "msg-%04d", ++g_turn_seq);
   LeaveCriticalSection(&g_lock);
@@ -2073,6 +2108,15 @@ static void h_chat(const http_req_t *req, http_res_t *res) {
      正文是一块 text,停止原因与步数进事件流:两者用途不同,不该混在一条里。 */
   {
     json_t *blocks = j_arr();
+    /* 过程块放最前:思考与工具是这一轮的"怎么做的",正文是"得出什么"。
+       落盘之后切走再切回来、或者明天再打开这条对话,过程都还在。 */
+    if (ctx.proc && j_len(ctx.proc) > 0) {
+      json_t *pb = j_obj();
+      j_set_str(pb, "type", "process");
+      j_set(pb, "items", ctx.proc);       /* 所有权交给块 */
+      j_add(blocks, pb);
+      ctx.proc = NULL;
+    }
     json_t *b = j_obj();
     j_set_str(b, "type", "text");
     j_set_str(b, "text", ctx.answer.data ? ctx.answer.data : "");
@@ -2099,6 +2143,7 @@ static void h_chat(const http_req_t *req, http_res_t *res) {
   }
   store_set_chat("");
   buf_free(&ctx.answer);
+  if (ctx.proc) json_free(ctx.proc);   /* 没进转录(异常/空过程)时别漏 */
   LeaveCriticalSection(&slot->lock);
   refresh_status_cache();
 }

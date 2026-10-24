@@ -884,6 +884,44 @@ function addThinkRow(m, text) {
   scrollBottom();
 }
 
+/* 用落盘的过程数据重建同一张卡 —— 切走再切回来、重开历史对话时用。
+   结构和直播时一模一样,所以"当时看到的"和"回看的"不会两样。 */
+function procCard(items) {
+  const node = el('div', 'proc open');
+  const head = el('div', 'proc-head');
+  head.appendChild(el('span', 'proc-chev', '›'));
+  head.appendChild(el('span', 'proc-label', '已完成思考'));
+  node.appendChild(head);
+  const body = el('div', 'proc-body');
+  node.appendChild(body);
+  head.addEventListener('click', () => node.classList.toggle('open'));
+  for (const it of items || []) {
+    if (it.kind === 'think') {
+      const row = el('div', 'proc-row think');
+      const ic = el('span', 'proc-ico');
+      ic.innerHTML = PROC_ICONS.think;
+      row.appendChild(ic);
+      const t = el('div', 'proc-txt');
+      t.innerHTML = mdToHtml(it.text || '');
+      row.appendChild(t);
+      body.appendChild(row);
+    } else if (it.kind === 'tool') {
+      const card = el('div', 'tool proc-tool');
+      const h = el('div', 'tool-head');
+      h.appendChild(el('span', 'dot ' + (it.status === 'error' ? 'error' : 'done')));
+      h.appendChild(el('span', 'tool-name', it.name || '?'));
+      h.appendChild(el('span', 'tool-note', String(it.note || '').slice(0, 80)));
+      h.appendChild(el('span', 'tool-chev', '›'));
+      card.appendChild(h);
+      card.appendChild(el('div', 'tool-args', it.args || ''));
+      card.appendChild(el('div', 'tool-out', it.note || ''));
+      h.addEventListener('click', () => card.classList.toggle('open'));
+      body.appendChild(card);
+    }
+  }
+  return node;
+}
+
 /* ============ 事件流渲染 ============ */
 
 /* 建一条"智能体消息"。sid 决定它属于哪个会话:
@@ -2150,6 +2188,11 @@ async function openChat(sid) {
       const wrap = el('div', 'msg agent');
       wrap.appendChild(el('div', 'who', '智能体 · ' + (usage.target || m.target || '')));
       const body = el('div', 'body');
+      /* 过程块(思考 + 工具)先铺回来:这一段以前只活在直播里,切走就没了 */
+      const proc = blocks ? blocks.find((b) => b && b.type === 'process') : null;
+      if (proc && Array.isArray(proc.items) && proc.items.length) {
+        body.appendChild(procCard(proc.items));
+      }
       const mdBody = el('div', 'md');
       mdBody.innerHTML = mdToHtml(textOf(m) || '(这一轮没有给出结论)');
       body.appendChild(mdBody);
