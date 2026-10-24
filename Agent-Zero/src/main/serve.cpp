@@ -256,6 +256,9 @@ static void hook_thinking(void *ud, const char *text) {
   (void)ud;
   sse_ctx_t *c = g_sse;
   if (!c) return;
+  /* 空思考不占块:界面上会出现一个只有标题、点开什么都没有的"思考",
+     看起来像功能坏了。 */
+  if (!text || !*text) return;
   t_close_tool(c);
   /* 思考必须自成一个文本块:不先关掉上一块的话,后面的正文会被追加进这一块,
      前端按"[第 N 步 · 思考]"开头判定时,整段(思考 + 回答)都被折进"思考"里,
